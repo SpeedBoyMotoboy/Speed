@@ -4,6 +4,7 @@ process.env.TZ = process.env.TZ || 'America/Sao_Paulo';
 const { abrirBanco } = await import('./db.js');
 const { criarServico } = await import('./servico.js');
 const { criarApp } = await import('./app.js');
+const { criarAtendimento } = await import('./atendimento.js');
 const { geocodificar } = await import('./geo.js');
 const { senhaAleatoria } = await import('./auth.js');
 
@@ -25,22 +26,35 @@ if (servico.garantirAdmin(usuario, senhaInicial)) {
   console.log('==============================================================');
 }
 
+const atendimento = criarAtendimento({ servico, geocodificar });
+
 const app = criarApp({
   servico,
+  atendimento,
   geocodificar,
   confiarProxy: process.env.TRUST_PROXY === '1',
   cookieSeguro: process.env.COOKIE_SECURE ? process.env.COOKIE_SECURE === '1' : producao,
 });
 
 const rotina = setInterval(() => {
-  try { servico.rotina(); } catch (e) { console.error('[rotina]', e); }
+  try { servico.rotina(); atendimento.rotina(); } catch (e) { console.error('[rotina]', e); }
 }, 30_000);
+// Ofertas: quem ficou online ou chegou perto passa a ver as entregas que estão esperando.
+const ofertas = setInterval(() => {
+  try { servico.despacharPendentes(); } catch (e) { console.error('[ofertas]', e); }
+}, 10_000);
+// Fila de mensagens do WhatsApp (avisos, convocação, respostas).
+const envio = setInterval(() => {
+  atendimento.despacharSaida().catch((e) => console.error('[envio]', e));
+}, 5_000);
 
 app.listen(PORTA, () => console.log(`Speed Despacho em http://localhost:${PORTA}`));
 
 for (const sinal of ['SIGINT', 'SIGTERM']) {
   process.on(sinal, () => {
     clearInterval(rotina);
+    clearInterval(envio);
+    clearInterval(ofertas);
     app.close(() => { db.close(); process.exit(0); });
     setTimeout(() => process.exit(0), 3000).unref();
   });

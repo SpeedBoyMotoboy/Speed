@@ -4,12 +4,16 @@
   "private": true,
   "type": "module",
   "description": "Servidor de despacho e rastreamento de motoboys da Speed",
-  "engines": { "node": ">=22.13" },
+  "engines": {
+    "node": ">=22.13"
+  },
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning src/index.js",
     "test": "node --disable-warning=ExperimentalWarning --test \"test/*.test.js\""
   },
   "dependencies": {
-    "leaflet": "1.9.4"
+    "@anthropic-ai/sdk": "1.9.0",
+    "leaflet": "1.9.4",
+    "qrcode-generator": "2.0.4"
   }
 }

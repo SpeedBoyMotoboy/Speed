@@ -71,3 +71,23 @@ export function geocodificar(texto, { cidadeBase = '', limite = 5 } = {}) {
   fila = tarefa.catch(() => {});
   return tarefa;
 }
+
+// Distância pelas ruas (OpenRouteService, chave gratuita). Devolve km ou null se não der.
+const cacheRota = new Map();
+export async function kmPelasRuas(chave, a, b, buscar = fetch) {
+  const id = [a.lat, a.lon, b.lat, b.lon].map((n) => Number(n).toFixed(4)).join(',');
+  if (cacheRota.has(id)) return cacheRota.get(id);
+  try {
+    const url = 'https://api.openrouteservice.org/v2/directions/driving-car?' +
+      new URLSearchParams({ start: `${a.lon},${a.lat}`, end: `${b.lon},${b.lat}` });
+    const r = await buscar(url, { headers: { Authorization: chave }, signal: AbortSignal.timeout(6000) });
+    if (!r.ok) return null;
+    const metros = (await r.json())?.features?.[0]?.properties?.summary?.distance;
+    if (!Number.isFinite(metros) || metros <= 0) return null;
+    if (cacheRota.size > 2000) cacheRota.clear();
+    cacheRota.set(id, metros / 1000);
+    return metros / 1000;
+  } catch {
+    return null;
+  }
+}

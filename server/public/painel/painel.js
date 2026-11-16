@@ -71,8 +71,9 @@ const ROTULO_ALERTA = {
   carga_pendente: 'Turno encerrado com carga',
 };
 const ROTULO_REQUISITO = { qualquer: 'Qualquer', moto: 'Só moto', bau: 'Baú', bag: 'Bag' };
+const ROTULO_ORIGEM = { site: 'Site', robo: 'WhatsApp', whatsapp: 'WhatsApp', api: 'API' };
 const chip = (texto, classe = '') => h('span', { class: `chip ${classe}` }, texto);
-const equipamento = (m) => [m.veiculo === 'bike' ? 'Bike' : 'Moto', m.tem_bau && 'baú', m.tem_bag && 'bag'].filter(Boolean).join(' · ');
+const equipamento = (m) => [m.veiculo === 'bike' ? 'Bike' : 'Moto', m.tem_bau && 'baú', m.tem_bag && 'bag', m.tipo === 'avulso' ? 'avulso' : 'diária'].filter(Boolean).join(' · ');
 
 // ---------------------------------------------------------------- diálogo
 function dialogo(titulo, montar, { largo = false } = {}) {
@@ -141,7 +142,7 @@ const els = {};
 function pararAtualizacao() { clearInterval(temporizador); temporizador = null; }
 
 function telaPrincipal() {
-  const abas = [['operacao', 'Operação'], ['motoboys', 'Motoboys'], ['whatsapp', 'WhatsApp'], ['relatorio', 'Relatório'], ['config', 'Configurações']];
+  const abas = [['operacao', 'Operação'], ['motoboys', 'Motoboys'], ['whatsapp', 'WhatsApp'], ['ia', 'IA'], ['relatorio', 'Relatório'], ['config', 'Configurações']];
   els.conexao = h('span', { class: 'conexao' });
   els.botoesAba = abas.map(([id, nome]) => h('button', { 'data-aba': id, onclick: () => abrirAba(id) }, nome));
   els.mapa = h('div', { id: 'mapa' });
@@ -180,13 +181,45 @@ function abrirAba(id) {
   if (id === 'motoboys') desenharMotoboys();
   if (id === 'relatorio') desenharRelatorio();
   if (id === 'whatsapp') desenharWhatsapp();
+  if (id === 'ia') desenharIa();
   if (id === 'config') desenharConfig();
+}
+
+// Aviso sonoro quando chega demanda, alerta ou cliente pedindo atendente.
+let somCtx = null;
+let vistos = null;
+function bipe() {
+  try {
+    somCtx = somCtx || new AudioContext();
+    const o = somCtx.createOscillator();
+    const g = somCtx.createGain();
+    o.frequency.value = 880;
+    g.gain.setValueAtTime(0.15, somCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, somCtx.currentTime + 0.5);
+    o.connect(g).connect(somCtx.destination);
+    o.start();
+    o.stop(somCtx.currentTime + 0.5);
+  } catch { /* navegador sem som liberado */ }
+}
+function notarNovidades() {
+  const agora = new Set([
+    ...estado.demandas.filter((d) => ['sem_local', 'aguardando'].includes(d.status)).map((d) => `d${d.id}`),
+    ...estado.alertas.filter((a) => a.fim == null).map((a) => `a${a.id}`),
+    ...(estado.whatsapp.pendentes ? [`w${estado.whatsapp.pendentes}`] : []),
+  ]);
+  if (vistos && [...agora].some((k) => !vistos.has(k))) bipe();
+  vistos = agora;
+  const n = estado.demandas.filter((d) => d.retida && !['entregue', 'cancelada'].includes(d.status)).length + estado.whatsapp.pendentes;
+  document.title = `${n ? `(${n}) ` : ''}Speed Despacho`;
+  const aba = els.botoesAba.find((b) => b.dataset.aba === 'whatsapp');
+  aba.textContent = estado.whatsapp.pendentes ? `WhatsApp (${estado.whatsapp.pendentes})` : 'WhatsApp';
 }
 
 async function atualizar() {
   try {
     estado = await api('GET', '/api/admin/estado');
-    els.conexao.textContent = '';
+    els.conexao.textContent = estado.whatsapp.falhas ? `WhatsApp: ${estado.whatsapp.falhas} mensagem(ns) não enviada(s)` : '';
+    notarNovidades();
   } catch (e) {
     if (e.status !== 401) els.conexao.textContent = 'Sem conexão com o servidor';
     return;
@@ -195,6 +228,7 @@ async function atualizar() {
   if (document.querySelector('dialog[open]')) return;
   if (abaAtual === 'operacao') desenhar();
   if (abaAtual === 'motoboys') desenharMotoboys();
+  if (abaAtual === 'whatsapp') els.recarregarWhats?.();
 }
 
 // --------------------------------------------------------------- operação
@@ -262,8 +296,9 @@ function desenharLateral() {
   const emTurno = estado.motoboys.filter((m) => m.turno);
   const nomes = new Map(estado.motoboys.map((m) => [m.id, m.nome]));
   const abertas = estado.demandas.filter((d) => ['atribuida', 'coletada'].includes(d.status));
-  const fila = estado.demandas.filter((d) => d.status === 'aguardando');
-  const semLocal = estado.demandas.filter((d) => d.status === 'sem_local');
+  const retidas = estado.demandas.filter((d) => d.retida && ['aguardando', 'sem_local'].includes(d.status));
+  const fila = estado.demandas.filter((d) => d.status === 'aguardando' && !d.retida);
+  const semLocal = estado.demandas.filter((d) => d.status === 'sem_local' && !d.retida);
   const fechadas = estado.demandas.filter((d) => ['entregue', 'cancelada'].includes(d.status));
   const alertasAbertos = estado.alertas.filter((a) => a.fim == null);
   const alertasHoje = estado.alertas.filter((a) => a.fim != null);
@@ -277,7 +312,17 @@ function desenharLateral() {
 
   const cartaoDemanda = (d) => h('div', { class: 'cartao' },
     h('div', { class: 'titulo' }, `#${d.id} ${d.cliente}`, chip(ROTULO_STATUS[d.status], d.status),
-      d.requisito !== 'qualquer' && chip(ROTULO_REQUISITO[d.requisito])),
+      d.requisito !== 'qualquer' && chip(ROTULO_REQUISITO[d.requisito]),
+      d.urgente ? chip('Urgente', 'sem_sinal') : null,
+      ROTULO_ORIGEM[d.origem] && chip(ROTULO_ORIGEM[d.origem]),
+      d.valor != null && chip(reais(d.valor), 'entregue'),
+      d.pagamento === 'pago' && chip('Pago', 'entregue'),
+      d.pagamento === 'pendente' && chip(d.comprovante_em ? 'Comprovante enviado' : 'Esperando Pix', 'aguardando'),
+      d.ia_ok === 0 && chip('IA: conferir', 'sem_sinal'),
+      d.pagamento === 'faturado' && chip('Fatura')),
+    (d.servico || d.repasse != null) && h('div', { class: 'sub' },
+      [d.servico, d.repasse != null && `repasse avulso ${reais(d.repasse)}`,
+        d.status === 'aguardando' && !d.retida && `oferecida a ${d.ofertas} motoboy(s)`].filter(Boolean).join(' · ')),
     h('div', { class: 'sub' }, `C: ${d.coleta_endereco}`),
     h('div', { class: 'sub' }, `E: ${d.entrega_endereco}`),
     d.descricao && h('div', { class: 'sub' }, d.descricao),
@@ -287,7 +332,24 @@ function desenharLateral() {
         : d.status === 'cancelada' ? `cancelada ${hora(d.cancelada_em)}`
           : d.status === 'coletada' ? `coletada ${hora(d.coletada_em)}`
             : `criada ${hora(d.criada_em)} (${ha(d.criada_em, agora)})`),
+    d.ia_obs && h('div', { class: 'sub' }, `IA: ${d.ia_obs}`),
+    d.cliente_telefone && h('div', { class: 'sub' }, `Cliente: ${telefoneFmt(d.cliente_telefone)}`),
     !['entregue', 'cancelada'].includes(d.status) && h('div', { class: 'acoes' },
+      d.pagamento === 'pendente' && h('button', {
+        class: 'pequeno primario',
+        onclick: () => confirmar('Confirmar pagamento', `O Pix de ${d.valor != null ? reais(d.valor) : '—'} do pedido #${d.id} (${d.cliente}) já caiu na sua conta? Ao confirmar, o pedido é liberado aos motoboys. Confira no app do banco, não só no comprovante.`,
+          'Sim, o Pix caiu', () => api('POST', `/api/admin/demandas/${d.id}/pago`), false),
+      }, 'Confirmar pagamento'),
+      Boolean(d.retida) && d.status !== 'sem_local' && d.pagamento !== 'pendente' && h('button', {
+        class: 'pequeno primario',
+        onclick: async () => {
+          try {
+            const r = await api('POST', `/api/admin/demandas/${d.id}/liberar`);
+            if (r.resultado === 'cobrar') dialogo('Pedido aprovado', (dlg) => [h('p', null, 'O cliente recebe o Pix agora. O pedido sai para os motoboys quando o pagamento for confirmado.'), h('div', { class: 'linha fim' }, h('button', { class: 'primario', onclick: dlg.fechar }, 'Entendi'))]);
+          } catch (e) { els.conexao.textContent = e.message; }
+          atualizar();
+        },
+      }, 'Aprovar'),
       d.status === 'sem_local'
         ? h('button', { class: 'pequeno primario', onclick: () => janelaDemanda(d) }, 'Marcar no mapa')
         : h('button', { class: 'pequeno', onclick: () => janelaTrocar(d) }, d.motoboy_id ? 'Trocar motoboy' : 'Escolher motoboy'),
@@ -301,10 +363,11 @@ function desenharLateral() {
     const t = m.turno;
     return h('div', { class: 'cartao' },
       h('div', { class: 'titulo' }, m.nome, chip(ROTULO_STATUS[t.status], t.status),
+        m.tipo === 'avulso' && chip('avulso'),
         t.origem !== 'app' && chip('navegador', 'aguardando')),
       h('div', { class: 'sub' }, `${equipamento(m)} · ${t.pendentes} parada(s) · ${t.km} km`,
         t.bateria != null ? ` · bateria ${t.bateria}%` : ''),
-      h('div', { class: 'sub' }, `Turno ${hora(t.inicio)}–${hora(t.fim_previsto)} · último sinal ${ha(t.ult_contato ?? t.inicio, agora)}`,
+      h('div', { class: 'sub' }, `${m.tipo === 'avulso' ? `Online desde ${hora(t.inicio)}` : `Turno ${hora(t.inicio)}–${hora(t.fim_previsto)}`} · último sinal ${ha(t.ult_contato ?? t.inicio, agora)}`,
         t.almoco_ate ? ` · almoço até ${hora(t.almoco_ate)}` : ''),
       h('div', { class: 'acoes' },
         t.lat != null && h('button', { class: 'pequeno', onclick: () => { mapa.setView([t.lat, t.lon], 16); } }, 'Ver no mapa'),
@@ -320,8 +383,19 @@ function desenharLateral() {
     h('div', { class: 'resumo' },
       h('div', null, h('b', null, emTurno.length), h('span', null, 'em turno')),
       h('div', null, h('b', null, abertas.length), h('span', null, 'em andamento')),
-      h('div', null, h('b', null, fila.length + semLocal.length), h('span', null, 'aguardando'))),
+      h('div', null, h('b', null, fila.length + semLocal.length + retidas.length), h('span', null, 'aguardando'))),
     h('button', { class: 'primario', onclick: () => janelaDemanda() }, '+ Nova demanda'),
+
+    estado.pendencias.length > 0 && h('details', { class: 'cartao sugestao', open: !estado.motoboys.length },
+      h('summary', null, `Falta configurar (${estado.pendencias.length})`),
+      h('ul', { class: 'lista' }, estado.pendencias.map((t) => h('li', null, t))),
+      h('div', { class: 'acoes' }, h('button', { class: 'pequeno', onclick: () => abrirAba('config') }, 'Abrir Configurações'))),
+
+    estado.whatsapp.pendentes > 0 && h('div', { class: 'cartao alerta' },
+      h('div', { class: 'titulo' }, `${estado.whatsapp.pendentes} cliente(s) esperando atendente no WhatsApp`),
+      h('div', { class: 'acoes' }, h('button', { class: 'pequeno primario', onclick: () => abrirAba('whatsapp') }, 'Responder'))),
+
+    retidas.length > 0 && [h('h3', null, `Esperando pagamento ou aprovação (${retidas.length})`), retidas.map(cartaoDemanda)],
 
     trilhaAberta && h('div', { class: 'cartao' },
       h('div', { class: 'titulo' }, `Trajeto: ${trilhaAberta.nome}`),
@@ -402,7 +476,7 @@ function janelaDemanda(existente = null, previa = null) {
   dialogo(existente ? `Demanda #${existente.id} — marcar locais` : 'Nova demanda', (dlg) => {
     const cliente = h('input', { maxlength: 120, value: existente?.cliente || previa?.cliente || '', disabled: Boolean(existente) });
     const requisito = h('select', { disabled: Boolean(existente) },
-      Object.entries(ROTULO_REQUISITO).map(([v, r]) => h('option', { value: v, selected: existente?.requisito === v }, r)));
+      Object.entries(ROTULO_REQUISITO).map(([v, r]) => h('option', { value: v, selected: (existente?.requisito ?? previa?.requisito) === v }, r)));
     const descricao = h('input', { maxlength: 500, value: existente?.descricao || previa?.descricao?.replace(/\s*\n+\s*/g, ' · ').slice(0, 500) || '', disabled: Boolean(existente), placeholder: 'O que é, observações' });
     const campos = {};
     const botoesAlvo = {};
@@ -423,8 +497,8 @@ function janelaDemanda(existente = null, previa = null) {
     };
 
     const bloco = (qual, titulo) => {
-      const endereco = h('input', { maxlength: 200, value: existente?.[`${qual}_endereco`] || '', placeholder: 'Rua, número, bairro' });
-      const contato = h('input', { maxlength: 120, value: existente?.[`${qual}_contato`] || '', disabled: Boolean(existente), placeholder: 'Nome / telefone no local' });
+      const endereco = h('input', { maxlength: 200, value: existente?.[`${qual}_endereco`] || previa?.[qual]?.endereco || '', placeholder: 'Rua, número, bairro' });
+      const contato = h('input', { maxlength: 120, value: existente?.[`${qual}_contato`] || previa?.[qual]?.contato || '', disabled: Boolean(existente), placeholder: 'Nome / telefone no local' });
       const resultados = h('div', { class: 'resultados' });
       const situacao = h('span', { class: 'falta' }, 'Falta marcar no mapa');
       const buscar = h('button', {
@@ -439,7 +513,7 @@ function janelaDemanda(existente = null, previa = null) {
           } catch (e) { trocar(resultados, h('div', { class: 'nota' }, e.message)); }
         },
       }, 'Buscar');
-      campos[qual] = { endereco, contato, situacao };
+      campos[qual] = { endereco, contato, situacao, buscar };
       return h('div', null,
         h('label', null, `${titulo} — endereço`),
         h('div', { class: 'linha' }, h('div', { class: 'cresce' }, endereco), buscar),
@@ -480,6 +554,10 @@ function janelaDemanda(existente = null, previa = null) {
         if (pontos[qual].lat != null) marcar(qual, pontos[qual].lat, pontos[qual].lon, false);
       }
       escolherAlvo(alvo);
+      // Veio da IA com endereço escrito: já procura no mapa para o admin só escolher.
+      for (const qual of ['coleta', 'entrega']) {
+        if (previa?.[qual]?.endereco && pontos[qual].lat == null) campos[qual].buscar.click();
+      }
     }, 0);
 
     return [
@@ -505,7 +583,7 @@ async function convocar(id) {
       h('p', null, `A convocação vale até ${hora(m.convocado_ate)} de hoje. O turno de 8 h começa quando ele fizer login.`),
       h('div', { class: 'linha fim' },
         h('button', { onclick: dlg.fechar }, 'Fechar'),
-        h('a', {
+        estado.whatsapp.ligado ? h('span', { class: 'nota' }, 'O aviso já foi enviado pelo WhatsApp automático.') : h('a', {
           class: 'botao primario', href: `https://wa.me/55${m.telefone}?text=${encodeURIComponent(texto)}`,
           target: '_blank', rel: 'noopener noreferrer', onclick: () => setTimeout(dlg.fechar, 200),
         }, 'Avisar pelo WhatsApp'))]);
@@ -518,6 +596,9 @@ function janelaMotoboy(m = null) {
     const telefone = h('input', { inputmode: 'tel', value: m ? telefoneFmt(m.telefone) : '', placeholder: '(11) 99999-0000' });
     const pin = h('input', { inputmode: 'numeric', maxlength: 6, autocomplete: 'off', placeholder: m ? 'Deixe vazio para manter' : '6 números' });
     const veiculo = h('select', null, h('option', { value: 'moto', selected: m?.veiculo !== 'bike' }, 'Moto'), h('option', { value: 'bike', selected: m?.veiculo === 'bike' }, 'Bike'));
+    const tipo = h('select', null,
+      h('option', { value: 'diaria', selected: m?.tipo !== 'avulso' }, 'Diária (convocado, cumpre o turno, recebe diária)'),
+      h('option', { value: 'avulso', selected: m?.tipo === 'avulso' }, 'Avulso (entra quando quiser, recebe por entrega)'));
     const bau = h('input', { type: 'checkbox', checked: m?.tem_bau });
     const bag = h('input', { type: 'checkbox', checked: m?.tem_bag });
     const ativo = h('input', { type: 'checkbox', checked: m ? m.ativo : true });
@@ -525,7 +606,7 @@ function janelaMotoboy(m = null) {
     const ok = h('button', {
       class: 'primario',
       onclick: () => dlg.executar(() => {
-        const dados = { nome: nome.value, telefone: telefone.value, pin: pin.value, veiculo: veiculo.value, tem_bau: bau.checked, tem_bag: bag.checked, ativo: ativo.checked };
+        const dados = { nome: nome.value, telefone: telefone.value, pin: pin.value, veiculo: veiculo.value, tipo: tipo.value, tem_bau: bau.checked, tem_bag: bag.checked, ativo: ativo.checked };
         return m ? api('PUT', `/api/admin/motoboys/${m.id}`, dados) : api('POST', '/api/admin/motoboys', dados);
       }, ok),
     }, 'Salvar');
@@ -535,7 +616,9 @@ function janelaMotoboy(m = null) {
         h('div', null, h('label', null, 'Telefone com DDD (é o login)'), telefone),
         h('div', null, h('label', null, 'Senha do app (6 números)'), h('div', { class: 'linha' }, h('div', { class: 'cresce' }, pin), gerar))),
       h('div', { class: 'nota' }, 'Anote a senha e passe ao motoboy: depois de salvar ela não aparece mais.'),
-      h('label', null, 'Veículo'), veiculo,
+      h('div', { class: 'grade2' },
+        h('div', null, h('label', null, 'Veículo'), veiculo),
+        h('div', null, h('label', null, 'Como trabalha'), tipo)),
       h('label', { class: 'marcar' }, bau, 'Tem baú'),
       h('label', { class: 'marcar' }, bag, 'Tem bag'),
       m && h('label', { class: 'marcar' }, ativo, 'Ativo (desmarcar bloqueia o login e encerra o turno)'),
@@ -547,21 +630,22 @@ function desenharMotoboys() {
   if (!estado) return;
   const situacao = (m) => {
     if (!m.ativo) return chip('Inativo', 'inativo');
-    if (m.turno) return chip(`Em turno até ${hora(m.turno.fim_previsto)}`, 'em_rota');
+    if (m.turno) return chip(m.tipo === 'avulso' ? 'Online' : `Em turno até ${hora(m.turno.fim_previsto)}`, 'em_rota');
+    if (m.tipo === 'avulso') return h('span', { class: 'nota' }, m.ultimo_turno ? `Avulso · esteve online ${dataHora(m.ultimo_turno)}` : 'Avulso · ainda não entrou');
     if (m.convocado_ate) return chip('Convocado, aguardando login', 'convocado');
     return h('span', { class: 'nota' }, m.ultimo_turno ? `Último turno ${dataHora(m.ultimo_turno)}` : 'Nunca fez turno');
   };
   trocar(els.pagina, 
     h('div', { class: 'linha' }, h('h2', { class: 'cresce' }, 'Motoboys'),
       h('button', { class: 'primario', onclick: () => janelaMotoboy() }, '+ Novo motoboy')),
-    h('p', { class: 'nota' }, 'O motoboy só consegue fazer login no dia em que for convocado. O turno dura o tempo definido em Configurações.'),
+    h('p', { class: 'nota' }, 'Diária: só faz login no dia em que for convocado e cumpre o turno. Avulso: entra e sai quando quiser, aceita as entregas perto dele e recebe o repasse de cada uma.'),
     estado.motoboys.length === 0 ? h('div', { class: 'vazio' }, 'Nenhum motoboy cadastrado ainda.')
       : h('table', null,
         h('thead', null, h('tr', null, ['Nome', 'Telefone', 'Equipamento', 'Situação', ''].map((c) => h('th', null, c)))),
         h('tbody', null, estado.motoboys.map((m) => h('tr', null,
           h('td', null, m.nome), h('td', null, telefoneFmt(m.telefone)), h('td', null, equipamento(m)), h('td', null, situacao(m)),
           h('td', null, h('div', { class: 'linha' },
-            m.ativo && !m.turno && !m.convocado_ate && h('button', { class: 'pequeno primario', onclick: () => convocar(m.id) }, 'Convocar'),
+            m.ativo && m.tipo !== 'avulso' && !m.turno && !m.convocado_ate && h('button', { class: 'pequeno primario', onclick: () => convocar(m.id) }, 'Convocar'),
             m.convocado_ate && h('button', {
               class: 'pequeno', onclick: async () => { await api('POST', `/api/admin/motoboys/${m.id}/desconvocar`).catch(() => {}); atualizar(); },
             }, 'Cancelar convocação'),
@@ -609,29 +693,54 @@ async function desenharWhatsapp(mensagemAviso = '') {
     class: `cartao clicavel ${c.id === conversaAberta ? 'sugestao' : ''}`,
     onclick: () => { conversaAberta = c.id; desenharWhatsapp(); },
   },
-  h('div', { class: 'titulo' }, c.nome),
+  h('div', { class: 'titulo' }, c.nome,
+    c.pendente ? chip('Esperando atendente', 'sem_sinal') : c.telefone && chip(c.humano ? 'Atendente' : 'Robô', c.humano ? 'aguardando' : 'entregue')),
   h('div', { class: 'sub' }, `${c.total} mensagens`, c.primeira ? ` · ${dataHora(c.primeira)} a ${dataHora(c.ultima)}` : ''),
   c.demandas > 0 && h('div', { class: 'sub' }, `${c.demandas} viraram demanda`)));
 
   const busca = h('input', { placeholder: 'Buscar nas mensagens (ex.: coleta, rua, nome)' });
   const mensagens = h('div', null);
+  const conversa = conversas.find((c) => c.id === conversaAberta);
+  const resposta = h('input', { maxlength: 2000, placeholder: 'Responder ao cliente pelo WhatsApp' });
+  const avisoResposta = h('div', { class: 'erro' });
+  const mandarResposta = async () => {
+    avisoResposta.textContent = '';
+    try {
+      await api('POST', `/api/admin/whatsapp/${conversaAberta}/responder`, { texto: resposta.value });
+      resposta.value = '';
+      await atualizar();
+      desenharWhatsapp();
+    } catch (e) { avisoResposta.textContent = e.message; }
+  };
+  resposta.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') mandarResposta(); });
+  const aoVivo = conversa?.telefone && h('div', { class: 'cartao' },
+    h('div', { class: 'linha' }, h('div', { class: 'cresce' }, resposta), h('button', { class: 'primario', onclick: mandarResposta }, 'Enviar')),
+    h('div', { class: 'linha' },
+      h('span', { class: 'nota cresce' }, conversa.humano
+        ? 'Atendente no comando: o robô não responde nesta conversa.'
+        : 'O robô está respondendo. Ao enviar uma mensagem, você assume a conversa.'),
+      h('button', {
+        class: 'pequeno',
+        onclick: async () => { await api('POST', `/api/admin/whatsapp/${conversaAberta}/modo`, { humano: !conversa.humano }).catch(() => {}); await atualizar(); desenharWhatsapp(); },
+      }, conversa.humano ? 'Devolver ao robô' : 'Assumir conversa')),
+    avisoResposta);
   const carregar = async () => {
-    if (!conversaAberta) { trocar(mensagens, h('div', { class: 'vazio' }, 'Nenhuma conversa importada ainda.')); return; }
-    const conversa = conversas.find((c) => c.id === conversaAberta);
+    if (!conversaAberta) { trocar(mensagens, h('div', { class: 'vazio' }, 'Nenhuma conversa ainda.')); return; }
     try {
       const r = await api('GET', `/api/admin/whatsapp/${conversaAberta}?q=${encodeURIComponent(busca.value)}`);
       trocar(mensagens,
         r.mensagens.length === 0 && h('div', { class: 'vazio' }, 'Nenhuma mensagem encontrada.'),
-        r.mensagens.map((m) => h('div', { class: 'cartao' },
+        r.mensagens.map((m) => h('div', { class: `cartao ${m.direcao === 'saida' ? 'saida' : ''}` },
           h('div', { class: 'titulo' }, m.autor || 'Aviso do WhatsApp', h('span', { class: 'nota' }, dataHora(m.ts)),
             m.demanda_id && chip(`Demanda #${m.demanda_id}`, 'entregue')),
           h('div', { class: 'sub texto-msg' }, m.texto),
-          m.autor && !m.demanda_id && h('div', { class: 'acoes' }, h('button', {
+          m.autor && !m.demanda_id && m.direcao !== 'saida' && h('div', { class: 'acoes' }, h('button', {
             class: 'pequeno primario',
             onclick: () => janelaDemanda(null, { cliente: conversa?.nome || m.autor, descricao: m.texto, mensagem_id: m.id }),
           }, 'Criar demanda')))));
     } catch (e) { trocar(mensagens, h('div', { class: 'erro' }, e.message)); }
   };
+  els.recarregarWhats = () => { if (!busca.value) carregar(); };
   let espera = null;
   busca.addEventListener('input', () => { clearTimeout(espera); espera = setTimeout(carregar, 300); });
 
@@ -639,19 +748,151 @@ async function desenharWhatsapp(mensagemAviso = '') {
     h('div', { class: 'linha' }, h('h2', { class: 'cresce' }, 'Conversas do WhatsApp'),
       h('button', { class: 'primario', onclick: () => entrada.click() }, 'Importar conversa')),
     entrada,
-    h('p', { class: 'nota' }, 'No celular: abra a conversa → ⋮ Mais → Exportar conversa → Sem mídia (no iPhone: toque no nome do contato → Exportar conversa). Mande o arquivo para você e importe aqui (.txt ou .zip). Importar de novo a mesma conversa só acrescenta as mensagens novas.'),
+    h('p', { class: 'nota' }, estado?.whatsapp.ligado
+      ? 'WhatsApp automático ligado: as conversas aparecem aqui ao vivo e o robô atende sozinho. Você pode assumir qualquer conversa.'
+      : 'WhatsApp automático desligado (ligue em Configurações para o robô atender sozinho). Enquanto isso, dá para importar conversas exportadas.'),
+    h('details', null, h('summary', null, 'Como importar uma conversa antiga'),
+      h('p', { class: 'nota' }, 'No celular: abra a conversa → ⋮ Mais → Exportar conversa → Sem mídia (no iPhone: toque no nome do contato → Exportar conversa). Mande o arquivo para você e importe aqui (.txt ou .zip). Importar de novo a mesma conversa só acrescenta as mensagens novas.')),
     aviso,
     h('div', { class: 'grade-whats' },
       h('div', null, h('h3', null, `Conversas (${conversas.length})`), lista),
       h('div', null,
         h('div', { class: 'linha' }, h('h3', { class: 'cresce' }, 'Mensagens (mais recentes primeiro)'),
           conversaAberta && h('button', {
+            class: 'pequeno',
+            onclick: async (ev) => {
+              const botao = ev.currentTarget;
+              botao.disabled = true;
+              botao.textContent = 'A IA está lendo…';
+              try {
+                const r = await api('POST', `/api/admin/whatsapp/${conversaAberta}/analisar`, {});
+                dialogo('Análise da conversa', (dlg) => [cartoesAnalise(r, conversa?.nome), h('div', { class: 'linha fim' }, h('button', { onclick: dlg.fechar }, 'Fechar'))], { largo: true });
+              } catch (e) { trocar(mensagens, h('div', { class: 'erro' }, e.message)); }
+              botao.disabled = false;
+              botao.textContent = 'Analisar com IA';
+            },
+          }, 'Analisar com IA'),
+          conversaAberta && h('button', {
             class: 'pequeno perigo',
             onclick: () => confirmar('Excluir conversa', 'Apagar esta conversa e as mensagens importadas? As demandas já criadas continuam.', 'Excluir',
               async () => { await api('DELETE', `/api/admin/whatsapp/${conversaAberta}`); conversaAberta = null; }),
           }, 'Excluir conversa')),
-        busca, mensagens)));
+        aoVivo, busca, mensagens)));
   carregar();
+}
+
+// --------------------------------------------------------------------- IA
+// Foto vira JPEG de até 1800 px antes de subir: fica leve e sem os dados escondidos da câmera.
+async function prepararArquivoIa(arquivo) {
+  const ehImagem = arquivo.type.startsWith('image/');
+  if (ehImagem) {
+    try {
+      const bitmap = await createImageBitmap(arquivo);
+      const escala = Math.min(1, 1800 / Math.max(bitmap.width, bitmap.height));
+      const tela = h('canvas', { width: Math.round(bitmap.width * escala), height: Math.round(bitmap.height * escala) });
+      tela.getContext('2d').drawImage(bitmap, 0, 0, tela.width, tela.height);
+      const blob = await new Promise((ok) => tela.toBlob(ok, 'image/jpeg', 0.85));
+      if (blob) return { nome: arquivo.name, conteudo: await lerArquivoBase64(blob) };
+    } catch { /* formato que o navegador não abre: tenta mandar como está */ }
+  }
+  if (arquivo.size > 12 * 1024 * 1024) throw new Error(`${arquivo.name}: maior que 12 MB.`);
+  return { nome: arquivo.name, conteudo: await lerArquivoBase64(arquivo) };
+}
+
+// Mostra o que a IA achou: resposta, alertas, comprovante e pedidos prontos para virar demanda.
+function cartoesAnalise(r, clientePadrao = '') {
+  const cp = r.comprovante;
+  return h('div', null,
+    r.avisos?.map((a) => h('div', { class: 'nota' }, a)),
+    r.resposta && h('div', { class: 'cartao sugestao' }, h('div', { class: 'titulo' }, 'Resposta'), h('div', { class: 'sub texto-msg' }, r.resposta)),
+    h('div', { class: 'cartao' }, h('div', { class: 'titulo' }, 'Resumo'), h('div', { class: 'sub texto-msg' }, r.resumo || 'Sem resumo.')),
+    r.alertas.length > 0 && h('div', { class: 'cartao alerta' },
+      h('div', { class: 'titulo' }, `Atenção (${r.alertas.length})`), h('ul', { class: 'lista' }, r.alertas.map((a) => h('li', null, a)))),
+    cp && h('div', { class: 'cartao' },
+      h('div', { class: 'titulo' }, 'Comprovante de pagamento',
+        cp.valor != null && chip(reais(cp.valor), 'entregue'),
+        chip(cp.confere_recebedor ? 'Recebedor confere' : 'Recebedor diferente', cp.confere_recebedor ? 'entregue' : 'sem_sinal')),
+      h('div', { class: 'sub' }, `Recebedor: ${cp.recebedor || '—'} · Pagador: ${cp.pagador || '—'}`),
+      h('div', { class: 'sub' }, `Data: ${cp.data_hora || '—'} · Transação: ${cp.identificador || '—'}`),
+      h('div', { class: 'nota' }, 'A IA lê a imagem; ela não vê sua conta. Confira no app do banco antes de liberar.'),
+      h('div', { class: 'acoes' }, cp.pedidos_compativeis.length
+        ? cp.pedidos_compativeis.map((id) => h('button', {
+          class: 'pequeno primario',
+          onclick: () => confirmar('Confirmar pagamento', `O Pix do pedido #${id} já caiu na sua conta? Ao confirmar, o pedido é liberado aos motoboys.`,
+            'Sim, o Pix caiu', () => api('POST', `/api/admin/demandas/${id}/pago`), false),
+        }, `Confirmar pagamento do pedido #${id}`))
+        : h('span', { class: 'nota' }, 'Nenhum pedido esperando Pix com esse valor.'))),
+    h('h3', null, `Pedidos encontrados (${r.pedidos.length})`),
+    r.pedidos.length === 0 && h('div', { class: 'vazio' }, 'Nenhum pedido em aberto neste material.'),
+    r.pedidos.map((p) => h('div', { class: 'cartao' },
+      h('div', { class: 'titulo' }, p.cliente || clientePadrao || 'Cliente não identificado',
+        p.servico && chip(p.servico), p.requisito !== 'qualquer' && chip(ROTULO_REQUISITO[p.requisito])),
+      h('div', { class: 'sub' }, `C: ${p.coleta_endereco || '—'}${p.coleta_contato ? ` (${p.coleta_contato})` : ''}`),
+      h('div', { class: 'sub' }, `E: ${p.entrega_endereco || '—'}${p.entrega_contato ? ` (${p.entrega_contato})` : ''}`),
+      p.descricao && h('div', { class: 'sub' }, p.descricao),
+      p.telefone && h('div', { class: 'sub' }, `Telefone: ${p.telefone}`),
+      p.observacao && h('div', { class: 'sub falta' }, p.observacao),
+      h('div', { class: 'acoes' }, h('button', {
+        class: 'pequeno primario',
+        onclick: () => janelaDemanda(null, {
+          cliente: p.cliente || clientePadrao, descricao: [p.servico, p.descricao].filter(Boolean).join(' · '), requisito: p.requisito,
+          coleta: { endereco: p.coleta_endereco, contato: p.coleta_contato }, entrega: { endereco: p.entrega_endereco, contato: p.entrega_contato },
+        }),
+      }, 'Criar demanda')))));
+}
+
+let analiseAberta = null;
+async function desenharIa(mensagem = '') {
+  let analises = [];
+  try { ({ analises } = await api('GET', '/api/admin/analises')); } catch { return; }
+  if (abaAtual !== 'ia') return;
+  const escolhidos = h('div', { class: 'nota' }, 'Nenhum arquivo escolhido.');
+  const entrada = h('input', { type: 'file', multiple: true, hidden: true, accept: 'image/*,.pdf,.txt,.zip,application/pdf,text/plain,application/zip' });
+  entrada.addEventListener('change', () => {
+    escolhidos.textContent = entrada.files.length ? [...entrada.files].map((f) => f.name).join(', ') : 'Nenhum arquivo escolhido.';
+  });
+  const pergunta = h('input', { maxlength: 1000, placeholder: 'Opcional. Ex.: quais pedidos ainda estão em aberto? Este comprovante confere?' });
+  const aviso = h('div', { class: 'erro' }, mensagem);
+  const enviar = h('button', {
+    class: 'primario',
+    onclick: async () => {
+      aviso.textContent = '';
+      if (!entrada.files.length) { aviso.textContent = 'Escolha pelo menos um arquivo.'; return; }
+      enviar.disabled = true;
+      enviar.textContent = 'A IA está lendo…';
+      try {
+        const arquivos = [];
+        for (const f of entrada.files) arquivos.push(await prepararArquivoIa(f));
+        analiseAberta = await api('POST', '/api/admin/analises', { arquivos, pergunta: pergunta.value });
+        desenharIa();
+      } catch (e) {
+        aviso.textContent = e.message;
+        enviar.disabled = false;
+        enviar.textContent = 'Analisar';
+      }
+    },
+  }, 'Analisar');
+  const aberta = analiseAberta && (analises.find((a) => a.id === analiseAberta.id) || analiseAberta);
+
+  trocar(els.pagina,
+    h('h2', null, 'Analisar com IA'),
+    h('p', { class: 'nota' }, estado?.ia.ligada
+      ? 'Envie fotos (print de conversa, pedido anotado, comprovante de Pix), PDF ou conversa exportada do WhatsApp (.txt ou .zip). A IA lê, lista os pedidos prontos para virar demanda e confere comprovantes. O arquivo não fica guardado: só o resultado.'
+      : 'A IA está desligada. Cole a chave em Configurações → Conferência dos pedidos por IA para usar esta tela.'),
+    h('div', { class: 'cartao' },
+      entrada,
+      h('div', { class: 'linha' }, h('button', { onclick: () => entrada.click() }, 'Escolher arquivos (até 6)'), escolhidos),
+      h('label', null, 'O que você quer saber?'), pergunta,
+      h('div', { class: 'linha fim' }, aviso, enviar)),
+    aberta && [h('h3', null, `Resultado: ${aberta.titulo}`), aberta.pergunta && h('div', { class: 'nota' }, `Pergunta: ${aberta.pergunta}`), cartoesAnalise(aberta)],
+    h('h3', null, `Análises anteriores (${analises.length})`),
+    analises.length === 0 ? h('div', { class: 'vazio' }, 'Nenhuma análise ainda.')
+      : analises.map((a) => h('div', {
+        class: `cartao clicavel ${a.id === aberta?.id ? 'sugestao' : ''}`,
+        onclick: () => { analiseAberta = a; desenharIa(); window.scrollTo(0, 0); },
+      },
+      h('div', { class: 'titulo' }, a.titulo, a.comprovante && chip('comprovante'), a.pedidos.length > 0 && chip(`${a.pedidos.length} pedido(s)`, 'em_rota')),
+      h('div', { class: 'sub' }, `${dataHora(a.criada_em)} · ${a.resumo.slice(0, 160)}`))));
 }
 
 // -------------------------------------------------------------- relatório
@@ -665,8 +906,17 @@ function desenharRelatorio() {
     const inicio = new Date(`${de.value}T00:00:00`).getTime();
     const fim = new Date(`${ate.value}T00:00:00`).getTime() + 24 * 3600 * 1000;
     try {
-      const { linhas } = await api('GET', `/api/admin/relatorio?de=${inicio}&ate=${fim}`);
-      const colunas = [['nome', 'Motoboy'], ['diarias', 'Diárias'], ['horas', 'Horas'], ['entregas', 'Entregas'], ['km', 'Km'], ['min_parado', 'Min. parado em alerta'], ['alertas', 'Alertas'], ['valor', 'A pagar']];
+      const { linhas, clientes, entregas } = await api('GET', `/api/admin/relatorio?de=${inicio}&ate=${fim}`);
+      const colunas = [['nome', 'Motoboy'], ['diarias', 'Diárias'], ['horas', 'Horas'], ['entregas', 'Entregas'], ['km', 'Km'], ['min_parado', 'Min. parado em alerta'], ['alertas', 'Alertas'], ['repasses', 'Repasses'], ['valor', 'A pagar']];
+      const dinheiro = (v) => (v == null ? '—' : reais(v));
+      const baixarEntregas = () => {
+        const cab = ['Pedido', 'Entregue em', 'Cliente', 'Serviço', 'Km', 'Motoboy', 'Tipo', 'Pagamento', 'Valor', 'Repasse', 'Fica'];
+        const n = (v) => (v == null ? '' : String(v).replace('.', ','));
+        const t = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+        const csv = [cab.join(';'), ...entregas.map((e) => [e.id, dataHora(e.entregue_em), t(e.cliente), t(e.servico), n(e.km), t(e.motoboy), e.tipo || '', e.pagamento, n(e.valor), n(e.repasse), n(e.margem)].join(';'))].join('\r\n');
+        const a = h('a', { href: URL.createObjectURL(new Blob(['\ufeff', csv], { type: 'text/csv' })), download: `speed-entregas-${de.value}-a-${ate.value}.csv` });
+        document.body.append(a); a.click(); a.remove();
+      };
       const total = linhas.reduce((s, l) => s + l.valor, 0);
       const baixar = () => {
         const csv = [colunas.map((c) => c[1]).join(';'),
@@ -678,14 +928,35 @@ function desenharRelatorio() {
         h('table', null,
           h('thead', null, h('tr', null, colunas.map(([k, r]) => h('th', { class: k === 'nome' ? '' : 'num' }, r)))),
           h('tbody', null, linhas.map((l) => h('tr', null, colunas.map(([k]) =>
-            h('td', { class: k === 'nome' ? '' : 'num' }, k === 'valor' ? reais(l.valor) : l[k]))))),
-          h('tfoot', null, h('tr', null, h('td', { colspan: 7 }, 'Total'), h('td', { class: 'num' }, reais(total))))),
-        h('div', { class: 'linha fim' }, h('button', { onclick: baixar }, 'Baixar planilha (CSV)'))]);
+            h('td', { class: k === 'nome' ? '' : 'num' }, k === 'valor' || k === 'repasses' ? reais(l[k]) : l[k]))))),
+          h('tfoot', null, h('tr', null, h('td', { colspan: 8 }, 'Total'), h('td', { class: 'num' }, reais(total))))),
+        h('div', { class: 'linha fim' }, h('button', { onclick: baixar }, 'Baixar planilha (CSV)'))],
+      h('h3', null, 'Entregas por cliente (a cobrar)'),
+      clientes.length === 0 ? h('div', { class: 'vazio' }, 'Nenhuma entrega concluída no período.')
+        : h('table', null,
+          h('thead', null, h('tr', null, h('th', null, 'Cliente'), h('th', null, 'WhatsApp'), h('th', { class: 'num' }, 'Entregas'), h('th', { class: 'num' }, 'Km'), h('th', { class: 'num' }, 'Valor'))),
+          h('tbody', null, clientes.map((c) => h('tr', null,
+            h('td', null, c.cliente), h('td', null, c.telefone ? telefoneFmt(c.telefone) : '—'),
+            h('td', { class: 'num' }, c.entregas), h('td', { class: 'num' }, c.km), h('td', { class: 'num' }, reais(c.valor))))),
+          h('tfoot', null, h('tr', null, h('td', { colspan: 4 }, 'Total'), h('td', { class: 'num' }, reais(clientes.reduce((s, c) => s + c.valor, 0)))))),
+      h('h3', null, 'Entrega por entrega (valor, repasse e o que fica)'),
+      entregas.length === 0 ? h('div', { class: 'vazio' }, 'Nenhuma entrega concluída no período.') : [
+        h('table', null,
+          h('thead', null, h('tr', null, ['Pedido', 'Cliente', 'Serviço', 'Motoboy'].map((c) => h('th', null, c)), ['Valor', 'Repasse', 'Fica'].map((c) => h('th', { class: 'num' }, c)))),
+          h('tbody', null, entregas.slice(0, 200).map((e) => h('tr', null,
+            h('td', null, `#${e.id} · ${dataHora(e.entregue_em)}`), h('td', null, e.cliente), h('td', null, e.servico || '—'),
+            h('td', null, e.motoboy || '—', e.tipo === 'avulso' ? ' (avulso)' : ''),
+            h('td', { class: 'num' }, dinheiro(e.valor)), h('td', { class: 'num' }, reais(e.repasse)), h('td', { class: 'num' }, dinheiro(e.margem))))),
+          h('tfoot', null, h('tr', null, h('td', { colspan: 4 }, `Total (${entregas.length} entregas)`),
+            h('td', { class: 'num' }, reais(entregas.reduce((s, e) => s + (e.valor || 0), 0))),
+            h('td', { class: 'num' }, reais(entregas.reduce((s, e) => s + e.repasse, 0))),
+            h('td', { class: 'num' }, reais(entregas.reduce((s, e) => s + (e.margem || 0), 0)))))),
+        h('div', { class: 'linha fim' }, h('button', { onclick: baixarEntregas }, 'Baixar entregas (CSV)'))]);
     } catch (e) { trocar(saida, h('div', { class: 'erro' }, e.message)); }
   };
   trocar(els.pagina, 
-    h('h2', null, 'Relatório de diárias'),
-    h('p', { class: 'nota' }, 'A pagar = diárias × (valor da diária + almoço), conforme Configurações.'),
+    h('h2', null, 'Relatório'),
+    h('p', { class: 'nota' }, 'A pagar = diárias × (valor da diária + almoço) + repasses das entregas feitas como avulso.'),
     h('div', { class: 'linha' },
       h('div', null, h('label', null, 'De'), de), h('div', null, h('label', null, 'Até'), ate),
       h('div', null, h('label', null, ' '), h('button', { class: 'primario', onclick: gerar }, 'Gerar'))),
@@ -696,12 +967,75 @@ function desenharRelatorio() {
 // ---------------------------------------------------------- configurações
 async function desenharConfig() {
   let c;
-  try { c = await api('GET', '/api/admin/config'); } catch { return; }
+  let servicos = [];
+  let clientes = [];
+  try {
+    c = await api('GET', '/api/admin/config');
+    ({ servicos } = await api('GET', '/api/admin/servicos'));
+    ({ clientes } = await api('GET', '/api/admin/clientes'));
+  } catch { return; }
+  const avisoLista = h('div', { class: 'erro' });
+  const janelaServico = (sv = null) => dialogo(sv ? 'Editar tipo de serviço' : 'Novo tipo de serviço', (dlg) => {
+    const nome = h('input', { maxlength: 60, value: sv?.nome || '' });
+    const adicional = h('input', { type: 'number', step: 0.01, min: 0, value: sv?.adicional ?? 0 });
+    const pct = h('input', { type: 'number', step: 1, min: 0, max: 100, value: sv?.repasse_pct ?? '', placeholder: `Padrão (${c.repasse_pct}%)` });
+    const ativo = h('input', { type: 'checkbox', checked: sv ? sv.ativo : true });
+    const ok = h('button', {
+      class: 'primario',
+      onclick: () => dlg.executar(async () => {
+        await api('POST', '/api/admin/servicos', { id: sv?.id, nome: nome.value, adicional: adicional.value, repasse_pct: pct.value, ativo: ativo.checked });
+        desenharConfig();
+      }, ok),
+    }, 'Salvar');
+    return [
+      h('label', null, 'Nome (o cliente vê)'), nome,
+      h('div', { class: 'grade2' },
+        h('div', null, h('label', null, 'Soma no preço (R$)'), adicional),
+        h('div', null, h('label', null, 'Repasse ao avulso (%)'), pct)),
+      h('label', { class: 'marcar' }, ativo, 'Ativo (aparece para o cliente)'),
+      h('div', { class: 'linha fim' }, h('button', { onclick: dlg.fechar }, 'Voltar'), ok)];
+  });
+  const janelaCliente = (cl = null) => dialogo(cl ? `Cliente ${cl.nome}` : 'Novo cliente fixo', (dlg) => {
+    const nome = h('input', { maxlength: 120, value: cl?.nome || '' });
+    const telefone = h('input', { inputmode: 'tel', value: cl ? telefoneFmt(cl.telefone) : '', disabled: Boolean(cl), placeholder: '(27) 99999-0000' });
+    const email = h('input', { type: 'email', maxlength: 120, value: cl?.email || '' });
+    const pct = h('input', { type: 'number', step: 1, min: 1, max: 300, value: cl?.preco_pct ?? 100 });
+    const faturado = h('input', { type: 'checkbox', checked: cl ? cl.faturado : true });
+    const ok = h('button', {
+      class: 'primario',
+      onclick: () => dlg.executar(async () => {
+        await api('POST', '/api/admin/clientes', { nome: nome.value, telefone: telefone.value, email: email.value, preco_pct: pct.value, faturado: faturado.checked });
+        desenharConfig();
+      }, ok),
+    }, 'Salvar');
+    return [
+      h('label', null, 'Nome da empresa ou pessoa'), nome,
+      h('div', { class: 'grade2' },
+        h('div', null, h('label', null, 'WhatsApp (identifica o cliente)'), telefone),
+        h('div', null, h('label', null, 'E-mail'), email)),
+      h('label', null, 'Paga quanto da tabela? (%)'), pct,
+      h('div', { class: 'nota' }, '100 = preço cheio. 80 = 20% de desconto.'),
+      h('label', { class: 'marcar' }, faturado, 'Fatura mensal (não paga Pix na hora)'),
+      h('div', { class: 'linha fim' }, h('button', { onclick: dlg.fechar }, 'Voltar'), ok)];
+  });
   const campos = {};
   const num = (chave, rotulo, passo = 1) => {
     campos[chave] = h('input', { type: 'number', step: passo, value: c[chave] });
     return h('div', null, h('label', null, rotulo), campos[chave]);
   };
+  const texto = (chave, rotulo, attrs = {}) => {
+    campos[chave] = h('input', { value: c[chave] ?? '', ...attrs });
+    return h('div', null, h('label', null, rotulo), campos[chave]);
+  };
+  const opcao = (chave, rotulo, opcoes = [['1', 'Sim'], ['0', 'Não']]) => {
+    campos[chave] = h('select', null, opcoes.map(([v, r]) => h('option', { value: v, selected: c[chave] === v }, r)));
+    return h('div', null, h('label', null, rotulo), campos[chave]);
+  };
+  const base = c.url_publica || location.origin;
+  const webhook = `${base}/api/whatsapp/webhook?s=${c.whats_segredo}`;
+  const avisoTeste = h('div', { class: 'nota' });
+  const avisoIa = h('div', { class: 'nota' });
+  campos.cidades_atendidas = h('input', { maxlength: 200, value: c.cidades_atendidas });
   campos.cidade_base = h('input', { maxlength: 120, value: c.cidade_base, placeholder: 'Ex.: Campinas, SP' });
   campos.termo_texto = h('textarea', { maxlength: 8000, value: c.termo_texto });
   const aviso = h('div', { class: 'erro' });
@@ -713,6 +1047,7 @@ async function desenharConfig() {
         await api('PUT', '/api/admin/config', Object.fromEntries(Object.entries(campos).map(([k, el]) => [k, el.value])));
         aviso.textContent = 'Salvo.';
         enquadrado = false;
+        atualizar();
       } catch (e) { aviso.textContent = e.message; }
     },
   }, 'Salvar configurações');
@@ -744,6 +1079,109 @@ async function desenharConfig() {
       class: 'pequeno',
       onclick: () => { const p = mapa.getCenter(); campos.mapa_lat.value = p.lat.toFixed(4); campos.mapa_lon.value = p.lng.toFixed(4); },
     }, 'Usar o centro atual do mapa da Operação')),
+    h('h3', null, 'Preço da entrega urgente (o cliente vê no site e no WhatsApp)'),
+    h('div', { class: 'grade3' },
+      num('preco_base', 'Valor base (R$)', 0.01), num('preco_km_incluso', 'Km já incluídos no valor base', 0.5),
+      num('preco_km', 'Valor por km a mais (R$)', 0.01), num('preco_minimo', 'Valor mínimo (R$)', 0.01),
+      num('urgente_prazo_min', 'Prazo prometido na página (min)'),
+      texto('ors_chave', c.ors_chave_definida ? 'Chave de rota (já salva; vazio mantém)' : 'Chave de rota pelas ruas (opcional)', { type: 'password', autocomplete: 'off', value: '' })),
+    h('div', { class: 'nota' }, 'Preço = valor base + km a mais (respeitando o mínimo) + o adicional do tipo de serviço. Sem chave de rota a distância é linha reta × 1,35; com chave gratuita do openrouteservice.org é a distância pelas ruas.'),
+
+    h('h3', null, 'Tipos de serviço (complexidade da demanda)'),
+    h('table', null,
+      h('thead', null, h('tr', null, h('th', null, 'Serviço'), h('th', { class: 'num' }, 'Soma no preço'), h('th', { class: 'num' }, 'Repasse ao avulso'), h('th', null, ''))),
+      h('tbody', null, servicos.map((sv) => h('tr', null,
+        h('td', null, sv.nome, !sv.ativo && chip('desligado', 'inativo')),
+        h('td', { class: 'num' }, reais(sv.adicional)),
+        h('td', { class: 'num' }, sv.repasse_pct == null ? `padrão (${c.repasse_pct}%)` : `${sv.repasse_pct}%`),
+        h('td', null, h('button', { class: 'pequeno', onclick: () => janelaServico(sv) }, 'Editar')))))),
+    h('div', { class: 'linha' }, h('button', { class: 'pequeno', onclick: () => janelaServico() }, '+ Novo tipo de serviço'), avisoLista),
+
+    h('h3', null, 'Motoboy avulso: repasse e ofertas'),
+    h('div', { class: 'grade3' },
+      num('repasse_pct', 'Repasse padrão ao avulso (% do valor)'), num('repasse_minimo', 'Repasse mínimo por entrega (R$)', 0.01),
+      num('oferta_raio_km', 'Oferecer a quem está até (km) da coleta', 0.5),
+      num('oferta_alerta_min', 'Avisar se ninguém aceitar em (min)'), num('avulso_max_horas', 'Avulso fica online no máximo (horas)')),
+    h('div', { class: 'nota' }, 'A cada 1,5 min sem aceite o raio da oferta dobra (até 8 vezes). Se o repasse mínimo for maior que o preço cobrado, a entrega dá prejuízo: mantenha o valor mínimo da entrega acima dele.'),
+
+    h('h3', null, 'Pagamento por Pix'),
+    h('div', { class: 'nota' }, 'Opção 1 — sua chave Pix (sem taxa): o cliente paga direto na sua conta e manda o comprovante; você confirma no painel ou respondendo "pago 12" no WhatsApp.'),
+    h('div', { class: 'grade3' },
+      opcao('pix_tipo', 'Tipo da chave', [['cnpj', 'CNPJ'], ['cpf', 'CPF'], ['telefone', 'Celular'], ['email', 'E-mail'], ['aleatoria', 'Chave aleatória']]),
+      texto('pix_chave', 'Chave Pix', { maxlength: 80 }),
+      texto('pix_nome', 'Nome de quem recebe (como no banco)', { maxlength: 25 }),
+      texto('pix_cidade', 'Cidade da conta', { maxlength: 15, placeholder: 'Vila Velha' }),
+      texto('empresa_whatsapp', 'WhatsApp que recebe o comprovante', { inputmode: 'tel', placeholder: '(27) 99999-0000' }),
+      num('pagamento_validade_min', 'Lembrar/expirar o Pix após (min)')),
+    h('div', { class: 'nota' }, 'Opção 2 — Mercado Pago (automático, taxa de 0,99% por Pix): o sistema confirma sozinho, sem você conferir.'),
+    h('div', { class: 'grade3' },
+      texto('mp_token', c.mp_token_definido ? 'Access Token (já salvo; vazio mantém)' : 'Access Token de produção (opcional)', { type: 'password', autocomplete: 'off', value: '' })),
+    h('div', { class: 'nota' }, 'Depois escolha a opção em "Pedidos pelo site → Antes de despachar um pedido do site".'),
+
+    h('h3', null, 'Conferência dos pedidos por IA'),
+    h('div', { class: 'grade3' },
+      opcao('ia_ativa', 'IA confere cada pedido antes de liberar'),
+      texto('ia_chave', c.ia_chave_definida ? 'Chave da API (já salva; vazio mantém)' : 'Chave da API da Anthropic (sk-ant-...)', { type: 'password', autocomplete: 'off', value: '' }),
+      opcao('ia_modelo', 'Modelo', [['claude-opus-5-5', 'Claude Opus 5.5 (mais capaz)'], ['claude-sonnet-5-5', 'Claude Sonnet 5.5 (intermediário)'], ['claude-haiku-5-5', 'Claude Haiku 5.5 (mais barato)']])),
+    h('label', null, 'Cidades atendidas'), campos.cidades_atendidas,
+    h('div', { class: 'nota' }, 'A IA lê endereços e descrição (nunca nome ou telefone do cliente), identifica o tipo de serviço e segura para você conferir o que parecer errado. Se ela estiver fora do ar ou sem crédito, os pedidos seguem as regras normais. Gere a chave em console.anthropic.com → API Keys (precisa de crédito na conta). Salve antes de testar.'),
+    h('div', { class: 'linha' },
+      h('button', {
+        onclick: async () => {
+          avisoIa.textContent = 'Consultando a IA…';
+          try { avisoIa.textContent = (await api('POST', '/api/admin/ia-teste')).mensagem; } catch (e) { avisoIa.textContent = e.message; }
+        },
+      }, 'Testar a IA'), avisoIa),
+    estado?.ia.erro && h('div', { class: 'erro' }, `Último erro da IA: ${estado.ia.erro}`),
+
+    h('h3', null, 'Clientes (marque os fixos para fatura mensal)'),
+    clientes.length === 0 ? h('div', { class: 'vazio' }, 'Nenhum cliente ainda. Quem pede pelo site ou WhatsApp aparece aqui sozinho.')
+      : h('table', null,
+        h('thead', null, h('tr', null, h('th', null, 'Cliente'), h('th', null, 'WhatsApp'), h('th', { class: 'num' }, 'Pedidos'), h('th', null, 'Cobrança'), h('th', null, ''))),
+        h('tbody', null, clientes.slice(0, 100).map((cl) => h('tr', null,
+          h('td', null, cl.nome), h('td', null, telefoneFmt(cl.telefone)), h('td', { class: 'num' }, cl.pedidos),
+          h('td', null, cl.faturado ? chip(`Fatura · ${cl.preco_pct}% da tabela`, 'entregue') : 'Pix na hora'),
+          h('td', null, h('button', { class: 'pequeno', onclick: () => janelaCliente(cl) }, 'Editar')))))),
+    h('div', { class: 'linha' }, h('button', { class: 'pequeno', onclick: () => janelaCliente() }, '+ Novo cliente fixo')),
+
+    h('h3', null, 'Pedidos pelo site'),
+    h('div', { class: 'grade3' },
+      texto('empresa_nome', 'Nome que aparece para o cliente', { maxlength: 60 }),
+      opcao('pedidos_site', 'Aceitar pedidos pelo site'),
+      opcao('site_confirmacao', 'Antes de despachar um pedido do site', [
+        ['pix', 'Cliente paga no meu Pix e manda o comprovante'], ['pagamento', 'Pix automático do Mercado Pago (taxa 0,99%)'], ['painel', 'Eu aprovo no painel'], ['whatsapp', 'Cliente confirma no WhatsApp (automático)'], ['nenhuma', 'Despacha direto (sem conferir)']]),
+      texto('atendimento_inicio', 'Atende a partir de (vazio = sempre)', { type: 'time' }),
+      texto('atendimento_fim', 'Atende até', { type: 'time' }),
+      opcao('rastreio_cliente', 'Cliente vê o motoboy no mapa')),
+    h('div', { class: 'nota' }, 'Link para divulgar aos clientes:'),
+    h('div', { class: 'codigo' }, `${base}/pedir/`),
+    h('div', { class: 'nota' }, '"Cliente vê o motoboy no mapa": antes de ligar, inclua isso no termo do motoboy (abaixo).'),
+
+    h('h3', null, 'WhatsApp automático (robô de pedidos, avisos ao cliente e convocação)'),
+    h('div', { class: 'grade3' },
+      opcao('whats_provedor', 'Conexão', [['', 'Desligado'], ['evolution', 'Evolution API (número comum, QR code)'], ['meta', 'WhatsApp Cloud API (oficial da Meta)'], ['webhook', 'Outro (n8n, Make)']]),
+      texto('whats_url', 'Endereço do servidor de WhatsApp', { maxlength: 300, placeholder: 'https://evolution.seudominio.com' }),
+      texto('whats_instancia', 'Instância (Evolution) ou ID do número (Meta)', { maxlength: 120 }),
+      texto('whats_token', c.whats_token_definido ? 'Chave de acesso (já salva; vazio mantém)' : 'Chave de acesso (API key / token)', { type: 'password', autocomplete: 'off', value: '' }),
+      texto('admin_telefone', 'WhatsApp do responsável (recebe avisos)', { inputmode: 'tel', placeholder: '(11) 99999-0000' }),
+      texto('url_publica', 'Endereço deste sistema (para os links)', { maxlength: 200, placeholder: location.origin }),
+      opcao('robo_ativo', 'Robô atende e monta o pedido sozinho'),
+      opcao('avisos_cliente', 'Avisar o cliente a cada etapa'),
+      opcao('convocacao_auto', 'Convocar motoboy sozinho quando faltar gente'),
+      num('convocacao_auto_max', 'Máx. de convocações automáticas por dia'),
+      num('convocacao_auto_espera_min', 'Demanda esperando há (min) para convocar')),
+    h('div', { class: 'nota' }, 'No provedor de WhatsApp, cadastre este endereço como webhook de mensagens recebidas (na Meta, o "token de verificação" é o trecho depois de s=):'),
+    h('div', { class: 'codigo' }, webhook),
+    h('div', { class: 'nota' }, 'Cada convocação automática gera uma diária: o limite por dia protege seu caixa. Salve antes de testar.'),
+    h('div', { class: 'linha' },
+      h('button', {
+        onclick: async () => {
+          avisoTeste.textContent = 'Enviando…';
+          try { await api('POST', '/api/admin/whatsapp-teste'); avisoTeste.textContent = 'Mensagem de teste enviada para o WhatsApp do responsável.'; } catch (e) { avisoTeste.textContent = e.message; }
+        },
+      }, 'Enviar mensagem de teste'), avisoTeste),
+    estado?.whatsapp.ultimo_erro && h('div', { class: 'erro' }, `Último erro de envio: ${estado.whatsapp.ultimo_erro}`),
+
     h('h3', null, `Termo aceito pelo motoboy a cada login (versão ${c.termo_versao})`),
     campos.termo_texto,
     h('div', { class: 'nota' }, 'Modelo inicial: peça para seu advogado ou contador revisar antes de usar.'),

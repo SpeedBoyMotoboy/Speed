@@ -123,6 +123,57 @@ CREATE TABLE IF NOT EXISTS mensagens (
   UNIQUE (conversa_id, ts, autor, texto)
 );
 CREATE INDEX IF NOT EXISTS idx_mensagens_conversa ON mensagens(conversa_id, ts);
+CREATE TABLE IF NOT EXISTS clientes (
+  id INTEGER PRIMARY KEY,
+  telefone TEXT NOT NULL UNIQUE,
+  nome TEXT NOT NULL DEFAULT '',
+  criado_em INTEGER NOT NULL,
+  pedidos INTEGER NOT NULL DEFAULT 0,
+  ult_endereco TEXT, ult_lat REAL, ult_lon REAL
+);
+-- Fila de mensagens de WhatsApp a enviar (avisos, convocação, respostas do robô).
+CREATE TABLE IF NOT EXISTS saida (
+  id INTEGER PRIMARY KEY,
+  destino TEXT NOT NULL,
+  texto TEXT NOT NULL,
+  tipo TEXT NOT NULL DEFAULT '',
+  criada_em INTEGER NOT NULL,
+  proxima_em INTEGER NOT NULL,
+  tentativas INTEGER NOT NULL DEFAULT 0,
+  enviada_em INTEGER,
+  erro TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_saida_pendente ON saida(enviada_em, proxima_em);
+-- Tipos de serviço (complexidade da demanda): cada um soma um valor ao preço.
+CREATE TABLE IF NOT EXISTS servicos (
+  id INTEGER PRIMARY KEY,
+  nome TEXT NOT NULL,
+  adicional REAL NOT NULL DEFAULT 0,
+  repasse_pct REAL,
+  ativo INTEGER NOT NULL DEFAULT 1,
+  ordem INTEGER NOT NULL DEFAULT 0
+);
+-- Oferta de uma demanda a um motoboy online e perto: o primeiro que aceitar leva.
+CREATE TABLE IF NOT EXISTS ofertas (
+  id INTEGER PRIMARY KEY,
+  demanda_id INTEGER NOT NULL REFERENCES demandas(id),
+  turno_id INTEGER NOT NULL REFERENCES turnos(id),
+  criada_em INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'aberta' CHECK (status IN ('aberta','aceita','recusada','encerrada')),
+  respondida_em INTEGER,
+  dist_km REAL,
+  UNIQUE (demanda_id, turno_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ofertas_turno ON ofertas(turno_id, status);
+-- Análises feitas pela IA em fotos, PDFs e conversas (só o resultado; o arquivo não é guardado).
+CREATE TABLE IF NOT EXISTS analises (
+  id INTEGER PRIMARY KEY,
+  criada_em INTEGER NOT NULL,
+  ator TEXT NOT NULL,
+  titulo TEXT NOT NULL,
+  pergunta TEXT NOT NULL DEFAULT '',
+  resultado TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS auditoria (
   id INTEGER PRIMARY KEY,
   ts INTEGER NOT NULL,
@@ -142,7 +193,7 @@ export const TERMO_PADRAO = `TERMO DE CIÊNCIA E CONSENTIMENTO — SPEEDBOY
 
 4. O sistema registra paradas prolongadas durante a rota, perda de sinal, GPS desligado, uso de localização falsa e confirmações feitas longe do local de coleta ou entrega.
 
-5. Os dados são acessados apenas pela administração da Speedboy e apagados após o prazo de guarda definido pela empresa. Posso pedir à Speedboy acesso aos meus dados ou a exclusão deles.
+5. Os dados são acessados pela administração da Speedboy; durante uma entrega, o cliente daquele pedido pode ver no mapa onde está o entregador. Os dados são apagados após o prazo de guarda definido pela empresa. Posso pedir à Speedboy acesso aos meus dados ou a exclusão deles.
 
 6. Durante o turno devo manter GPS, internet e o aplicativo ligados. Tenho direito a um intervalo de almoço, registrado pelo próprio aplicativo.`;
 
@@ -165,14 +216,105 @@ export const CONFIG_PADRAO = {
   termo_versao: '1',
   termo_texto: TERMO_PADRAO,
   api_chave_hash: '',
+  empresa_nome: 'SpeedBoy',
+  url_publica: '',
+  // Preço mostrado ao cliente (site e robô). Tudo zero = "a combinar".
+  preco_base: '0',
+  preco_km_incluso: '0',
+  preco_km: '0',
+  preco_minimo: '0',
+  // Pedido pelo site: 'painel' (admin aprova), 'whatsapp' (cliente confirma no WhatsApp) ou 'nenhuma'.
+  pedidos_site: '1',
+  site_confirmacao: 'painel',
+  rastreio_cliente: '0',
+  atendimento_inicio: '',
+  atendimento_fim: '',
+  // WhatsApp automático: '' (desligado), 'evolution', 'meta' ou 'webhook' (n8n/Make).
+  whats_provedor: '',
+  whats_url: '',
+  whats_instancia: '',
+  whats_token: '',
+  whats_segredo: '',
+  robo_ativo: '1',
+  avisos_cliente: '1',
+  admin_telefone: '',
+  convocacao_auto: '0',
+  convocacao_auto_max: '3',
+  convocacao_auto_espera_min: '3',
+  // Entrega urgente: prazo prometido na página, repasse ao motoboy avulso e ofertas.
+  urgente_prazo_min: '30',
+  repasse_pct: '60',
+  repasse_minimo: '15',
+  oferta_raio_km: '5',
+  oferta_alerta_min: '5',
+  avulso_max_horas: '12',
+  // Pix pelo Mercado Pago (token secreto) e rota real pelas ruas (OpenRouteService, opcional).
+  mp_token: '',
+  pagamento_validade_min: '30',
+  ors_chave: '',
+  // Pix direto na conta da empresa (sem taxa de intermediário; confirmação manual pelo comprovante).
+  pix_tipo: 'cnpj',
+  pix_chave: '',
+  pix_nome: '',
+  pix_cidade: '',
+  empresa_whatsapp: '',
+  // Conferência dos pedidos por IA (Claude). Sem chave, fica desligada.
+  ia_ativa: '1',
+  ia_chave: '',
+  ia_modelo: 'claude-opus-5-5',
+  cidades_atendidas: 'Vila Velha, Vitória, Serra, Cariacica, Viana',
 };
+
+const SERVICOS_PADRAO = [
+  'Entrega de documento ou encomenda', 'Ida e volta (leva e traz)', 'Cartório ou protocolo',
+  'Xerox ou impressão + entrega', 'Visita ou vistoria com fotos', 'Compra e entrega',
+];
+
+// Colunas acrescentadas depois da primeira versão (o banco em produção já existe).
+const COLUNAS_NOVAS = {
+  demandas: {
+    codigo: 'TEXT', cliente_telefone: "TEXT NOT NULL DEFAULT ''", valor: 'REAL', km: 'REAL',
+    retida: 'INTEGER NOT NULL DEFAULT 0',
+    urgente: 'INTEGER NOT NULL DEFAULT 0', servico: "TEXT NOT NULL DEFAULT ''", repasse: 'REAL',
+    pagamento: "TEXT NOT NULL DEFAULT ''", pag_id: 'TEXT', pag_pix: 'TEXT', pag_qr: 'TEXT', pag_expira: 'INTEGER',
+    pago_em: 'INTEGER', fila_em: 'INTEGER', comprovante_em: 'INTEGER', ia_ok: 'INTEGER', ia_obs: 'TEXT', email: "TEXT NOT NULL DEFAULT ''", sem_aceite_avisado: 'INTEGER NOT NULL DEFAULT 0',
+  },
+  motoboys: { tipo: "TEXT NOT NULL DEFAULT 'diaria'" },
+  turnos: { tipo: "TEXT NOT NULL DEFAULT 'diaria'" },
+  clientes: { faturado: 'INTEGER NOT NULL DEFAULT 0', preco_pct: 'REAL NOT NULL DEFAULT 100', email: "TEXT NOT NULL DEFAULT ''" },
+  convocacoes: { origem: "TEXT NOT NULL DEFAULT 'admin'" },
+  conversas: {
+    telefone: 'TEXT', destino: 'TEXT', etapa: "TEXT NOT NULL DEFAULT ''", dados: "TEXT NOT NULL DEFAULT '{}'",
+    humano: 'INTEGER NOT NULL DEFAULT 0', pendente: 'INTEGER NOT NULL DEFAULT 0', etapa_em: 'INTEGER',
+  },
+  mensagens: { direcao: "TEXT NOT NULL DEFAULT ''" },
+};
+
+function migrar(db) {
+  for (const [tabela, colunas] of Object.entries(COLUNAS_NOVAS)) {
+    const existentes = new Set(db.prepare(`PRAGMA table_info(${tabela})`).all().map((c) => c.name));
+    for (const [nome, tipo] of Object.entries(colunas)) {
+      if (!existentes.has(nome)) db.exec(`ALTER TABLE ${tabela} ADD COLUMN ${nome} ${tipo}`);
+    }
+  }
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_demandas_codigo ON demandas(codigo) WHERE codigo IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_demandas_telefone ON demandas(cliente_telefone, criada_em);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_conversas_telefone ON conversas(telefone) WHERE telefone IS NOT NULL;
+  `);
+}
 
 export function abrirBanco(arquivo) {
   if (arquivo !== ':memory:') fs.mkdirSync(path.dirname(path.resolve(arquivo)), { recursive: true });
   const db = new DatabaseSync(arquivo);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
   db.exec(ESQUEMA);
+  migrar(db);
   const inserir = db.prepare('INSERT OR IGNORE INTO config (chave, valor) VALUES (?, ?)');
   for (const [chave, valor] of Object.entries(CONFIG_PADRAO)) inserir.run(chave, valor);
+  if (db.prepare('SELECT COUNT(*) AS n FROM servicos').get().n === 0) {
+    const novo = db.prepare('INSERT INTO servicos (nome, ordem) VALUES (?, ?)');
+    SERVICOS_PADRAO.forEach((nome, i) => novo.run(nome, i));
+  }
   return db;
 }

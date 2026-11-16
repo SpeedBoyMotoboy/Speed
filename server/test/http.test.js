@@ -3,12 +3,14 @@ import assert from 'node:assert/strict';
 import { abrirBanco } from '../src/db.js';
 import { criarServico } from '../src/servico.js';
 import { criarApp } from '../src/app.js';
+import { criarAtendimento } from '../src/atendimento.js';
 
 async function subir() {
   const db = abrirBanco(':memory:');
   const servico = criarServico({ db });
   servico.garantirAdmin('admin', 'senha-de-teste-123');
-  const app = criarApp({ servico, geocodificar: null });
+  const atendimento = criarAtendimento({ servico });
+  const app = criarApp({ servico, atendimento, geocodificar: null });
   await new Promise((ok) => app.listen(0, '127.0.0.1', ok));
   const base = `http://127.0.0.1:${app.address().port}`;
   const chamar = async (metodo, caminho, { corpo, cookie, token, extra } = {}) => {
@@ -28,7 +30,7 @@ async function subir() {
     try { json = JSON.parse(texto); } catch { /* não é JSON */ }
     return { status: r.status, json, texto, headers: r.headers };
   };
-  return { app, servico, chamar };
+  return { app, servico, atendimento, chamar };
 }
 
 test('API: painel exige login, cookie seguro e cabeçalho próprio', async (t) => {

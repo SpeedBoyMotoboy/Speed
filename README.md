@@ -139,3 +139,25 @@ em Configurações para a busca acertar mais.
 - **Aviso de convocação** é pelo WhatsApp (o app não recebe notificação estando fechado e fora de turno).
 - **Termo e modelo de trabalho:** o texto do termo é um modelo. Diária, horário, rastreamento e
   obrigação de atender podem caracterizar vínculo de emprego — revise com advogado ou contador.
+
+## Atendimento automático (site, WhatsApp e convocação)
+
+| Recurso | Onde | Como funciona |
+|---|---|---|
+| **Pedido pelo site** | `/pedir/` | Cliente informa coleta e entrega, vê o valor e confirma. Em *Configurações* você escolhe: aprovar no painel, cliente confirmar pelo WhatsApp ou despachar direto. |
+| **Acompanhamento** | `/acompanhar/?c=código` | Link enviado ao cliente: etapas do pedido e, se ligado, o motoboy no mapa. |
+| **Robô do WhatsApp** | webhook `/api/whatsapp/webhook?s=segredo` | Conversa com o cliente (coleta → entrega → o que é → confirma), cria o pedido e manda o link. "Atendente" passa a conversa para você (aba *WhatsApp*). |
+| **Avisos ao cliente** | automático | Motoboy a caminho, coletado, entregue, cancelado. |
+| **Convocação** | automático | Ao convocar, o motoboy recebe a mensagem sozinho. Opcional: o sistema convoca o próximo do rodízio quando há demanda e ninguém em turno (com limite por dia). |
+| **Avisos ao responsável** | automático | Pedido sem local, pedido do site para aprovar, cliente pedindo atendente, alertas de rota. |
+| **Preço** | *Configurações* | Valor base + km a mais, com mínimo. Relatório soma por cliente. |
+
+### Ligar o WhatsApp
+
+Em *Configurações → WhatsApp automático* escolha a conexão, salve e cadastre no provedor o endereço de webhook que o painel mostra.
+
+- **Evolution API** (número comum, lê QR code): endereço do servidor, nome da instância e API key. No webhook da instância, marque o evento `MESSAGES_UPSERT`. Veja `deploy/evolution.md`.
+- **WhatsApp Cloud API (Meta)**: ID do número e token. O "token de verificação" é o segredo do endereço. Limite da Meta: mensagem para quem não escreveu nas últimas 24 h exige modelo aprovado (convocação e avisos podem falhar).
+- **Outro (n8n, Make)**: o sistema envia `POST {"telefone","texto"}` para o endereço informado e recebe `POST {"telefone","nome","texto","lat","lon"}` no webhook.
+
+A fila de envio tenta de novo sozinha (6 tentativas, espera crescente). Falhas aparecem no topo do painel.

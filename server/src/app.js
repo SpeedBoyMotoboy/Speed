@@ -9,12 +9,14 @@ import { Erro } from './servico.js';
 const RAIZ = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PUBLICO = path.join(RAIZ, 'public');
 const LEAFLET = path.join(path.dirname(createRequire(import.meta.url).resolve('leaflet/package.json')), 'dist');
+const QRCODE = path.dirname(createRequire(import.meta.url).resolve('qrcode-generator'));
 const TIPOS = {
-  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
+  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.svg': 'image/svg+xml',
   '.json': 'application/json; charset=utf-8', '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json',
 };
 const COOKIE = 'speed_admin';
+const TEXTO = Symbol('texto'); // rota que responde texto puro em vez de JSON
 const CORPO_MAX = 512 * 1024;
 const CSP = [
   "default-src 'self'", "script-src 'self'", "style-src 'self'",
@@ -22,7 +24,7 @@ const CSP = [
   "frame-ancestors 'none'", "base-uri 'none'", "form-action 'self'", "object-src 'none'",
 ].join('; ');
 
-export function criarApp({ servico, geocodificar, confiarProxy = false, cookieSeguro = false }) {
+export function criarApp({ servico, atendimento, geocodificar, confiarProxy = false, cookieSeguro = false }) {
   const rotas = [];
   const rota = (metodo, caminho, acesso, fn, max = CORPO_MAX) => {
     const nomes = [];
@@ -66,7 +68,16 @@ export function criarApp({ servico, geocodificar, confiarProxy = false, cookieSe
     }
   }
 
+  const origemDe = (req) => {
+    const proto = confiarProxy ? String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() : '';
+    return `${proto || (cookieSeguro ? 'https' : 'http')}://${req.headers.host || ''}`;
+  };
+
   function responder(res, status, corpo, cabecalhos = {}) {
+    if (corpo && typeof corpo[TEXTO] === 'string') {
+      res.writeHead(status, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+      return res.end(corpo[TEXTO]);
+    }
     const dados = JSON.stringify(corpo);
     res.writeHead(status, {
       'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...cabecalhos,
@@ -78,11 +89,41 @@ export function criarApp({ servico, geocodificar, confiarProxy = false, cookieSe
   rota('GET', '/saude', 'publico', () => ({ ok: true }));
   rota('GET', '/api/termo', 'publico', () => servico.termo());
   rota('POST', '/api/motoboy/login', 'publico', ({ corpo, ip }) => servico.loginMotoboy(corpo, ip));
-  rota('POST', '/api/admin/login', 'publico', ({ corpo, ip, res }) => {
+  rota('POST', '/api/admin/login', 'publico', ({ corpo, ip, res, req }) => {
     const s = servico.loginAdmin(corpo.usuario, corpo.senha, ip);
+    atendimento.definirOrigem(origemDe(req));
     res.setHeader('Set-Cookie', cookieAdmin(s.token, Math.floor((s.expiraEm - Date.now()) / 1000)));
     return { usuario: s.usuario };
   });
+
+  // Site de pedidos e página de acompanhamento (sem login).
+  rota('GET', '/api/publico/info', 'publico', () => atendimento.infoPublica());
+  rota('POST', '/api/publico/cotar', 'publico', ({ corpo, ip }) => atendimento.cotarPublico(corpo, ip));
+  rota('POST', '/api/publico/pedidos', 'publico', ({ corpo, ip }) => atendimento.pedidoSite(corpo, ip));
+  rota('GET', '/api/publico/pedido', 'publico', ({ url }) => atendimento.pedidoVivo(url.searchParams.get('c')));
+  // Aviso de pagamento do Mercado Pago. O corpo só diz "olhe o pagamento X": o sistema confere direto no banco.
+  rota('POST', '/api/pagamento/mp', 'publico', ({ url, corpo }) => {
+    if (!atendimento.segredoConfere(url.searchParams.get('s'))) throw new Erro(403, 'segredo_invalido', 'Segredo inválido.');
+    atendimento.webhookPagamento(corpo, url).catch((e) => console.error('[pagamento]', e));
+    return { ok: true };
+  });
+
+  // WhatsApp automático: o provedor (Evolution, Meta ou n8n) chama aqui a cada mensagem recebida.
+  rota('GET', '/api/whatsapp/webhook', 'publico', ({ url }) => {
+    // Verificação exigida pela Meta ao cadastrar o webhook.
+    if (!atendimento.segredoConfere(url.searchParams.get('hub.verify_token') ?? url.searchParams.get('s'))) {
+      throw new Erro(403, 'segredo_invalido', 'Segredo inválido.');
+    }
+    return { [TEXTO]: url.searchParams.get('hub.challenge') || 'ok' };
+  });
+  rota('POST', '/api/whatsapp/webhook', 'publico', ({ url, corpo, req }) => {
+    if (!atendimento.segredoConfere(url.searchParams.get('s') ?? req.headers['x-speed-segredo'])) {
+      throw new Erro(403, 'segredo_invalido', 'Segredo inválido.');
+    }
+    // Responde na hora; a conversa (que pode consultar o mapa) segue em segundo plano.
+    atendimento.receber(corpo).catch((e) => console.error('[whatsapp]', e));
+    return { ok: true };
+  }, 10 * 1024 * 1024);
 
   // Entrada automática de demandas (app de clientes, Make, robô de WhatsApp).
   rota('POST', '/api/entrada/demandas', 'api', async ({ corpo }) => {
@@ -97,6 +138,14 @@ export function criarApp({ servico, geocodificar, confiarProxy = false, cookieSe
     servico.confirmarParada(turno, corpo);
     return servico.estadoMotoboy(servico.autenticarMotoboy(turno.token));
   });
+  rota('POST', '/api/motoboy/oferta', 'motoboy', ({ turno, corpo }) => {
+    servico.responderOferta(turno, corpo);
+    return servico.estadoMotoboy(servico.autenticarMotoboy(turno.token));
+  });
+  rota('POST', '/api/motoboy/encerrar', 'motoboy', ({ turno }) => {
+    servico.encerrarPeloMotoboy(turno);
+    return { ok: true };
+  });
   rota('POST', '/api/motoboy/almoco', 'motoboy', ({ turno, corpo }) => {
     servico.almoco(turno, corpo.acao);
     return servico.estadoMotoboy(servico.autenticarMotoboy(turno.token));
@@ -104,7 +153,37 @@ export function criarApp({ servico, geocodificar, confiarProxy = false, cookieSe
 
   // ---------------------------------------------------------------- admin
   const ator = (admin) => `admin:${admin.usuario}`;
-  rota('GET', '/api/admin/estado', 'admin', () => servico.estadoAdmin());
+  rota('GET', '/api/admin/estado', 'admin', () => ({ ...servico.estadoAdmin(), ...atendimento.resumo() }));
+  rota('POST', '/api/admin/demandas/:id/liberar', 'admin', ({ admin, p }) => ({ resultado: servico.liberarDemanda(p.id, ator(admin)) }));
+  rota('POST', '/api/admin/whatsapp/:id/responder', 'admin', ({ admin, corpo, p }) => {
+    atendimento.responder(p.id, corpo.texto, ator(admin));
+    return { ok: true };
+  });
+  rota('POST', '/api/admin/whatsapp/:id/modo', 'admin', ({ corpo, p }) => {
+    atendimento.modoConversa(p.id, Boolean(corpo.humano));
+    return { ok: true };
+  });
+  rota('POST', '/api/admin/whatsapp-teste', 'admin', () => atendimento.testar());
+  rota('POST', '/api/admin/ia-teste', 'admin', () => atendimento.testarIA());
+  // Fotos, PDFs e conversas para a IA ler (o arquivo não é guardado, só o resultado).
+  rota('POST', '/api/admin/analises', 'admin', ({ admin, corpo }) => atendimento.analisarArquivos(corpo, ator(admin)), 48 * 1024 * 1024);
+  rota('GET', '/api/admin/analises', 'admin', () => ({ analises: atendimento.listarAnalises() }));
+  rota('POST', '/api/admin/whatsapp/:id/analisar', 'admin', ({ admin, corpo, p }) => atendimento.analisarConversa(p.id, corpo.pergunta, ator(admin)));
+  // Confirmação manual do pagamento (Pix na chave da empresa, ou Mercado Pago que não avisou).
+  rota('POST', '/api/admin/demandas/:id/pago', 'admin', ({ admin, p }) => {
+    if (!servico.marcarPago(p.id, ator(admin))) throw new Erro(409, 'ja_pago', 'Esse pedido não está esperando pagamento.');
+    return { ok: true };
+  });
+  rota('GET', '/api/admin/servicos', 'admin', () => ({ servicos: servico.listarServicos() }));
+  rota('POST', '/api/admin/servicos', 'admin', ({ admin, corpo }) => {
+    servico.salvarServico(corpo, ator(admin));
+    return { servicos: servico.listarServicos() };
+  });
+  rota('GET', '/api/admin/clientes', 'admin', () => ({ clientes: servico.listarClientes() }));
+  rota('POST', '/api/admin/clientes', 'admin', ({ admin, corpo }) => {
+    servico.salvarCliente(corpo, ator(admin));
+    return { clientes: servico.listarClientes() };
+  });
   rota('POST', '/api/admin/logout', 'admin', ({ req, res }) => {
     servico.sairAdmin(cookieDe(req));
     res.setHeader('Set-Cookie', cookieAdmin('', 0));
@@ -155,7 +234,7 @@ export function criarApp({ servico, geocodificar, confiarProxy = false, cookieSe
     const de = Number(url.searchParams.get('de'));
     const ate = Number(url.searchParams.get('ate'));
     if (!Number.isFinite(de) || !Number.isFinite(ate) || ate <= de) throw new Erro(422, 'periodo_invalido', 'Período inválido.');
-    return { linhas: servico.relatorio(de, ate) };
+    return { linhas: servico.relatorio(de, ate), clientes: servico.relatorioClientes(de, ate), entregas: servico.relatorioEntregas(de, ate) };
   });
   rota('POST', '/api/admin/whatsapp', 'admin', ({ admin, corpo }) => servico.importarWhatsapp(corpo, ator(admin)), 30 * 1024 * 1024);
   rota('GET', '/api/admin/whatsapp', 'admin', () => ({ conversas: servico.listarConversas() }));
@@ -178,7 +257,7 @@ export function criarApp({ servico, geocodificar, confiarProxy = false, cookieSe
       const dados = fs.readFileSync(arquivo);
       res.writeHead(200, {
         'Content-Type': TIPOS[path.extname(arquivo)] || 'application/octet-stream',
-        'Cache-Control': base === LEAFLET ? 'public, max-age=86400' : 'no-cache',
+        'Cache-Control': base === LEAFLET || base === QRCODE ? 'public, max-age=86400' : 'no-cache',
       });
       res.end(metodo === 'HEAD' ? undefined : dados);
       return true;
@@ -221,9 +300,11 @@ export function criarApp({ servico, geocodificar, confiarProxy = false, cookieSe
 
     if (req.method !== 'GET' && req.method !== 'HEAD') throw new Erro(405, 'metodo', 'Método não permitido.');
     if (caminho === '/') { res.writeHead(302, { Location: '/painel/' }); return res.end(); }
-    if (caminho === '/painel' || caminho === '/app') { res.writeHead(302, { Location: `${caminho}/` }); return res.end(); }
+    if (['/painel', '/app', '/pedir', '/acompanhar'].includes(caminho)) { res.writeHead(302, { Location: `${caminho}/${url.search}` }); return res.end(); }
     if (caminho.startsWith('/vendor/leaflet/')) {
       if (servirArquivo(res, LEAFLET, caminho.slice('/vendor/leaflet/'.length), req.method)) return undefined;
+    } else if (caminho === '/vendor/qrcode/qrcode.mjs') {
+      if (servirArquivo(res, QRCODE, 'qrcode.mjs', req.method)) return undefined;
     } else if (servirArquivo(res, PUBLICO, caminho, req.method)) {
       return undefined;
     }
