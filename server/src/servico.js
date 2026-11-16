@@ -5,6 +5,8 @@ import {
 import crypto from 'node:crypto';
 import { distM, distRuaKm, coordValida } from './geo.js';
 import { PROVEDORES, normalizarTelefone } from './mensageiro.js';
+import { TIPOS_CHAVE, normalizarChave } from './pix.js';
+import { MODELOS_IA } from './ia.js';
 import { atende, escolherMotoboy, melhorInsercao, REQUISITOS } from './despacho.js';
 import { lerConversa, textoDoZip, nomeDaConversa } from './whatsapp.js';
 
@@ -38,14 +40,16 @@ const CFG_NUM = {
 };
 const CFG_TXT = {
   cidade_base: 120, termo_texto: 8000, empresa_nome: 60, url_publica: 200, whats_url: 300, whats_instancia: 120,
+  pix_nome: 25, pix_cidade: 15, cidades_atendidas: 200,
 };
 const SIM_NAO = ['0', '1'];
 const CFG_OPC = {
   pedidos_site: SIM_NAO, rastreio_cliente: SIM_NAO, robo_ativo: SIM_NAO, avisos_cliente: SIM_NAO,
-  convocacao_auto: SIM_NAO, site_confirmacao: ['painel', 'whatsapp', 'pagamento', 'nenhuma'], whats_provedor: PROVEDORES,
+  convocacao_auto: SIM_NAO, site_confirmacao: ['painel', 'whatsapp', 'pagamento', 'pix', 'nenhuma'], whats_provedor: PROVEDORES,
+  ia_ativa: SIM_NAO, ia_modelo: MODELOS_IA, pix_tipo: TIPOS_CHAVE,
 };
 const CFG_HORA = ['atendimento_inicio', 'atendimento_fim'];
-const CFG_SECRETAS = ['api_chave_hash', 'whats_token', 'mp_token', 'ors_chave'];
+const CFG_SECRETAS = ['api_chave_hash', 'whats_token', 'mp_token', 'ors_chave', 'ia_chave'];
 const SEM_SINAL_AVULSO = 30 * MIN;
 const VOLTA_OFERTA = 90_000; // a cada volta sem aceite o raio da oferta dobra (até 8x)
 
@@ -115,10 +119,10 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       q('UPDATE config SET valor = ? WHERE chave = ?').run(crypto.randomBytes(18).toString('base64url'), 'whats_segredo');
       cacheCfg = null;
     }
-    const { api_chave_hash, whats_token, mp_token, ors_chave, ...resto } = cfgBruta();
+    const { api_chave_hash, whats_token, mp_token, ors_chave, ia_chave, ...resto } = cfgBruta();
     return {
       ...resto, api_chave_definida: api_chave_hash !== '', whats_token_definido: whats_token !== '',
-      mp_token_definido: mp_token !== '', ors_chave_definida: ors_chave !== '',
+      mp_token_definido: mp_token !== '', ors_chave_definida: ors_chave !== '', ia_chave_definida: ia_chave !== '',
     };
   }
   // Fora do horário de atendimento? (vazio = atende sempre). Devolve o texto do horário ou ''.
@@ -130,6 +134,21 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     const dentro = ini < fim ? hm >= ini && hm < fim : hm >= ini || hm < fim;
     return dentro ? '' : `${ini} às ${fim}`;
   }
+  // Como o cliente paga antes de o pedido sair: 'mp' (Pix automático do Mercado Pago),
+  // 'pix' (Pix na chave da empresa, confirmado pelo comprovante) ou '' (não cobra na hora).
+  function modoPagamento() {
+    const c = cfgBruta();
+    if (c.site_confirmacao === 'pagamento' && c.mp_token !== '') return 'mp';
+    if (c.site_confirmacao === 'pix' && c.pix_chave !== '') return 'pix';
+    return '';
+  }
+  // Pedido de cliente que ainda não foi cobrado e já tem valor (o Mercado Pago exige e-mail).
+  function precisaCobrar(d, valor = d.valor) {
+    const modo = modoPagamento();
+    return modo !== '' && ['site', 'robo'].includes(d.origem) && d.pagamento === '' && valor != null
+      && (modo === 'pix' || d.email !== '');
+  }
+
   // Preço: (base + km a mais, com mínimo) + adicional do tipo de serviço. Cliente fixo pode ter percentual próprio.
   // Devolve também o repasse do motoboy avulso (percentual do valor, com mínimo).
   function cotar(coleta, entrega, { km: kmRota = null, servicoId = null, telefone = '' } = {}) {
@@ -203,7 +222,17 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
           const hm = txt(bruto, 5);
           if (hm !== '' && !/^([01]\d|2[0-3]):[0-5]\d$/.test(hm)) throw new Erro(422, 'config_invalida', 'Horário no formato 08:00.');
           gravar.run(hm, chave);
-        } else if (chave === 'whats_token' || chave === 'mp_token' || chave === 'ors_chave') {
+        } else if (chave === 'pix_chave') {
+          // Conferida contra o tipo escolhido (o do mesmo envio, se veio junto).
+          const tipo = String(dados.pix_tipo ?? cfgBruta().pix_tipo);
+          const pix = normalizarChave(tipo, bruto);
+          if (txt(bruto, 80) !== '' && !pix) throw new Erro(422, 'config_invalida', 'Chave Pix não confere com o tipo escolhido.');
+          gravar.run(pix, chave);
+        } else if (chave === 'empresa_whatsapp') {
+          const tel = normalizarTelefone(bruto);
+          if (soDigitos(bruto) !== '' && !tel) throw new Erro(422, 'config_invalida', 'WhatsApp da empresa: DDD + número.');
+          gravar.run(tel, chave);
+        } else if (['whats_token', 'mp_token', 'ors_chave', 'ia_chave'].includes(chave)) {
           if (txt(bruto, 600) !== '') gravar.run(txt(bruto, 600), chave); // vazio = mantém o atual
         } else if (chave === 'admin_telefone') {
           const tel = normalizarTelefone(bruto);
@@ -644,20 +673,21 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     };
   }
   // `retida`: fica parada (sem despacho) até o admin aprovar ou o cliente confirmar.
-  function inserirDemanda(v, origem, ator, { retida = false, pagamento = '' } = {}) {
+  function inserirDemanda(v, origem, ator, { retida = false, pagamento = '', ia = null } = {}) {
     const completo = v.coleta.lat != null && v.entrega.lat != null;
     const { km, valor, repasse, servico } = cotar(v.coleta, v.entrega, { km: v.km, servicoId: v.servicoId, telefone: v.telefone });
     const r = q(`INSERT INTO demandas (cliente, descricao, requisito, origem,
         coleta_endereco, coleta_lat, coleta_lon, coleta_contato,
         entrega_endereco, entrega_lat, entrega_lon, entrega_contato, status, criada_em,
-        codigo, cliente_telefone, valor, km, retida, urgente, servico, repasse, pagamento, email, fila_em)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        codigo, cliente_telefone, valor, km, retida, urgente, servico, repasse, pagamento, email, fila_em, ia_ok, ia_obs)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
       .run(v.cliente, v.descricao, v.requisito, origem,
         v.coleta.endereco, v.coleta.lat, v.coleta.lon, v.coleta.contato,
         v.entrega.endereco, v.entrega.lat, v.entrega.lon, v.entrega.contato,
         completo ? 'aguardando' : 'sem_local', agora(),
         crypto.randomBytes(9).toString('base64url'), v.telefone || '', valor, km, retida ? 1 : 0,
-        v.urgente, servico?.nome || '', repasse, pagamento, v.email, agora());
+        v.urgente, servico?.nome || '', repasse, pagamento, v.email, agora(),
+        ia ? (ia.aprovado ? 1 : 0) : null, ia ? txt(ia.aprovado ? ia.resumo : ia.motivos.join(' · '), 500) : null);
     const id = Number(r.lastInsertRowid);
     auditar(ator, 'demanda_criada', `#${id} ${v.cliente}`);
     emitir('demanda_criada', { demanda: q('SELECT * FROM demandas WHERE id = ?').get(id) });
@@ -674,6 +704,12 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     const d = q('SELECT * FROM demandas WHERE id = ?').get(id);
     if (!d) throw new Erro(404, 'nao_encontrado', 'Demanda não encontrada.');
     if (!d.retida || ['entregue', 'cancelada'].includes(d.status)) return false;
+    // Aprovado pela equipe, mas o cliente ainda não pagou: manda o Pix e continua segurando.
+    if (String(ator).startsWith('admin') && precisaCobrar(d)) {
+      auditar(ator, 'demanda_aprovada', `#${id} (aguardando Pix)`);
+      emitir('cobrar', { demanda: d });
+      return 'cobrar';
+    }
     tx(() => {
       q('UPDATE demandas SET retida = 0, fila_em = ? WHERE id = ?').run(agora(), id);
       auditar(ator, 'demanda_liberada', `#${id}`);
@@ -687,12 +723,12 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       .run(String(pagId), pix, qr, expira, id);
   }
   // Pagamento confirmado pelo banco: solta o pedido para os motoboys.
-  function marcarPago(id) {
+  function marcarPago(id, ator = 'pagamento') {
     const d = q('SELECT * FROM demandas WHERE id = ?').get(id);
     if (!d || d.pagamento === 'pago') return false;
     tx(() => {
       q("UPDATE demandas SET pagamento = 'pago', pago_em = ? WHERE id = ?").run(agora(), id);
-      auditar('pagamento', 'demanda_paga', `#${id}`);
+      auditar(ator, 'demanda_paga', `#${id}`);
       emitir('demanda_paga', { demanda: q('SELECT * FROM demandas WHERE id = ?').get(id) });
       if (d.status === 'cancelada') emitir('pago_cancelado', { demanda: d });
       else liberarDemanda(id, 'pagamento');
@@ -737,9 +773,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     const novoValor = d.pagamento === 'pago' ? d.valor : valor;
     const novoRepasse = d.pagamento === 'pago' ? d.repasse : repasse;
     // Pedido de cliente (site ou WhatsApp) que entrou sem preço: agora tem valor e precisa ser pago antes de sair.
-    const c = cfgBruta();
-    const cobrar = c.site_confirmacao === 'pagamento' && c.mp_token !== '' && ['site', 'robo'].includes(d.origem)
-      && d.pagamento === '' && novoValor != null && d.email !== '';
+    const cobrar = precisaCobrar(d, novoValor);
     const segurar = d.pagamento === 'pendente' || cobrar;
     tx(() => {
       q(`UPDATE demandas SET coleta_endereco=?, coleta_lat=?, coleta_lon=?, entrega_endereco=?, entrega_lat=?,
@@ -1067,7 +1101,8 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     if (!Number(c.diaria_valor)) falta.push('Definir o valor da diária.');
     if (!Number(c.preco_base) && !Number(c.preco_km) && !Number(c.preco_minimo)) falta.push('Definir o preço da entrega (o cliente vê o valor na hora).');
     if (!motoboys.some((m) => m.ativo)) falta.push('Cadastrar os motoboys.');
-    if (!c.mp_token) falta.push('Ligar o Pix do Mercado Pago (o cliente paga antes de liberar o motoboy).');
+    if (!c.pix_chave && !c.mp_token) falta.push('Configurar o Pix (o cliente paga antes de liberar o motoboy).');
+    if (!c.ia_chave) falta.push('Colar a chave da IA (confere endereço e tipo de serviço de cada pedido).');
     if (!c.whats_provedor) falta.push('Ligar o WhatsApp automático (robô de pedidos, avisos e convocação).');
     else if (!c.admin_telefone) falta.push('Informar o WhatsApp do responsável (recebe os avisos importantes).');
     return falta;
@@ -1097,7 +1132,11 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       id: d.id, status: d.status, retida: Boolean(d.retida), descricao: d.descricao, valor: d.valor, km: d.km,
       servico: d.servico, urgente: Boolean(d.urgente), prazo_min: Number(cfgBruta().urgente_prazo_min),
       pagamento: d.pagamento,
-      pix: d.pagamento === 'pendente' && d.status !== 'cancelada' ? { codigo: d.pag_pix, qr: d.pag_qr, expira: d.pag_expira } : null,
+      pix: d.pagamento === 'pendente' && d.status !== 'cancelada' ? {
+        codigo: d.pag_pix, qr: d.pag_qr, expira: d.pag_expira,
+        // Pix na chave da empresa: o cliente manda o comprovante e a equipe confirma.
+        manual: !d.pag_id, whatsapp: cfgBruta().empresa_whatsapp, comprovante: d.comprovante_em != null,
+      } : null,
       coleta: { endereco: d.coleta_endereco, lat: d.coleta_lat, lon: d.coleta_lon },
       entrega: { endereco: d.entrega_endereco, lat: d.entrega_lat, lon: d.entrega_lon },
       criada_em: d.criada_em, atribuida_em: d.atribuida_em, coletada_em: d.coletada_em,
@@ -1303,7 +1342,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     importarWhatsapp, listarConversas, mensagensDaConversa, excluirConversa,
     aoEvento, cotar, foraDoHorario, criarPedido, liberarDemanda, pedidoPublico, relatorioClientes, relatorioEntregas,
     listarServicos, salvarServico, listarClientes, salvarCliente, registrarPix, marcarPago,
-    responderOferta, encerrarPeloMotoboy,
+    responderOferta, encerrarPeloMotoboy, modoPagamento,
     interno: { q, tx, cfgBruta, auditar, agora, exigirNaoBloqueado, registrarFalha },
     termo: () => ({ versao: cfgBruta().termo_versao, texto: cfgBruta().termo_texto }),
     cidadeBase: () => cfgBruta().cidade_base,

@@ -1,5 +1,5 @@
 // Acompanhamento do pedido pelo cliente (link com código). Atualiza sozinho.
-import { h, trocar, api, reais, hora, camadaBase, icone } from '/site/base.js';
+import { h, trocar, api, reais, hora, camadaBase, icone, desenharQr, botaoComprovante } from '/site/base.js';
 
 const L = window.L;
 const raiz = document.getElementById('raiz');
@@ -71,7 +71,9 @@ function desenhar(p) {
         `${p.motoboy.nome} (${p.motoboy.veiculo === 'bike' ? 'bike' : 'moto'}) está com o seu pedido.`,
         p.paradas_antes > 0 ? ` Ele tem ${p.paradas_antes} parada(s) antes da sua.` : '',
       ].join('')
-        : p.pix ? `Pague ${reais(p.valor)} por Pix até ${hora(p.pix.expira)} para liberar o motoboy.`
+        : p.pix?.comprovante ? 'Comprovante recebido. Estamos conferindo o pagamento para liberar o motoboy.'
+          : p.pix?.manual ? `Pague ${reais(p.valor)} por Pix e envie o comprovante para liberar o motoboy.`
+            : p.pix ? `Pague ${reais(p.valor)} por Pix até ${hora(p.pix.expira)} para liberar o motoboy.`
           : p.retida ? 'Assim que o pedido for confirmado, chamamos o motoboy.' : 'Estamos chamando o motoboy mais próximo.';
 
   trocar(corpo,
@@ -79,10 +81,13 @@ function desenhar(p) {
       h('span', { class: `selo ${classe}` }, rotulo),
       h('p', { 'aria-live': 'polite' }, frase),
       p.pix && [
-        p.pix.qr && h('img', { class: 'qr', alt: 'QR code do Pix', width: 220, height: 220, src: `data:image/png;base64,${p.pix.qr}` }),
+        p.pix.qr
+          ? h('img', { class: 'qr', alt: 'QR code do Pix', width: 220, height: 220, src: `data:image/png;base64,${p.pix.qr}` })
+          : desenharQr(p.pix.codigo),
         h('label', { for: 'pix' }, 'Pix copia e cola'),
         h('textarea', { id: 'pix', readonly: true, rows: 4, value: p.pix.codigo }),
-        copiar],
+        copiar,
+        p.pix.manual && !p.pix.comprovante && botaoComprovante(p.pix.whatsapp, p.id, p.valor)],
       temMapa && !p.pix && mapaEl),
     p.status !== 'cancelada' && h('div', { class: 'cartao' },
       h('ol', { class: 'passos' }, etapas.map(([nome, ts], i) =>
@@ -101,7 +106,7 @@ async function atualizar() {
   try {
     const p = await api('GET', `/api/publico/pedido?c=${encodeURIComponent(codigo)}`);
     // Só redesenha quando algo muda (o cliente pode estar copiando o código do Pix).
-    const chave = JSON.stringify([p.status, p.pagamento, p.retida, p.motoboy, p.paradas_antes]);
+    const chave = JSON.stringify([p.status, p.pagamento, p.retida, p.motoboy, p.paradas_antes, p.pix?.comprovante]);
     if (chave !== ultimo) { ultimo = chave; desenhar(p); }
     if (!['entregue', 'cancelada'].includes(p.status)) setTimeout(atualizar, p.pix ? 5000 : 10000);
   } catch (e) {

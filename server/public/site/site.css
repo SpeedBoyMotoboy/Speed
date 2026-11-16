@@ -55,5 +55,7 @@ button:disabled { opacity: .55; cursor: default; }
   .passos li.agora::before { animation: pulso 1.6s ease-in-out infinite; }
   @keyframes pulso { 50% { box-shadow: 0 0 0 6px rgba(255,84,0,.25); } }
 }
+.botao + .botao, button + .botao, canvas.qr + label { margin-top: 10px; }
+a.botao { width: 100%; }
 .qr { display: block; margin: 12px auto; border: 1px solid var(--borda); border-radius: 10px; background: #fff; }
 textarea { resize: vertical; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; overflow-wrap: anywhere; }

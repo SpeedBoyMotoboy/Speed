@@ -316,7 +316,8 @@ function desenharLateral() {
       ROTULO_ORIGEM[d.origem] && chip(ROTULO_ORIGEM[d.origem]),
       d.valor != null && chip(reais(d.valor), 'entregue'),
       d.pagamento === 'pago' && chip('Pago', 'entregue'),
-      d.pagamento === 'pendente' && chip('Esperando Pix', 'aguardando'),
+      d.pagamento === 'pendente' && chip(d.comprovante_em ? 'Comprovante enviado' : 'Esperando Pix', 'aguardando'),
+      d.ia_ok === 0 && chip('IA: conferir', 'sem_sinal'),
       d.pagamento === 'faturado' && chip('Fatura')),
     (d.servico || d.repasse != null) && h('div', { class: 'sub' },
       [d.servico, d.repasse != null && `repasse avulso ${reais(d.repasse)}`,
@@ -330,11 +331,24 @@ function desenharLateral() {
         : d.status === 'cancelada' ? `cancelada ${hora(d.cancelada_em)}`
           : d.status === 'coletada' ? `coletada ${hora(d.coletada_em)}`
             : `criada ${hora(d.criada_em)} (${ha(d.criada_em, agora)})`),
+    d.ia_obs && h('div', { class: 'sub' }, `IA: ${d.ia_obs}`),
     d.cliente_telefone && h('div', { class: 'sub' }, `Cliente: ${telefoneFmt(d.cliente_telefone)}`),
     !['entregue', 'cancelada'].includes(d.status) && h('div', { class: 'acoes' },
+      d.pagamento === 'pendente' && h('button', {
+        class: 'pequeno primario',
+        onclick: () => confirmar('Confirmar pagamento', `O Pix de ${d.valor != null ? reais(d.valor) : '—'} do pedido #${d.id} (${d.cliente}) já caiu na sua conta? Ao confirmar, o pedido é liberado aos motoboys. Confira no app do banco, não só no comprovante.`,
+          'Sim, o Pix caiu', () => api('POST', `/api/admin/demandas/${d.id}/pago`), false),
+      }, 'Confirmar pagamento'),
       Boolean(d.retida) && d.status !== 'sem_local' && d.pagamento !== 'pendente' && h('button', {
-        class: 'pequeno primario', onclick: async () => { await api('POST', `/api/admin/demandas/${d.id}/liberar`).catch((e) => { els.conexao.textContent = e.message; }); atualizar(); },
-      }, 'Aprovar e despachar'),
+        class: 'pequeno primario',
+        onclick: async () => {
+          try {
+            const r = await api('POST', `/api/admin/demandas/${d.id}/liberar`);
+            if (r.resultado === 'cobrar') dialogo('Pedido aprovado', (dlg) => [h('p', null, 'O cliente recebe o Pix agora. O pedido sai para os motoboys quando o pagamento for confirmado.'), h('div', { class: 'linha fim' }, h('button', { class: 'primario', onclick: dlg.fechar }, 'Entendi'))]);
+          } catch (e) { els.conexao.textContent = e.message; }
+          atualizar();
+        },
+      }, 'Aprovar'),
       d.status === 'sem_local'
         ? h('button', { class: 'pequeno primario', onclick: () => janelaDemanda(d) }, 'Marcar no mapa')
         : h('button', { class: 'pequeno', onclick: () => janelaTrocar(d) }, d.motoboy_id ? 'Trocar motoboy' : 'Escolher motoboy'),
@@ -380,7 +394,7 @@ function desenharLateral() {
       h('div', { class: 'titulo' }, `${estado.whatsapp.pendentes} cliente(s) esperando atendente no WhatsApp`),
       h('div', { class: 'acoes' }, h('button', { class: 'pequeno primario', onclick: () => abrirAba('whatsapp') }, 'Responder'))),
 
-    retidas.length > 0 && [h('h3', null, `Pedidos esperando aprovação (${retidas.length})`), retidas.map(cartaoDemanda)],
+    retidas.length > 0 && [h('h3', null, `Esperando pagamento ou aprovação (${retidas.length})`), retidas.map(cartaoDemanda)],
 
     trilhaAberta && h('div', { class: 'cartao' },
       h('div', { class: 'titulo' }, `Trajeto: ${trilhaAberta.nome}`),
@@ -887,6 +901,8 @@ async function desenharConfig() {
   const base = c.url_publica || location.origin;
   const webhook = `${base}/api/whatsapp/webhook?s=${c.whats_segredo}`;
   const avisoTeste = h('div', { class: 'nota' });
+  const avisoIa = h('div', { class: 'nota' });
+  campos.cidades_atendidas = h('input', { maxlength: 200, value: c.cidades_atendidas });
   campos.cidade_base = h('input', { maxlength: 120, value: c.cidade_base, placeholder: 'Ex.: Campinas, SP' });
   campos.termo_texto = h('textarea', { maxlength: 8000, value: c.termo_texto });
   const aviso = h('div', { class: 'erro' });
@@ -955,11 +971,35 @@ async function desenharConfig() {
       num('oferta_alerta_min', 'Avisar se ninguém aceitar em (min)'), num('avulso_max_horas', 'Avulso fica online no máximo (horas)')),
     h('div', { class: 'nota' }, 'A cada 1,5 min sem aceite o raio da oferta dobra (até 8 vezes). Se o repasse mínimo for maior que o preço cobrado, a entrega dá prejuízo: mantenha o valor mínimo da entrega acima dele.'),
 
-    h('h3', null, 'Pagamento por Pix (Mercado Pago)'),
+    h('h3', null, 'Pagamento por Pix'),
+    h('div', { class: 'nota' }, 'Opção 1 — sua chave Pix (sem taxa): o cliente paga direto na sua conta e manda o comprovante; você confirma no painel ou respondendo "pago 12" no WhatsApp.'),
     h('div', { class: 'grade3' },
-      texto('mp_token', c.mp_token_definido ? 'Access Token (já salvo; vazio mantém)' : 'Access Token de produção', { type: 'password', autocomplete: 'off', value: '' }),
-      num('pagamento_validade_min', 'Pix vale por (min)')),
-    h('div', { class: 'nota' }, 'No Mercado Pago: Seu negócio → Configurações → Credenciais → Credenciais de produção → Access Token. Depois escolha abaixo "Cliente paga o Pix antes" em "Antes de despachar um pedido do site".'),
+      opcao('pix_tipo', 'Tipo da chave', [['cnpj', 'CNPJ'], ['cpf', 'CPF'], ['telefone', 'Celular'], ['email', 'E-mail'], ['aleatoria', 'Chave aleatória']]),
+      texto('pix_chave', 'Chave Pix', { maxlength: 80 }),
+      texto('pix_nome', 'Nome de quem recebe (como no banco)', { maxlength: 25 }),
+      texto('pix_cidade', 'Cidade da conta', { maxlength: 15, placeholder: 'Vila Velha' }),
+      texto('empresa_whatsapp', 'WhatsApp que recebe o comprovante', { inputmode: 'tel', placeholder: '(27) 99999-0000' }),
+      num('pagamento_validade_min', 'Lembrar/expirar o Pix após (min)')),
+    h('div', { class: 'nota' }, 'Opção 2 — Mercado Pago (automático, taxa de 0,99% por Pix): o sistema confirma sozinho, sem você conferir.'),
+    h('div', { class: 'grade3' },
+      texto('mp_token', c.mp_token_definido ? 'Access Token (já salvo; vazio mantém)' : 'Access Token de produção (opcional)', { type: 'password', autocomplete: 'off', value: '' })),
+    h('div', { class: 'nota' }, 'Depois escolha a opção em "Pedidos pelo site → Antes de despachar um pedido do site".'),
+
+    h('h3', null, 'Conferência dos pedidos por IA'),
+    h('div', { class: 'grade3' },
+      opcao('ia_ativa', 'IA confere cada pedido antes de liberar'),
+      texto('ia_chave', c.ia_chave_definida ? 'Chave da API (já salva; vazio mantém)' : 'Chave da API da Anthropic (sk-ant-...)', { type: 'password', autocomplete: 'off', value: '' }),
+      opcao('ia_modelo', 'Modelo', [['claude-opus-5-5', 'Claude Opus 5.5 (mais capaz)'], ['claude-sonnet-5-5', 'Claude Sonnet 5.5 (intermediário)'], ['claude-haiku-5-5', 'Claude Haiku 5.5 (mais barato)']])),
+    h('label', null, 'Cidades atendidas'), campos.cidades_atendidas,
+    h('div', { class: 'nota' }, 'A IA lê endereços e descrição (nunca nome ou telefone do cliente), identifica o tipo de serviço e segura para você conferir o que parecer errado. Se ela estiver fora do ar ou sem crédito, os pedidos seguem as regras normais. Gere a chave em console.anthropic.com → API Keys (precisa de crédito na conta). Salve antes de testar.'),
+    h('div', { class: 'linha' },
+      h('button', {
+        onclick: async () => {
+          avisoIa.textContent = 'Consultando a IA…';
+          try { avisoIa.textContent = (await api('POST', '/api/admin/ia-teste')).mensagem; } catch (e) { avisoIa.textContent = e.message; }
+        },
+      }, 'Testar a IA'), avisoIa),
+    estado?.ia.erro && h('div', { class: 'erro' }, `Último erro da IA: ${estado.ia.erro}`),
 
     h('h3', null, 'Clientes (marque os fixos para fatura mensal)'),
     clientes.length === 0 ? h('div', { class: 'vazio' }, 'Nenhum cliente ainda. Quem pede pelo site ou WhatsApp aparece aqui sozinho.')
@@ -976,7 +1016,7 @@ async function desenharConfig() {
       texto('empresa_nome', 'Nome que aparece para o cliente', { maxlength: 60 }),
       opcao('pedidos_site', 'Aceitar pedidos pelo site'),
       opcao('site_confirmacao', 'Antes de despachar um pedido do site', [
-        ['pagamento', 'Cliente paga o Pix antes (automático)'], ['painel', 'Eu aprovo no painel'], ['whatsapp', 'Cliente confirma no WhatsApp (automático)'], ['nenhuma', 'Despacha direto (sem conferir)']]),
+        ['pix', 'Cliente paga no meu Pix e manda o comprovante'], ['pagamento', 'Pix automático do Mercado Pago (taxa 0,99%)'], ['painel', 'Eu aprovo no painel'], ['whatsapp', 'Cliente confirma no WhatsApp (automático)'], ['nenhuma', 'Despacha direto (sem conferir)']]),
       texto('atendimento_inicio', 'Atende a partir de (vazio = sempre)', { type: 'time' }),
       texto('atendimento_fim', 'Atende até', { type: 'time' }),
       opcao('rastreio_cliente', 'Cliente vê o motoboy no mapa')),

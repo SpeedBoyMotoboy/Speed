@@ -153,7 +153,8 @@ export async function conversar(estado, msg, a) {
       delete dados.falhas;
       if (qual === 'coleta') { etapa = 'entrega'; dizer(PEDIR_ENDERECO.entrega); return; }
       const lista = a.servicos();
-      if (lista.length > 1) { etapa = 'servico'; dizer(pedirServico(lista)); return; }
+      // Com a IA ligada o cliente só descreve: ela identifica o tipo de serviço.
+      if (!a.iaLigada() && lista.length > 1) { etapa = 'servico'; dizer(pedirServico(lista)); return; }
       if (lista.length === 1) { dados.servico_id = lista[0].id; dados.servico_nome = lista[0].nome; }
       etapa = 'descricao';
       dizer(PEDIR_DESCRICAO);
@@ -197,8 +198,13 @@ export async function conversar(estado, msg, a) {
     if (!/^\d+$/.test(t) || !escolhido) { dizer(pedirServico(lista)); return fim(); }
     dados.servico_id = escolhido.id;
     dados.servico_nome = escolhido.nome;
-    etapa = 'descricao';
-    dizer(PEDIR_DESCRICAO);
+    if (dados.descricao) {
+      etapa = 'confirma';
+      dizer(resumo(dados, await a.cotar(dados.coleta, dados.entrega, dados.servico_id)));
+    } else {
+      etapa = 'descricao';
+      dizer(PEDIR_DESCRICAO);
+    }
     return fim();
   }
 
@@ -207,9 +213,11 @@ export async function conversar(estado, msg, a) {
     const p = await a.criarPedido(dados);
     zerar();
     if (p.pix) {
-      dizer(`🧾 Pedido #${p.id} reservado! Para liberar o motoboy, pague o Pix de *${reais(p.valor)}* (copia e cola na próxima mensagem). Vale por ${p.validade_min} min.\n\nSe preferir o QR code: ${p.link}`);
+      dizer(`🧾 Pedido #${p.id} reservado! Para liberar o motoboy, pague o Pix de *${reais(p.valor)}* (copia e cola na próxima mensagem)${p.manual ? '' : `. Vale por ${p.validade_min} min`}.\n\nSe preferir o QR code: ${p.link}`);
       dizer(p.pix);
-      dizer('Assim que o pagamento cair eu aviso por aqui. 👍');
+      dizer(p.manual ? 'Depois de pagar, *envie o comprovante aqui* que eu libero o motoboy. 👍' : 'Assim que o pagamento cair eu aviso por aqui. 👍');
+    } else if (p.revisar) {
+      dizer(`✅ Pedido #${p.id} recebido! Nossa equipe vai conferir os dados e já retorna por aqui.\n\nAcompanhe: ${p.link}`);
     } else {
       dizer(p.status === 'sem_local'
         ? `✅ Pedido #${p.id} recebido! Nossa equipe vai confirmar o endereço e já libera o motoboy.\n\nAcompanhe: ${p.link}`
@@ -228,6 +236,16 @@ export async function conversar(estado, msg, a) {
     if (texto.length < 2) { dizer(PEDIR_DESCRICAO); return fim(); }
     dados.descricao = texto.replace(/\s*\n+\s*/g, ' · ').slice(0, 400);
     dados.requisito = requisitoDe(texto);
+    if (a.iaLigada()) {
+      const analise = await a.analisar(dados);
+      if (analise) {
+        dados.ia = { aprovado: analise.aprovado, motivos: analise.motivos, resumo: analise.resumo };
+        const tipo = a.servicos().find((x) => x.id === analise.servico_id);
+        if (tipo) { dados.servico_id = tipo.id; dados.servico_nome = tipo.nome; }
+      }
+      // IA fora do ar ou sem conseguir identificar: pergunta ao cliente, como sem IA.
+      if (!dados.servico_id && a.servicos().length > 1) { etapa = 'servico'; dizer(pedirServico(a.servicos())); return fim(); }
+    }
     etapa = 'confirma';
     dizer(resumo(dados, await a.cotar(dados.coleta, dados.entrega, dados.servico_id)));
     return fim();

@@ -9,8 +9,9 @@ import { Erro } from './servico.js';
 const RAIZ = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PUBLICO = path.join(RAIZ, 'public');
 const LEAFLET = path.join(path.dirname(createRequire(import.meta.url).resolve('leaflet/package.json')), 'dist');
+const QRCODE = path.dirname(createRequire(import.meta.url).resolve('qrcode-generator'));
 const TIPOS = {
-  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
+  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.svg': 'image/svg+xml',
   '.json': 'application/json; charset=utf-8', '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json',
 };
@@ -153,10 +154,7 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
   // ---------------------------------------------------------------- admin
   const ator = (admin) => `admin:${admin.usuario}`;
   rota('GET', '/api/admin/estado', 'admin', () => ({ ...servico.estadoAdmin(), ...atendimento.resumo() }));
-  rota('POST', '/api/admin/demandas/:id/liberar', 'admin', ({ admin, p }) => {
-    servico.liberarDemanda(p.id, ator(admin));
-    return { ok: true };
-  });
+  rota('POST', '/api/admin/demandas/:id/liberar', 'admin', ({ admin, p }) => ({ resultado: servico.liberarDemanda(p.id, ator(admin)) }));
   rota('POST', '/api/admin/whatsapp/:id/responder', 'admin', ({ admin, corpo, p }) => {
     atendimento.responder(p.id, corpo.texto, ator(admin));
     return { ok: true };
@@ -166,6 +164,12 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
     return { ok: true };
   });
   rota('POST', '/api/admin/whatsapp-teste', 'admin', () => atendimento.testar());
+  rota('POST', '/api/admin/ia-teste', 'admin', () => atendimento.testarIA());
+  // Confirmação manual do pagamento (Pix na chave da empresa, ou Mercado Pago que não avisou).
+  rota('POST', '/api/admin/demandas/:id/pago', 'admin', ({ admin, p }) => {
+    if (!servico.marcarPago(p.id, ator(admin))) throw new Erro(409, 'ja_pago', 'Esse pedido não está esperando pagamento.');
+    return { ok: true };
+  });
   rota('GET', '/api/admin/servicos', 'admin', () => ({ servicos: servico.listarServicos() }));
   rota('POST', '/api/admin/servicos', 'admin', ({ admin, corpo }) => {
     servico.salvarServico(corpo, ator(admin));
@@ -249,7 +253,7 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
       const dados = fs.readFileSync(arquivo);
       res.writeHead(200, {
         'Content-Type': TIPOS[path.extname(arquivo)] || 'application/octet-stream',
-        'Cache-Control': base === LEAFLET ? 'public, max-age=86400' : 'no-cache',
+        'Cache-Control': base === LEAFLET || base === QRCODE ? 'public, max-age=86400' : 'no-cache',
       });
       res.end(metodo === 'HEAD' ? undefined : dados);
       return true;
@@ -295,6 +299,8 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
     if (['/painel', '/app', '/pedir', '/acompanhar'].includes(caminho)) { res.writeHead(302, { Location: `${caminho}/${url.search}` }); return res.end(); }
     if (caminho.startsWith('/vendor/leaflet/')) {
       if (servirArquivo(res, LEAFLET, caminho.slice('/vendor/leaflet/'.length), req.method)) return undefined;
+    } else if (caminho === '/vendor/qrcode/qrcode.mjs') {
+      if (servirArquivo(res, QRCODE, 'qrcode.mjs', req.method)) return undefined;
     } else if (servirArquivo(res, PUBLICO, caminho, req.method)) {
       return undefined;
     }

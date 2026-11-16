@@ -243,6 +243,17 @@ export const CONFIG_PADRAO = {
   mp_token: '',
   pagamento_validade_min: '30',
   ors_chave: '',
+  // Pix direto na conta da empresa (sem taxa de intermediário; confirmação manual pelo comprovante).
+  pix_tipo: 'cnpj',
+  pix_chave: '',
+  pix_nome: '',
+  pix_cidade: '',
+  empresa_whatsapp: '',
+  // Conferência dos pedidos por IA (Claude). Sem chave, fica desligada.
+  ia_ativa: '1',
+  ia_chave: '',
+  ia_modelo: 'claude-opus-5-5',
+  cidades_atendidas: 'Vila Velha, Vitória, Serra, Cariacica, Viana',
 };
 
 const SERVICOS_PADRAO = [
@@ -257,7 +268,7 @@ const COLUNAS_NOVAS = {
     retida: 'INTEGER NOT NULL DEFAULT 0',
     urgente: 'INTEGER NOT NULL DEFAULT 0', servico: "TEXT NOT NULL DEFAULT ''", repasse: 'REAL',
     pagamento: "TEXT NOT NULL DEFAULT ''", pag_id: 'TEXT', pag_pix: 'TEXT', pag_qr: 'TEXT', pag_expira: 'INTEGER',
-    pago_em: 'INTEGER', fila_em: 'INTEGER', email: "TEXT NOT NULL DEFAULT ''", sem_aceite_avisado: 'INTEGER NOT NULL DEFAULT 0',
+    pago_em: 'INTEGER', fila_em: 'INTEGER', comprovante_em: 'INTEGER', ia_ok: 'INTEGER', ia_obs: 'TEXT', email: "TEXT NOT NULL DEFAULT ''", sem_aceite_avisado: 'INTEGER NOT NULL DEFAULT 0',
   },
   motoboys: { tipo: "TEXT NOT NULL DEFAULT 'diaria'" },
   turnos: { tipo: "TEXT NOT NULL DEFAULT 'diaria'" },

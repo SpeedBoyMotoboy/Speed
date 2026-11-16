@@ -9,6 +9,8 @@ import { criarServico } from '../src/servico.js';
 import { criarAtendimento } from '../src/atendimento.js';
 import { criarApp } from '../src/app.js';
 import { interpretar, normalizarTelefone, destinoDe, enviar } from '../src/mensageiro.js';
+import { brCode, crc16, normalizarChave } from '../src/pix.js';
+import { criarIA } from '../src/ia.js';
 
 process.env.TZ = 'America/Sao_Paulo'; // mesmo fuso do servidor em produção
 
@@ -38,8 +40,14 @@ function montar(config = {}) {
       return { status: banco.pagos.has(id) ? 'approved' : 'pending', referencia: c.referencia, valor: c.valor };
     },
   };
+  // IA de mentira: o teste escolhe a resposta; guarda o que foi enviado a ela.
+  const iaFalsa = { resposta: null, pedidos: [] };
+  const ia = {
+    conferir: async (cfg, pedido) => { iaFalsa.pedidos.push(pedido); return iaFalsa.resposta && { ...iaFalsa.resposta }; },
+    ultimoErro: () => '',
+  };
   const a = criarAtendimento({
-    servico: s, geocodificar, pagamentos,
+    servico: s, geocodificar, pagamentos, ia,
     enviar: async (cfg, destino, texto) => { enviadas.push({ destino, texto }); },
   });
   s.salvarConfig({
@@ -66,7 +74,7 @@ function montar(config = {}) {
   const demandas = () => s.estadoAdmin().demandas;
   // Envia o que estava na fila e zera a lista, para conferir só o que vier depois.
   const limpar = async () => { await a.despacharSaida(); enviadas.length = 0; };
-  return { s, a, db, relogio, enviadas, cliente, motoboyEmTurno, demandas, limpar, banco, estadoDe, aceitar };
+  return { s, a, db, relogio, enviadas, cliente, motoboyEmTurno, demandas, limpar, banco, estadoDe, aceitar, iaFalsa };
 }
 
 test('telefones: normaliza DDI, nono dígito e ids do WhatsApp', () => {
@@ -597,9 +605,164 @@ test('Pix: pedido que entrou sem local só é cobrado depois que o admin marca o
   assert.deepEqual([d.status, d.retida, d.pagamento, d.valor], ['aguardando', 1, 'pendente', 12]);
   assert.equal(estadoDe(token).ofertas.length, 0);
   await a.despacharSaida();
-  assert.ok(enviadas.some((m) => /Endereço do pedido #1 conferido[\s\S]*R\$\s12,00/.test(m.texto)));
+  assert.ok(enviadas.some((m) => /Pedido #1 conferido[\s\S]*R\$\s12,00/.test(m.texto)));
   assert.ok(enviadas.some((m) => m.texto === `PIX-${r.codigo}`));
   banco.pagos.add('mp1');
   await a.pedidoVivo(r.codigo);
   assert.equal(estadoDe(token).ofertas.length, 1);
+});
+
+test('Pix copia e cola: código no padrão do Banco Central e chave conferida pelo tipo', () => {
+  // Exemplo do manual do BR Code (Banco Central): o CRC esperado é 1D3D.
+  assert.equal(crc16('00020126580014br.gov.bcb.pix0136123e4567-e12b-12d1-a456-4266554400005204000053039865802BR5913Fulano de Tal6008BRASILIA62070503***6304'), '1D3D');
+  const codigo = brCode({ chave: '46178859000196', nome: 'SpeedBoy Motoboy Ltda. Serviços', cidade: 'Vila Velha', valor: 46.25, txid: 'PEDIDO12' });
+  assert.match(codigo, /^000201/);
+  assert.ok(codigo.includes('0014br.gov.bcb.pix011446178859000196'));
+  assert.ok(codigo.includes('540546.25'), 'valor com ponto e duas casas');
+  assert.ok(codigo.includes('5925SpeedBoy Motoboy Ltda. Se60'), 'nome sem acento e cortado em 25 letras');
+  assert.ok(codigo.includes('0508PEDIDO12'));
+  assert.equal(codigo.slice(-4), crc16(codigo.slice(0, -4)));
+  assert.equal(normalizarChave('cnpj', '46.178.859/0001-96'), '46178859000196');
+  assert.equal(normalizarChave('telefone', '(27) 99916-5959'), '+5527999165959');
+  assert.equal(normalizarChave('email', ' Financeiro@Speed.com.br '), 'financeiro@speed.com.br');
+  assert.equal(normalizarChave('cpf', '123'), '');
+  assert.equal(normalizarChave('aleatoria', '123E4567-e12b-12d1-a456-426655440000'), '123e4567-e12b-12d1-a456-426655440000');
+});
+
+test('Pix na chave da empresa: cliente manda o comprovante e o responsável libera com "pago 1"', async () => {
+  const { s, a, relogio, cliente, motoboyEmTurno, demandas, enviadas, limpar, estadoDe } = montar({
+    site_confirmacao: 'pix', pix_tipo: 'cnpj', pix_chave: '46.178.859/0001-96', pix_nome: 'SpeedBoy Motoboy', pix_cidade: 'Vila Velha', empresa_whatsapp: '27999165959',
+  });
+  assert.throws(() => s.salvarConfig({ pix_tipo: 'cpf', pix_chave: '46.178.859/0001-96' }, 'teste'), { codigo: 'config_invalida' });
+  const { token } = motoboyEmTurno({ tipo: 'avulso' });
+  assert.deepEqual([a.infoPublica().pagamento, a.infoPublica().pede_email], [true, false], 'Pix próprio não precisa de e-mail');
+
+  for (const texto of ['oi', '1', 'Rua da Coleta, 10, Centro', '1', 'Rua da Entrega, 20, Centro', '1', '1', 'Envelope']) await cliente(texto);
+  const fim = await cliente('1');
+  assert.match(fim, /Pedido #1 reservado[\s\S]*R\$\s12,00[\s\S]*000201[\s\S]*envie o comprovante aqui/);
+  assert.ok(enviadas.some((m) => m.destino === '5511988880000' && /esperando Pix de R\$\s12,00[\s\S]*pago 1/.test(m.texto)));
+  const publico = s.pedidoPublico(demandas()[0].codigo);
+  assert.deepEqual([publico.pix.manual, publico.pix.whatsapp, publico.pix.qr], [true, '27999165959', '']);
+  assert.match(publico.pix.codigo, /0014br\.gov\.bcb\.pix011446178859000196[\s\S]*540512\.00[\s\S]*0507PEDIDO1/);
+  assert.equal(estadoDe(token).ofertas.length, 0);
+
+  // Vencido: Pix manual não cancela sozinho (o sistema não vê a conta); só lembra o responsável.
+  relogio.t += 31 * MIN;
+  await limpar();
+  await a.expirarPagamentos();
+  await a.expirarPagamentos();
+  assert.equal(demandas()[0].status, 'aguardando');
+  await a.despacharSaida();
+  assert.equal(enviadas.filter((m) => /ainda sem confirmação do Pix/.test(m.texto)).length, 1);
+
+  // Comprovante: foto sem texto.
+  enviadas.length = 0;
+  await a.receber({ telefone: '5511977770001', nome: 'Carla Souza', texto: '' });
+  assert.ok(enviadas.some((m) => m.destino === '5511977770001' && /conferindo o pagamento do pedido #1/.test(m.texto)));
+  assert.ok(enviadas.some((m) => m.destino === '5511988880000' && /enviou o comprovante do pedido #1/.test(m.texto)));
+  assert.equal(s.pedidoPublico(demandas()[0].codigo).pix.comprovante, true);
+
+  // Só o número do responsável libera.
+  await a.receber({ telefone: '5511977770001', nome: 'Carla Souza', texto: 'pago 1' });
+  assert.equal(demandas()[0].pagamento, 'pendente');
+  enviadas.length = 0;
+  s.registrarPosicoes(s.autenticarMotoboy(token), { pontos: [{ ...P(0), ts: relogio.t, precisao: 10 }], gps_ligado: true });
+  await a.receber({ telefone: '5511988880000', nome: 'Luan', texto: 'Pago #1' });
+  assert.equal(demandas()[0].pagamento, 'pago');
+  assert.equal(estadoDe(token).ofertas.length, 1);
+  assert.ok(enviadas.some((m) => m.destino === '5511988880000' && /Pagamento do pedido #1 confirmado/.test(m.texto)));
+  await a.receber({ telefone: '5511988880000', nome: 'Luan', texto: 'cancelar 99' });
+  assert.ok(enviadas.some((m) => /Não achei o pedido #99/.test(m.texto)));
+});
+
+test('IA no site: corrige o tipo de serviço antes de cobrar e segura pedido duvidoso para conferência', async () => {
+  const { s, a, demandas, enviadas, iaFalsa, limpar, banco } = montar({ ia_chave: 'chave-da-ia', site_confirmacao: 'pagamento', mp_token: 'TOKEN' });
+  const cartorio = s.listarServicos().find((x) => /Cartório/.test(x.nome));
+  s.salvarServico({ id: cartorio.id, nome: cartorio.nome, adicional: 20 }, 'teste');
+  const pedido = (extra = {}) => a.pedidoSite({
+    nome: 'Bruno', telefone: '11966660002', email: 'bruno@exemplo.com', descricao: 'Reconhecer firma e entregar', servico_id: 1,
+    coleta: { endereco: 'Rua da Coleta, 10, Centro' }, entrega: { endereco: 'Rua da Entrega, 20, Centro' }, ...extra,
+  }, 'ip');
+  assert.equal(s.lerConfig().ia_chave, undefined, 'a chave da IA nunca volta para o navegador');
+  assert.equal(s.lerConfig().ia_chave_definida, true);
+
+  // Cliente marcou "entrega", mas descreveu cartório: vê o preço certo antes de pagar.
+  iaFalsa.resposta = { aprovado: true, servico_id: cartorio.id, motivos: [], resumo: 'Reconhecer firma e entregar no escritório.' };
+  await assert.rejects(pedido(), (e) => e.codigo === 'servico_diferente' && e.extra.servico_id === cartorio.id && e.extra.valor === 32);
+  assert.equal(demandas().length, 0);
+  const enviado = iaFalsa.pedidos[0];
+  assert.deepEqual(Object.keys(enviado.pedido).sort(), ['coleta', 'descricao', 'distancia_km', 'entrega', 'tipo_escolhido_id']);
+  assert.ok(!JSON.stringify(enviado).includes('11966660002') && !JSON.stringify(enviado).includes('Bruno'), 'nome e telefone não vão para a IA');
+  assert.equal(enviado.pedido.coleta.local_no_mapa, 'Rua da Coleta, 10, Centro (mapa)');
+
+  const ok = await pedido({ servico_id: cartorio.id });
+  assert.deepEqual([ok.confirmacao, ok.valor], ['pagamento', 32]);
+  assert.deepEqual([demandas()[0].ia_ok, demandas()[0].ia_obs], [1, 'Reconhecer firma e entregar no escritório.']);
+
+  // Pedido duvidoso: fica para a equipe e, aprovado, o cliente recebe a cobrança (não sai sem pagar).
+  await limpar();
+  iaFalsa.resposta = { aprovado: false, servico_id: 1, motivos: ['Entrega fora das cidades atendidas'], resumo: '' };
+  const duvidoso = await pedido({ telefone: '11955550003', descricao: 'Levar caixa' });
+  assert.deepEqual([duvidoso.confirmacao, duvidoso.pix], ['painel', null]);
+  const d = demandas().find((x) => x.id === duvidoso.id);
+  assert.deepEqual([d.retida, d.ia_ok, d.ia_obs, d.pagamento], [1, 0, 'Entrega fora das cidades atendidas', '']);
+  await a.despacharSaida();
+  assert.ok(enviadas.some((m) => /A IA pediu conferência do pedido #2[\s\S]*fora das cidades atendidas/.test(m.texto)));
+  assert.equal(s.liberarDemanda(d.id, 'admin:teste'), 'cobrar');
+  await new Promise((ok2) => setImmediate(ok2));
+  assert.deepEqual([demandas().find((x) => x.id === d.id).pagamento, demandas().find((x) => x.id === d.id).retida], ['pendente', 1]);
+  assert.equal(banco.cobrancas.length, 2);
+
+  // IA fora do ar: o pedido segue as regras normais.
+  iaFalsa.resposta = null;
+  assert.equal((await pedido({ telefone: '11944440004' })).confirmacao, 'pagamento');
+});
+
+test('IA no robô: cliente só descreve e ela escolhe o serviço; fora do ar, o robô pergunta', async () => {
+  const { cliente, demandas, iaFalsa } = montar({ ia_chave: 'chave-da-ia' });
+  iaFalsa.resposta = { aprovado: true, servico_id: 3, motivos: [], resumo: 'Protocolar documento na prefeitura.' };
+  for (const texto of ['oi', '1', 'Rua da Coleta, 10, Centro', '1', 'Rua da Entrega, 20, Centro']) await cliente(texto);
+  assert.match(await cliente('1'), /Descreva o que precisa/, 'com IA não pergunta o tipo de serviço');
+  assert.match(await cliente('Protocolar um documento na prefeitura'), /Confira o pedido[\s\S]*Cartório ou protocolo/);
+  await cliente('1');
+  assert.deepEqual([demandas()[0].servico, demandas()[0].ia_ok], ['Cartório ou protocolo', 1]);
+
+  iaFalsa.resposta = null;
+  for (const texto of ['oi', '1', '1', 'Rua da Entrega, 20, Centro', '1']) await cliente(texto);
+  assert.match(await cliente('Levar um envelope'), /Que tipo de serviço/);
+  assert.match(await cliente('1'), /Confira o pedido[\s\S]*Entrega de documento/);
+
+  // Pedido que a IA reprova: fica retido e o cliente é avisado de que a equipe confere.
+  iaFalsa.resposta = { aprovado: false, servico_id: 1, motivos: ['Descrição não dá para entender'], resumo: '' };
+  await cliente('2');
+  for (const texto of ['oi', '1', '1', 'Rua da Entrega, 20, Centro', '1', 'asdf qwer']) await cliente(texto);
+  assert.match(await cliente('1'), /Pedido #2 recebido[\s\S]*equipe vai conferir/);
+  assert.deepEqual([demandas()[0].retida, demandas()[0].ia_ok], [1, 0]);
+});
+
+test('IA: chamada à API com o modelo escolhido, saída estruturada e falha sem travar o pedido', async () => {
+  const chamadas = [];
+  let resposta = { stop_reason: 'end_turn', parsed_output: { aprovado: true, servico_id: 3, motivos: [], resumo: 'Levar ao cartório.' } };
+  const ia = criarIA({
+    criarCliente: (apiKey) => ({ beta: { messages: { parse: async (corpo) => { chamadas.push({ apiKey, ...corpo }); if (resposta instanceof Error) throw resposta; return resposta; } } } }),
+  });
+  const pedido = { cidades_atendidas: 'Vila Velha', tipos_de_servico: [{ id: 3, nome: 'Cartório' }], pedido: { descricao: 'x' } };
+  assert.equal(await ia.conferir({ ia_chave: '' }, pedido), null, 'sem chave não chama');
+  assert.deepEqual(await ia.conferir({ ia_chave: 'k', ia_modelo: 'claude-opus-5-5' }, pedido), { aprovado: true, servico_id: 3, motivos: [], resumo: 'Levar ao cartório.' });
+  const c = chamadas[0];
+  assert.deepEqual([c.apiKey, c.model, c.fallbacks, c.betas], ['k', 'claude-opus-5-5', 'default', ['server-side-fallback-2026-07-01']]);
+  assert.equal(c.output_config.effort, 'low');
+  assert.equal(c.output_config.format.type, 'json_schema');
+  assert.equal(c.thinking, undefined);
+  assert.deepEqual(JSON.parse(c.messages[0].content), pedido);
+
+  await ia.conferir({ ia_chave: 'k', ia_modelo: 'claude-haiku-5-5' }, pedido);
+  assert.deepEqual([chamadas[1].model, chamadas[1].fallbacks], ['claude-haiku-5-5', undefined]);
+
+  resposta = { stop_reason: 'refusal', parsed_output: null };
+  assert.equal(await ia.conferir({ ia_chave: 'k' }, pedido), null);
+  assert.match(ia.ultimoErro(), /recusou/);
+  resposta = new Error('caiu');
+  assert.equal(await ia.conferir({ ia_chave: 'k' }, pedido), null);
+  await assert.rejects(ia.conferir({ ia_chave: 'k' }, pedido, { lancar: true }), /caiu/);
 });

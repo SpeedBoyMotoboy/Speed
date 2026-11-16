@@ -92,3 +92,43 @@ Na aba *Motoboys*, cada cadastro tem "Como trabalha": **Diária** ou **Avulso**.
 - **Termo do motoboy**: o texto atual fala em ficar disponível durante todo o turno. Para o avulso isso não vale; vale revisar o termo com advogado/contador.
 - **Integração com o Mercado Pago não foi testada com conta real** (a rede do ambiente de desenvolvimento não alcança o Mercado Pago). Testada com banco simulado. Faça um pedido de valor baixo para validar.
 - **Validação por IA** (conferir endereço e tipo de serviço antes de liberar): próxima etapa. Precisa de uma chave de API da Anthropic.
+
+---
+
+# Etapa 4: Pix na sua chave, comprovante e conferência por IA (16/11/2026)
+
+## Pix sem intermediário
+
+O Mercado Pago cobra 0,99% por Pix recebido pela API. Por isso entrou a opção de receber **direto na chave Pix da empresa**:
+
+1. Em *Configurações → Pagamento por Pix*: tipo da chave, chave, nome de quem recebe, cidade e o WhatsApp que recebe o comprovante.
+2. Em *Pedidos pelo site → Antes de despachar*: **Cliente paga no meu Pix e manda o comprovante**.
+3. O cliente vê o QR code e o copia e cola já com o valor e o número do pedido (`PEDIDO12` aparece no extrato).
+4. Você confirma de um destes jeitos: botão **Confirmar pagamento** no painel, ou respondendo **`pago 12`** no WhatsApp do robô (só o número do responsável vale). Para cancelar: **`cancelar 12`**.
+5. Com o WhatsApp automático ligado, quando o cliente manda a foto do comprovante (ou escreve "paguei") o robô agradece e avisa você.
+
+O sistema não enxerga sua conta: **confira no app do banco, não só na imagem do comprovante** (comprovante pode ser falsificado). Pix manual não é cancelado sozinho; depois do prazo você recebe um lembrete.
+
+O Mercado Pago continua disponível como opção automática (o sistema confirma sozinho).
+
+## Conferência por IA
+
+Em *Configurações → Conferência dos pedidos por IA*: cole a chave da API da Anthropic, salve e clique em **Testar a IA**.
+
+- Lê os endereços (como o cliente escreveu e como o mapa achou), a distância e a descrição. **Não recebe nome nem telefone do cliente.**
+- **Identifica o tipo de serviço**: no site, se o cliente marcou "entrega" mas descreveu cartório, ele vê o preço certo antes de pagar. No WhatsApp o robô nem pergunta o tipo: o cliente descreve e a IA escolhe.
+- **Segura o que parecer errado** (endereço incompleto, cidade diferente da escrita, fora das cidades atendidas, descrição sem sentido, item que motoboy não leva): o pedido fica em "Esperando pagamento ou aprovação" com o motivo, e você é avisado. Aprovando, o cliente recebe o Pix; o pedido só sai depois de pago.
+- Escreve um resumo curto do serviço, que aparece no painel.
+- Se a IA estiver fora do ar ou sem crédito, os pedidos seguem as regras normais (ninguém fica travado).
+
+Modelo padrão: Claude Opus 5.5. Dá para trocar por Sonnet 5.5 ou Haiku 5.5 (mais barato) no mesmo bloco. A chave é da conta de API (console.anthropic.com), paga por uso e separada da assinatura do Claude.
+
+Como gerar a chave: console.anthropic.com → entrar → **API Keys** → **Create Key** → copiar (aparece uma vez só) → colar no painel. Precisa ter crédito em **Billing**.
+
+## Dependências novas do servidor
+
+`@anthropic-ai/sdk` (IA) e `qrcode-generator` (QR code do Pix). O `docker build` já instala.
+
+## Não testado com serviço real
+
+Daqui não há acesso à API da Anthropic nem a banco. A IA foi testada com respostas simuladas e o código Pix foi conferido contra o exemplo oficial do Banco Central (CRC). Antes de divulgar: clique em **Testar a IA** e faça um Pix de valor baixo lendo o QR code no app do seu banco.

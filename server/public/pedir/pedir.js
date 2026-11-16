@@ -1,5 +1,5 @@
 // Entrega urgente: o cliente informa coleta, entrega e o tipo de serviço, vê o valor, paga o Pix e acompanha.
-import { h, trocar, api, reais, km, hora, camadaBase, icone } from '/site/base.js';
+import { h, trocar, api, reais, km, hora, camadaBase, icone, desenharQr, botaoComprovante } from '/site/base.js';
 
 const L = window.L;
 const raiz = document.getElementById('raiz');
@@ -111,7 +111,7 @@ function telaConfirmar() {
 
   const nome = h('input', { id: 'nome', maxlength: 80, autocomplete: 'name', required: true, value: guardado.nome || '' });
   const telefone = h('input', { id: 'telefone', type: 'tel', inputmode: 'tel', autocomplete: 'tel-national', required: true, placeholder: '(11) 99999-0000', value: guardado.telefone || '' });
-  const email = h('input', { id: 'email', type: 'email', inputmode: 'email', autocomplete: 'email', maxlength: 120, required: info.pagamento, value: guardado.email || '' });
+  const email = h('input', { id: 'email', type: 'email', inputmode: 'email', autocomplete: 'email', maxlength: 120, required: info.pede_email, value: guardado.email || '' });
   const descricao = h('input', { id: 'descricao', maxlength: 300, required: true, placeholder: 'Ex.: envelope para reconhecer firma' });
   const contato = h('input', { id: 'contato', maxlength: 120, placeholder: 'Nome e telefone de quem recebe' });
   const requisito = h('select', { id: 'requisito' },
@@ -137,6 +137,13 @@ function telaConfirmar() {
         try { localStorage.setItem('speed_cliente', JSON.stringify({ nome: nome.value, telefone: telefone.value, email: email.value, coleta: pedido.coleta.endereco })); } catch { /* sem armazenamento */ }
         if (r.pix) telaPix(r); else telaPronto(r);
       } catch (e) {
+        // A conferência viu que a descrição é de outro tipo de serviço: mostra o valor certo e pede novo clique.
+        if (e.dados?.erro === 'servico_diferente') {
+          servicoId = e.dados.servico_id;
+          pedido.km = e.dados.km;
+          pedido.valor = e.dados.valor;
+          desenharLinhas();
+        }
         erro.textContent = e.message;
         enviar.disabled = false;
       }
@@ -145,7 +152,7 @@ function telaConfirmar() {
   h('h2', null, 'Seus dados'),
   h('label', { for: 'nome' }, 'Seu nome'), nome,
   h('label', { for: 'telefone' }, 'Seu WhatsApp (com DDD)'), telefone,
-  info.pagamento && [h('label', { for: 'email' }, 'Seu e-mail (para o comprovante do Pix)'), email],
+  info.pede_email && [h('label', { for: 'email' }, 'Seu e-mail (para o comprovante do Pix)'), email],
   h('label', { for: 'descricao' }, 'Descreva o serviço'), descricao,
   h('label', { for: 'requisito' }, 'Tamanho'), requisito,
   h('label', { for: 'contato' }, 'Quem recebe na entrega? (opcional)'), contato,
@@ -186,7 +193,10 @@ function telaPix(r) {
       try { await navigator.clipboard.writeText(r.pix.codigo); copiar.textContent = 'Código copiado ✓'; } catch { aviso.textContent = 'Selecione o código acima e copie.'; }
     },
   }, 'Copiar código Pix');
-  const qr = r.pix.qr && h('img', { class: 'qr', alt: 'QR code do Pix', width: 220, height: 220, src: `data:image/png;base64,${r.pix.qr}` });
+  const qr = r.pix.qr
+    ? h('img', { class: 'qr', alt: 'QR code do Pix', width: 220, height: 220, src: `data:image/png;base64,${r.pix.qr}` })
+    : desenharQr(r.pix.codigo);
+  const manual = Boolean(r.pix.manual);
   pedido = null;
   moldura(
     h('h1', null, `Pague ${reais(r.valor)} para liberar o motoboy`),
@@ -195,8 +205,13 @@ function telaPix(r) {
       qr,
       h('label', { for: 'pix' }, 'Pix copia e cola'),
       h('textarea', { id: 'pix', readonly: true, rows: 4, value: r.pix.codigo, onfocus: (ev) => ev.target.select() }),
-      copiar, aviso,
-      h('p', { class: 'nota' }, `O código vale até ${hora(r.pix.expira)}. Sem pagamento, o pedido é cancelado sozinho.`)));
+      copiar,
+      manual && [
+        h('p', null, 'Depois de pagar, envie o comprovante. Liberamos o motoboy assim que conferirmos.'),
+        botaoComprovante(info.whatsapp, r.id, r.valor)],
+      aviso,
+      !manual && h('p', { class: 'nota' }, `O código vale até ${hora(r.pix.expira)}. Sem pagamento, o pedido é cancelado sozinho.`),
+      h('a', { class: 'botao', href: `/acompanhar/?c=${encodeURIComponent(r.codigo)}` }, 'Acompanhar o pedido')));
 
   const conferir = async () => {
     try {
