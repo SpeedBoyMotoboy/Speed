@@ -73,7 +73,7 @@ const ROTULO_ALERTA = {
 const ROTULO_REQUISITO = { qualquer: 'Qualquer', moto: 'Só moto', bau: 'Baú', bag: 'Bag' };
 const ROTULO_ORIGEM = { site: 'Site', robo: 'WhatsApp', whatsapp: 'WhatsApp', api: 'API' };
 const chip = (texto, classe = '') => h('span', { class: `chip ${classe}` }, texto);
-const equipamento = (m) => [m.veiculo === 'bike' ? 'Bike' : 'Moto', m.tem_bau && 'baú', m.tem_bag && 'bag'].filter(Boolean).join(' · ');
+const equipamento = (m) => [m.veiculo === 'bike' ? 'Bike' : 'Moto', m.tem_bau && 'baú', m.tem_bag && 'bag', m.tipo === 'avulso' ? 'avulso' : 'diária'].filter(Boolean).join(' · ');
 
 // ---------------------------------------------------------------- diálogo
 function dialogo(titulo, montar, { largo = false } = {}) {
@@ -312,8 +312,15 @@ function desenharLateral() {
   const cartaoDemanda = (d) => h('div', { class: 'cartao' },
     h('div', { class: 'titulo' }, `#${d.id} ${d.cliente}`, chip(ROTULO_STATUS[d.status], d.status),
       d.requisito !== 'qualquer' && chip(ROTULO_REQUISITO[d.requisito]),
+      d.urgente ? chip('Urgente', 'sem_sinal') : null,
       ROTULO_ORIGEM[d.origem] && chip(ROTULO_ORIGEM[d.origem]),
-      d.valor != null && chip(reais(d.valor), 'entregue')),
+      d.valor != null && chip(reais(d.valor), 'entregue'),
+      d.pagamento === 'pago' && chip('Pago', 'entregue'),
+      d.pagamento === 'pendente' && chip('Esperando Pix', 'aguardando'),
+      d.pagamento === 'faturado' && chip('Fatura')),
+    (d.servico || d.repasse != null) && h('div', { class: 'sub' },
+      [d.servico, d.repasse != null && `repasse avulso ${reais(d.repasse)}`,
+        d.status === 'aguardando' && !d.retida && `oferecida a ${d.ofertas} motoboy(s)`].filter(Boolean).join(' · ')),
     h('div', { class: 'sub' }, `C: ${d.coleta_endereco}`),
     h('div', { class: 'sub' }, `E: ${d.entrega_endereco}`),
     d.descricao && h('div', { class: 'sub' }, d.descricao),
@@ -325,7 +332,7 @@ function desenharLateral() {
             : `criada ${hora(d.criada_em)} (${ha(d.criada_em, agora)})`),
     d.cliente_telefone && h('div', { class: 'sub' }, `Cliente: ${telefoneFmt(d.cliente_telefone)}`),
     !['entregue', 'cancelada'].includes(d.status) && h('div', { class: 'acoes' },
-      d.retida && d.status !== 'sem_local' && h('button', {
+      Boolean(d.retida) && d.status !== 'sem_local' && d.pagamento !== 'pendente' && h('button', {
         class: 'pequeno primario', onclick: async () => { await api('POST', `/api/admin/demandas/${d.id}/liberar`).catch((e) => { els.conexao.textContent = e.message; }); atualizar(); },
       }, 'Aprovar e despachar'),
       d.status === 'sem_local'
@@ -341,10 +348,11 @@ function desenharLateral() {
     const t = m.turno;
     return h('div', { class: 'cartao' },
       h('div', { class: 'titulo' }, m.nome, chip(ROTULO_STATUS[t.status], t.status),
+        m.tipo === 'avulso' && chip('avulso'),
         t.origem !== 'app' && chip('navegador', 'aguardando')),
       h('div', { class: 'sub' }, `${equipamento(m)} · ${t.pendentes} parada(s) · ${t.km} km`,
         t.bateria != null ? ` · bateria ${t.bateria}%` : ''),
-      h('div', { class: 'sub' }, `Turno ${hora(t.inicio)}–${hora(t.fim_previsto)} · último sinal ${ha(t.ult_contato ?? t.inicio, agora)}`,
+      h('div', { class: 'sub' }, `${m.tipo === 'avulso' ? `Online desde ${hora(t.inicio)}` : `Turno ${hora(t.inicio)}–${hora(t.fim_previsto)}`} · último sinal ${ha(t.ult_contato ?? t.inicio, agora)}`,
         t.almoco_ate ? ` · almoço até ${hora(t.almoco_ate)}` : ''),
       h('div', { class: 'acoes' },
         t.lat != null && h('button', { class: 'pequeno', onclick: () => { mapa.setView([t.lat, t.lon], 16); } }, 'Ver no mapa'),
@@ -569,6 +577,9 @@ function janelaMotoboy(m = null) {
     const telefone = h('input', { inputmode: 'tel', value: m ? telefoneFmt(m.telefone) : '', placeholder: '(11) 99999-0000' });
     const pin = h('input', { inputmode: 'numeric', maxlength: 6, autocomplete: 'off', placeholder: m ? 'Deixe vazio para manter' : '6 números' });
     const veiculo = h('select', null, h('option', { value: 'moto', selected: m?.veiculo !== 'bike' }, 'Moto'), h('option', { value: 'bike', selected: m?.veiculo === 'bike' }, 'Bike'));
+    const tipo = h('select', null,
+      h('option', { value: 'diaria', selected: m?.tipo !== 'avulso' }, 'Diária (convocado, cumpre o turno, recebe diária)'),
+      h('option', { value: 'avulso', selected: m?.tipo === 'avulso' }, 'Avulso (entra quando quiser, recebe por entrega)'));
     const bau = h('input', { type: 'checkbox', checked: m?.tem_bau });
     const bag = h('input', { type: 'checkbox', checked: m?.tem_bag });
     const ativo = h('input', { type: 'checkbox', checked: m ? m.ativo : true });
@@ -576,7 +587,7 @@ function janelaMotoboy(m = null) {
     const ok = h('button', {
       class: 'primario',
       onclick: () => dlg.executar(() => {
-        const dados = { nome: nome.value, telefone: telefone.value, pin: pin.value, veiculo: veiculo.value, tem_bau: bau.checked, tem_bag: bag.checked, ativo: ativo.checked };
+        const dados = { nome: nome.value, telefone: telefone.value, pin: pin.value, veiculo: veiculo.value, tipo: tipo.value, tem_bau: bau.checked, tem_bag: bag.checked, ativo: ativo.checked };
         return m ? api('PUT', `/api/admin/motoboys/${m.id}`, dados) : api('POST', '/api/admin/motoboys', dados);
       }, ok),
     }, 'Salvar');
@@ -586,7 +597,9 @@ function janelaMotoboy(m = null) {
         h('div', null, h('label', null, 'Telefone com DDD (é o login)'), telefone),
         h('div', null, h('label', null, 'Senha do app (6 números)'), h('div', { class: 'linha' }, h('div', { class: 'cresce' }, pin), gerar))),
       h('div', { class: 'nota' }, 'Anote a senha e passe ao motoboy: depois de salvar ela não aparece mais.'),
-      h('label', null, 'Veículo'), veiculo,
+      h('div', { class: 'grade2' },
+        h('div', null, h('label', null, 'Veículo'), veiculo),
+        h('div', null, h('label', null, 'Como trabalha'), tipo)),
       h('label', { class: 'marcar' }, bau, 'Tem baú'),
       h('label', { class: 'marcar' }, bag, 'Tem bag'),
       m && h('label', { class: 'marcar' }, ativo, 'Ativo (desmarcar bloqueia o login e encerra o turno)'),
@@ -598,21 +611,22 @@ function desenharMotoboys() {
   if (!estado) return;
   const situacao = (m) => {
     if (!m.ativo) return chip('Inativo', 'inativo');
-    if (m.turno) return chip(`Em turno até ${hora(m.turno.fim_previsto)}`, 'em_rota');
+    if (m.turno) return chip(m.tipo === 'avulso' ? 'Online' : `Em turno até ${hora(m.turno.fim_previsto)}`, 'em_rota');
+    if (m.tipo === 'avulso') return h('span', { class: 'nota' }, m.ultimo_turno ? `Avulso · esteve online ${dataHora(m.ultimo_turno)}` : 'Avulso · ainda não entrou');
     if (m.convocado_ate) return chip('Convocado, aguardando login', 'convocado');
     return h('span', { class: 'nota' }, m.ultimo_turno ? `Último turno ${dataHora(m.ultimo_turno)}` : 'Nunca fez turno');
   };
   trocar(els.pagina, 
     h('div', { class: 'linha' }, h('h2', { class: 'cresce' }, 'Motoboys'),
       h('button', { class: 'primario', onclick: () => janelaMotoboy() }, '+ Novo motoboy')),
-    h('p', { class: 'nota' }, 'O motoboy só consegue fazer login no dia em que for convocado. O turno dura o tempo definido em Configurações.'),
+    h('p', { class: 'nota' }, 'Diária: só faz login no dia em que for convocado e cumpre o turno. Avulso: entra e sai quando quiser, aceita as entregas perto dele e recebe o repasse de cada uma.'),
     estado.motoboys.length === 0 ? h('div', { class: 'vazio' }, 'Nenhum motoboy cadastrado ainda.')
       : h('table', null,
         h('thead', null, h('tr', null, ['Nome', 'Telefone', 'Equipamento', 'Situação', ''].map((c) => h('th', null, c)))),
         h('tbody', null, estado.motoboys.map((m) => h('tr', null,
           h('td', null, m.nome), h('td', null, telefoneFmt(m.telefone)), h('td', null, equipamento(m)), h('td', null, situacao(m)),
           h('td', null, h('div', { class: 'linha' },
-            m.ativo && !m.turno && !m.convocado_ate && h('button', { class: 'pequeno primario', onclick: () => convocar(m.id) }, 'Convocar'),
+            m.ativo && m.tipo !== 'avulso' && !m.turno && !m.convocado_ate && h('button', { class: 'pequeno primario', onclick: () => convocar(m.id) }, 'Convocar'),
             m.convocado_ate && h('button', {
               class: 'pequeno', onclick: async () => { await api('POST', `/api/admin/motoboys/${m.id}/desconvocar`).catch(() => {}); atualizar(); },
             }, 'Cancelar convocação'),
@@ -745,8 +759,17 @@ function desenharRelatorio() {
     const inicio = new Date(`${de.value}T00:00:00`).getTime();
     const fim = new Date(`${ate.value}T00:00:00`).getTime() + 24 * 3600 * 1000;
     try {
-      const { linhas, clientes } = await api('GET', `/api/admin/relatorio?de=${inicio}&ate=${fim}`);
-      const colunas = [['nome', 'Motoboy'], ['diarias', 'Diárias'], ['horas', 'Horas'], ['entregas', 'Entregas'], ['km', 'Km'], ['min_parado', 'Min. parado em alerta'], ['alertas', 'Alertas'], ['valor', 'A pagar']];
+      const { linhas, clientes, entregas } = await api('GET', `/api/admin/relatorio?de=${inicio}&ate=${fim}`);
+      const colunas = [['nome', 'Motoboy'], ['diarias', 'Diárias'], ['horas', 'Horas'], ['entregas', 'Entregas'], ['km', 'Km'], ['min_parado', 'Min. parado em alerta'], ['alertas', 'Alertas'], ['repasses', 'Repasses'], ['valor', 'A pagar']];
+      const dinheiro = (v) => (v == null ? '—' : reais(v));
+      const baixarEntregas = () => {
+        const cab = ['Pedido', 'Entregue em', 'Cliente', 'Serviço', 'Km', 'Motoboy', 'Tipo', 'Pagamento', 'Valor', 'Repasse', 'Fica'];
+        const n = (v) => (v == null ? '' : String(v).replace('.', ','));
+        const t = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+        const csv = [cab.join(';'), ...entregas.map((e) => [e.id, dataHora(e.entregue_em), t(e.cliente), t(e.servico), n(e.km), t(e.motoboy), e.tipo || '', e.pagamento, n(e.valor), n(e.repasse), n(e.margem)].join(';'))].join('\r\n');
+        const a = h('a', { href: URL.createObjectURL(new Blob(['\ufeff', csv], { type: 'text/csv' })), download: `speed-entregas-${de.value}-a-${ate.value}.csv` });
+        document.body.append(a); a.click(); a.remove();
+      };
       const total = linhas.reduce((s, l) => s + l.valor, 0);
       const baixar = () => {
         const csv = [colunas.map((c) => c[1]).join(';'),
@@ -758,8 +781,8 @@ function desenharRelatorio() {
         h('table', null,
           h('thead', null, h('tr', null, colunas.map(([k, r]) => h('th', { class: k === 'nome' ? '' : 'num' }, r)))),
           h('tbody', null, linhas.map((l) => h('tr', null, colunas.map(([k]) =>
-            h('td', { class: k === 'nome' ? '' : 'num' }, k === 'valor' ? reais(l.valor) : l[k]))))),
-          h('tfoot', null, h('tr', null, h('td', { colspan: 7 }, 'Total'), h('td', { class: 'num' }, reais(total))))),
+            h('td', { class: k === 'nome' ? '' : 'num' }, k === 'valor' || k === 'repasses' ? reais(l[k]) : l[k]))))),
+          h('tfoot', null, h('tr', null, h('td', { colspan: 8 }, 'Total'), h('td', { class: 'num' }, reais(total))))),
         h('div', { class: 'linha fim' }, h('button', { onclick: baixar }, 'Baixar planilha (CSV)'))],
       h('h3', null, 'Entregas por cliente (a cobrar)'),
       clientes.length === 0 ? h('div', { class: 'vazio' }, 'Nenhuma entrega concluída no período.')
@@ -768,12 +791,25 @@ function desenharRelatorio() {
           h('tbody', null, clientes.map((c) => h('tr', null,
             h('td', null, c.cliente), h('td', null, c.telefone ? telefoneFmt(c.telefone) : '—'),
             h('td', { class: 'num' }, c.entregas), h('td', { class: 'num' }, c.km), h('td', { class: 'num' }, reais(c.valor))))),
-          h('tfoot', null, h('tr', null, h('td', { colspan: 4 }, 'Total'), h('td', { class: 'num' }, reais(clientes.reduce((s, c) => s + c.valor, 0)))))));
+          h('tfoot', null, h('tr', null, h('td', { colspan: 4 }, 'Total'), h('td', { class: 'num' }, reais(clientes.reduce((s, c) => s + c.valor, 0)))))),
+      h('h3', null, 'Entrega por entrega (valor, repasse e o que fica)'),
+      entregas.length === 0 ? h('div', { class: 'vazio' }, 'Nenhuma entrega concluída no período.') : [
+        h('table', null,
+          h('thead', null, h('tr', null, ['Pedido', 'Cliente', 'Serviço', 'Motoboy'].map((c) => h('th', null, c)), ['Valor', 'Repasse', 'Fica'].map((c) => h('th', { class: 'num' }, c)))),
+          h('tbody', null, entregas.slice(0, 200).map((e) => h('tr', null,
+            h('td', null, `#${e.id} · ${dataHora(e.entregue_em)}`), h('td', null, e.cliente), h('td', null, e.servico || '—'),
+            h('td', null, e.motoboy || '—', e.tipo === 'avulso' ? ' (avulso)' : ''),
+            h('td', { class: 'num' }, dinheiro(e.valor)), h('td', { class: 'num' }, reais(e.repasse)), h('td', { class: 'num' }, dinheiro(e.margem))))),
+          h('tfoot', null, h('tr', null, h('td', { colspan: 4 }, `Total (${entregas.length} entregas)`),
+            h('td', { class: 'num' }, reais(entregas.reduce((s, e) => s + (e.valor || 0), 0))),
+            h('td', { class: 'num' }, reais(entregas.reduce((s, e) => s + e.repasse, 0))),
+            h('td', { class: 'num' }, reais(entregas.reduce((s, e) => s + (e.margem || 0), 0)))))),
+        h('div', { class: 'linha fim' }, h('button', { onclick: baixarEntregas }, 'Baixar entregas (CSV)'))]);
     } catch (e) { trocar(saida, h('div', { class: 'erro' }, e.message)); }
   };
   trocar(els.pagina, 
-    h('h2', null, 'Relatório de diárias'),
-    h('p', { class: 'nota' }, 'A pagar = diárias × (valor da diária + almoço), conforme Configurações.'),
+    h('h2', null, 'Relatório'),
+    h('p', { class: 'nota' }, 'A pagar = diárias × (valor da diária + almoço) + repasses das entregas feitas como avulso.'),
     h('div', { class: 'linha' },
       h('div', null, h('label', null, 'De'), de), h('div', null, h('label', null, 'Até'), ate),
       h('div', null, h('label', null, ' '), h('button', { class: 'primario', onclick: gerar }, 'Gerar'))),
@@ -784,7 +820,57 @@ function desenharRelatorio() {
 // ---------------------------------------------------------- configurações
 async function desenharConfig() {
   let c;
-  try { c = await api('GET', '/api/admin/config'); } catch { return; }
+  let servicos = [];
+  let clientes = [];
+  try {
+    c = await api('GET', '/api/admin/config');
+    ({ servicos } = await api('GET', '/api/admin/servicos'));
+    ({ clientes } = await api('GET', '/api/admin/clientes'));
+  } catch { return; }
+  const avisoLista = h('div', { class: 'erro' });
+  const janelaServico = (sv = null) => dialogo(sv ? 'Editar tipo de serviço' : 'Novo tipo de serviço', (dlg) => {
+    const nome = h('input', { maxlength: 60, value: sv?.nome || '' });
+    const adicional = h('input', { type: 'number', step: 0.01, min: 0, value: sv?.adicional ?? 0 });
+    const pct = h('input', { type: 'number', step: 1, min: 0, max: 100, value: sv?.repasse_pct ?? '', placeholder: `Padrão (${c.repasse_pct}%)` });
+    const ativo = h('input', { type: 'checkbox', checked: sv ? sv.ativo : true });
+    const ok = h('button', {
+      class: 'primario',
+      onclick: () => dlg.executar(async () => {
+        await api('POST', '/api/admin/servicos', { id: sv?.id, nome: nome.value, adicional: adicional.value, repasse_pct: pct.value, ativo: ativo.checked });
+        desenharConfig();
+      }, ok),
+    }, 'Salvar');
+    return [
+      h('label', null, 'Nome (o cliente vê)'), nome,
+      h('div', { class: 'grade2' },
+        h('div', null, h('label', null, 'Soma no preço (R$)'), adicional),
+        h('div', null, h('label', null, 'Repasse ao avulso (%)'), pct)),
+      h('label', { class: 'marcar' }, ativo, 'Ativo (aparece para o cliente)'),
+      h('div', { class: 'linha fim' }, h('button', { onclick: dlg.fechar }, 'Voltar'), ok)];
+  });
+  const janelaCliente = (cl = null) => dialogo(cl ? `Cliente ${cl.nome}` : 'Novo cliente fixo', (dlg) => {
+    const nome = h('input', { maxlength: 120, value: cl?.nome || '' });
+    const telefone = h('input', { inputmode: 'tel', value: cl ? telefoneFmt(cl.telefone) : '', disabled: Boolean(cl), placeholder: '(27) 99999-0000' });
+    const email = h('input', { type: 'email', maxlength: 120, value: cl?.email || '' });
+    const pct = h('input', { type: 'number', step: 1, min: 1, max: 300, value: cl?.preco_pct ?? 100 });
+    const faturado = h('input', { type: 'checkbox', checked: cl ? cl.faturado : true });
+    const ok = h('button', {
+      class: 'primario',
+      onclick: () => dlg.executar(async () => {
+        await api('POST', '/api/admin/clientes', { nome: nome.value, telefone: telefone.value, email: email.value, preco_pct: pct.value, faturado: faturado.checked });
+        desenharConfig();
+      }, ok),
+    }, 'Salvar');
+    return [
+      h('label', null, 'Nome da empresa ou pessoa'), nome,
+      h('div', { class: 'grade2' },
+        h('div', null, h('label', null, 'WhatsApp (identifica o cliente)'), telefone),
+        h('div', null, h('label', null, 'E-mail'), email)),
+      h('label', null, 'Paga quanto da tabela? (%)'), pct,
+      h('div', { class: 'nota' }, '100 = preço cheio. 80 = 20% de desconto.'),
+      h('label', { class: 'marcar' }, faturado, 'Fatura mensal (não paga Pix na hora)'),
+      h('div', { class: 'linha fim' }, h('button', { onclick: dlg.fechar }, 'Voltar'), ok)];
+  });
   const campos = {};
   const num = (chave, rotulo, passo = 1) => {
     campos[chave] = h('input', { type: 'number', step: passo, value: c[chave] });
@@ -844,18 +930,53 @@ async function desenharConfig() {
       class: 'pequeno',
       onclick: () => { const p = mapa.getCenter(); campos.mapa_lat.value = p.lat.toFixed(4); campos.mapa_lon.value = p.lng.toFixed(4); },
     }, 'Usar o centro atual do mapa da Operação')),
-    h('h3', null, 'Preço da entrega (o cliente vê no site e no WhatsApp)'),
+    h('h3', null, 'Preço da entrega urgente (o cliente vê no site e no WhatsApp)'),
     h('div', { class: 'grade3' },
       num('preco_base', 'Valor base (R$)', 0.01), num('preco_km_incluso', 'Km já incluídos no valor base', 0.5),
-      num('preco_km', 'Valor por km a mais (R$)', 0.01), num('preco_minimo', 'Valor mínimo (R$)', 0.01)),
-    h('div', { class: 'nota' }, 'Tudo zero = o cliente vê "valor a combinar". Distância = linha reta × 1,35.'),
+      num('preco_km', 'Valor por km a mais (R$)', 0.01), num('preco_minimo', 'Valor mínimo (R$)', 0.01),
+      num('urgente_prazo_min', 'Prazo prometido na página (min)'),
+      texto('ors_chave', c.ors_chave_definida ? 'Chave de rota (já salva; vazio mantém)' : 'Chave de rota pelas ruas (opcional)', { type: 'password', autocomplete: 'off', value: '' })),
+    h('div', { class: 'nota' }, 'Preço = valor base + km a mais (respeitando o mínimo) + o adicional do tipo de serviço. Sem chave de rota a distância é linha reta × 1,35; com chave gratuita do openrouteservice.org é a distância pelas ruas.'),
+
+    h('h3', null, 'Tipos de serviço (complexidade da demanda)'),
+    h('table', null,
+      h('thead', null, h('tr', null, h('th', null, 'Serviço'), h('th', { class: 'num' }, 'Soma no preço'), h('th', { class: 'num' }, 'Repasse ao avulso'), h('th', null, ''))),
+      h('tbody', null, servicos.map((sv) => h('tr', null,
+        h('td', null, sv.nome, !sv.ativo && chip('desligado', 'inativo')),
+        h('td', { class: 'num' }, reais(sv.adicional)),
+        h('td', { class: 'num' }, sv.repasse_pct == null ? `padrão (${c.repasse_pct}%)` : `${sv.repasse_pct}%`),
+        h('td', null, h('button', { class: 'pequeno', onclick: () => janelaServico(sv) }, 'Editar')))))),
+    h('div', { class: 'linha' }, h('button', { class: 'pequeno', onclick: () => janelaServico() }, '+ Novo tipo de serviço'), avisoLista),
+
+    h('h3', null, 'Motoboy avulso: repasse e ofertas'),
+    h('div', { class: 'grade3' },
+      num('repasse_pct', 'Repasse padrão ao avulso (% do valor)'), num('repasse_minimo', 'Repasse mínimo por entrega (R$)', 0.01),
+      num('oferta_raio_km', 'Oferecer a quem está até (km) da coleta', 0.5),
+      num('oferta_alerta_min', 'Avisar se ninguém aceitar em (min)'), num('avulso_max_horas', 'Avulso fica online no máximo (horas)')),
+    h('div', { class: 'nota' }, 'A cada 1,5 min sem aceite o raio da oferta dobra (até 8 vezes). Se o repasse mínimo for maior que o preço cobrado, a entrega dá prejuízo: mantenha o valor mínimo da entrega acima dele.'),
+
+    h('h3', null, 'Pagamento por Pix (Mercado Pago)'),
+    h('div', { class: 'grade3' },
+      texto('mp_token', c.mp_token_definido ? 'Access Token (já salvo; vazio mantém)' : 'Access Token de produção', { type: 'password', autocomplete: 'off', value: '' }),
+      num('pagamento_validade_min', 'Pix vale por (min)')),
+    h('div', { class: 'nota' }, 'No Mercado Pago: Seu negócio → Configurações → Credenciais → Credenciais de produção → Access Token. Depois escolha abaixo "Cliente paga o Pix antes" em "Antes de despachar um pedido do site".'),
+
+    h('h3', null, 'Clientes (marque os fixos para fatura mensal)'),
+    clientes.length === 0 ? h('div', { class: 'vazio' }, 'Nenhum cliente ainda. Quem pede pelo site ou WhatsApp aparece aqui sozinho.')
+      : h('table', null,
+        h('thead', null, h('tr', null, h('th', null, 'Cliente'), h('th', null, 'WhatsApp'), h('th', { class: 'num' }, 'Pedidos'), h('th', null, 'Cobrança'), h('th', null, ''))),
+        h('tbody', null, clientes.slice(0, 100).map((cl) => h('tr', null,
+          h('td', null, cl.nome), h('td', null, telefoneFmt(cl.telefone)), h('td', { class: 'num' }, cl.pedidos),
+          h('td', null, cl.faturado ? chip(`Fatura · ${cl.preco_pct}% da tabela`, 'entregue') : 'Pix na hora'),
+          h('td', null, h('button', { class: 'pequeno', onclick: () => janelaCliente(cl) }, 'Editar')))))),
+    h('div', { class: 'linha' }, h('button', { class: 'pequeno', onclick: () => janelaCliente() }, '+ Novo cliente fixo')),
 
     h('h3', null, 'Pedidos pelo site'),
     h('div', { class: 'grade3' },
       texto('empresa_nome', 'Nome que aparece para o cliente', { maxlength: 60 }),
       opcao('pedidos_site', 'Aceitar pedidos pelo site'),
       opcao('site_confirmacao', 'Antes de despachar um pedido do site', [
-        ['painel', 'Eu aprovo no painel'], ['whatsapp', 'Cliente confirma no WhatsApp (automático)'], ['nenhuma', 'Despacha direto (sem conferir)']]),
+        ['pagamento', 'Cliente paga o Pix antes (automático)'], ['painel', 'Eu aprovo no painel'], ['whatsapp', 'Cliente confirma no WhatsApp (automático)'], ['nenhuma', 'Despacha direto (sem conferir)']]),
       texto('atendimento_inicio', 'Atende a partir de (vazio = sempre)', { type: 'time' }),
       texto('atendimento_fim', 'Atende até', { type: 'time' }),
       opcao('rastreio_cliente', 'Cliente vê o motoboy no mapa')),

@@ -39,6 +39,10 @@ const app = criarApp({
 const rotina = setInterval(() => {
   try { servico.rotina(); atendimento.rotina(); } catch (e) { console.error('[rotina]', e); }
 }, 30_000);
+// Ofertas: quem ficou online ou chegou perto passa a ver as entregas que estão esperando.
+const ofertas = setInterval(() => {
+  try { servico.despacharPendentes(); } catch (e) { console.error('[ofertas]', e); }
+}, 10_000);
 // Fila de mensagens do WhatsApp (avisos, convocação, respostas).
 const envio = setInterval(() => {
   atendimento.despacharSaida().catch((e) => console.error('[envio]', e));
@@ -50,6 +54,7 @@ for (const sinal of ['SIGINT', 'SIGTERM']) {
   process.on(sinal, () => {
     clearInterval(rotina);
     clearInterval(envio);
+    clearInterval(ofertas);
     app.close(() => { db.close(); process.exit(0); });
     setTimeout(() => process.exit(0), 3000).unref();
   });

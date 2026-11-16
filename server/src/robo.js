@@ -30,7 +30,10 @@ const PEDIR_ENDERECO = {
   coleta: 'Qual é o endereço de *COLETA*? (rua, número e bairro)\n\nSe preferir, envie a localização: 📎 → Localização.',
   entrega: 'Agora o endereço de *ENTREGA*. (rua, número e bairro)\n\nTambém pode enviar a localização.',
 };
-const PEDIR_DESCRICAO = 'O que vamos levar? Diga também quem recebe na entrega.\n\nEx.: _Envelope, entregar para João_';
+const PEDIR_DESCRICAO = 'Descreva o que precisa e quem recebe na entrega.\n\nEx.: _Envelope, entregar para João_';
+const PEDIR_EMAIL = 'Para gerar o Pix, me diga seu *e-mail* (o comprovante vai para ele).';
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+const pedirServico = (lista) => ['Que tipo de serviço você precisa?', '', ...lista.map((s, i) => `*${i + 1}* - ${s.nome}`)].join('\n');
 
 function requisitoDe(texto) {
   const t = semAcento(texto);
@@ -44,8 +47,9 @@ function resumo(dados, cotacao) {
     '*Confira o pedido:*',
     `📦 Coleta: ${dados.coleta.endereco}`,
     `🏁 Entrega: ${dados.entrega.endereco}`,
+    dados.servico_nome ? `🧾 ${dados.servico_nome}` : null,
     `📝 ${dados.descricao}`,
-  ];
+  ].filter(Boolean);
   if (cotacao?.valor != null) linhas.push(`💰 Valor: ${reais(cotacao.valor)}${cotacao.km != null ? ` (${cotacao.km.toFixed(1).replace('.', ',')} km)` : ''}`);
   linhas.push('', '*1* - Confirmar', '*2* - Cancelar');
   return linhas.join('\n');
@@ -147,7 +151,12 @@ export async function conversar(estado, msg, a) {
       dados[qual] = ponto;
       delete dados.prov;
       delete dados.falhas;
-      if (qual === 'coleta') { etapa = 'entrega'; dizer(PEDIR_ENDERECO.entrega); } else { etapa = 'descricao'; dizer(PEDIR_DESCRICAO); }
+      if (qual === 'coleta') { etapa = 'entrega'; dizer(PEDIR_ENDERECO.entrega); return; }
+      const lista = a.servicos();
+      if (lista.length > 1) { etapa = 'servico'; dizer(pedirServico(lista)); return; }
+      if (lista.length === 1) { dados.servico_id = lista[0].id; dados.servico_nome = lista[0].nome; }
+      etapa = 'descricao';
+      dizer(PEDIR_DESCRICAO);
     };
     if (etapa === `${qual}_ok`) {
       if (SIM.test(t) && dados.prov) { aceitar(dados.prov); return fim(); }
@@ -182,22 +191,52 @@ export async function conversar(estado, msg, a) {
     }
   }
 
+  if (etapa === 'servico') {
+    const lista = a.servicos();
+    const escolhido = lista[Number(t) - 1];
+    if (!/^\d+$/.test(t) || !escolhido) { dizer(pedirServico(lista)); return fim(); }
+    dados.servico_id = escolhido.id;
+    dados.servico_nome = escolhido.nome;
+    etapa = 'descricao';
+    dizer(PEDIR_DESCRICAO);
+    return fim();
+  }
+
+  // Cria o pedido e, se for pago na hora, manda o Pix.
+  const fechar = async () => {
+    const p = await a.criarPedido(dados);
+    zerar();
+    if (p.pix) {
+      dizer(`🧾 Pedido #${p.id} reservado! Para liberar o motoboy, pague o Pix de *${reais(p.valor)}* (copia e cola na próxima mensagem). Vale por ${p.validade_min} min.\n\nSe preferir o QR code: ${p.link}`);
+      dizer(p.pix);
+      dizer('Assim que o pagamento cair eu aviso por aqui. 👍');
+    } else {
+      dizer(p.status === 'sem_local'
+        ? `✅ Pedido #${p.id} recebido! Nossa equipe vai confirmar o endereço e já libera o motoboy.\n\nAcompanhe: ${p.link}`
+        : `✅ Pedido #${p.id} confirmado! Aviso por aqui quando o motoboy estiver a caminho.\n\nAcompanhe: ${p.link}`);
+    }
+  };
+
+  if (etapa === 'email') {
+    if (!EMAIL.test(texto)) { dizer('Não entendi o e-mail. Escreva assim: _nome@exemplo.com_'); return fim(); }
+    dados.email = texto.toLowerCase();
+    await fechar();
+    return fim();
+  }
+
   if (etapa === 'descricao') {
     if (texto.length < 2) { dizer(PEDIR_DESCRICAO); return fim(); }
     dados.descricao = texto.replace(/\s*\n+\s*/g, ' · ').slice(0, 400);
     dados.requisito = requisitoDe(texto);
     etapa = 'confirma';
-    dizer(resumo(dados, a.cotar(dados.coleta, dados.entrega)));
+    dizer(resumo(dados, await a.cotar(dados.coleta, dados.entrega, dados.servico_id)));
     return fim();
   }
 
   if (etapa === 'confirma') {
     if (SIM.test(t)) {
-      const p = await a.criarPedido(dados);
-      zerar();
-      dizer(p.status === 'sem_local'
-        ? `✅ Pedido #${p.id} recebido! Nossa equipe vai confirmar o endereço e já libera o motoboy.\n\nAcompanhe: ${p.link}`
-        : `✅ Pedido #${p.id} confirmado! Aviso por aqui quando o motoboy estiver a caminho.\n\nAcompanhe: ${p.link}`);
+      if (a.pedeEmail(dados)) { etapa = 'email'; dizer(PEDIR_EMAIL); return fim(); }
+      await fechar();
     } else if (NAO.test(t)) {
       zerar();
       dizer('Pedido cancelado. Envie *oi* quando precisar.');

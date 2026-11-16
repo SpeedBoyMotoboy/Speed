@@ -58,6 +58,7 @@ async function api(metodo, caminho, corpo) {
 }
 
 const doisDig = (n) => String(n).padStart(2, '0');
+const reais = (v) => Number(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const hora = (ts) => { const d = new Date(ts); return `${doisDig(d.getHours())}:${doisDig(d.getMinutes())}`; };
 const infoNativo = () => { try { return JSON.parse(nativo.info()); } catch { return {}; } };
 
@@ -177,7 +178,7 @@ async function telaLogin(mensagem = '') {
 
   trocar(raiz, 
     h('div', { class: 'topo' }, h('div', { class: 'nome' }, 'Speed ', h('span', null, 'Motoboy')),
-      h('div', { class: 'info' }, 'O login só funciona no dia em que você for convocado.')),
+      h('div', { class: 'info' }, 'Diária: o login só funciona no dia da convocação. Avulso: entre quando quiser.')),
     h('div', { class: 'conteudo' }, pendencias, form));
   conferir();
   if (nativo) conferencia = setInterval(conferir, 2000);
@@ -212,7 +213,7 @@ async function buscarEstado() {
   if (!estado) return undefined;
   const vista = Number(localStorage.getItem(CHAVE_ROTA) ?? -1);
   if (estado.rota_versao > vista) {
-    if (vista >= 0 && estado.rota.length) avisarNovaRota();
+    if (vista >= 0 && (estado.rota.length || estado.ofertas.length)) avisarNovaRota();
     localStorage.setItem(CHAVE_ROTA, String(estado.rota_versao));
   }
   if (!formAberto) desenharTurno();
@@ -241,9 +242,35 @@ function faixaSinal() {
 }
 
 function desenharTurno() {
-  const { turno, rota, motoboy } = estado;
+  const { turno, rota, motoboy, ofertas, ganhos } = estado;
   const [atual, ...proximas] = rota;
   const partes = [];
+
+  // Entregas disponíveis: o primeiro motoboy que aceitar leva.
+  for (const o of ofertas) {
+    const erro = h('div', { class: 'erro', role: 'alert' });
+    const responder = async (acao) => {
+      try {
+        estado = { ...(await api('POST', '/api/motoboy/oferta', { oferta_id: o.id, acao })), semConexao: false };
+        desenharTurno();
+      } catch (e) {
+        if (e.status === 401) return encerrado();
+        erro.textContent = e.message;
+        setTimeout(buscarEstado, 1500);
+      }
+      return undefined;
+    };
+    partes.push(h('div', { class: 'cartao oferta' },
+      h('span', { class: 'etiqueta oferta' }, o.urgente ? 'ENTREGA URGENTE DISPONÍVEL' : 'ENTREGA DISPONÍVEL'),
+      o.repasse != null && h('div', { class: 'ganho' }, `Você recebe ${reais(o.repasse)}`),
+      h('div', { class: 'detalhe' }, `Coleta: ${o.coleta_endereco}${o.dist_km != null ? ` (a ${String(o.dist_km).replace('.', ',')} km de você)` : ''}`),
+      h('div', { class: 'detalhe' }, `Entrega: ${o.entrega_endereco}${o.km != null ? ` (${String(o.km).replace('.', ',')} km)` : ''}`),
+      (o.servico || o.descricao) && h('div', { class: 'detalhe' }, [o.servico, o.descricao].filter(Boolean).join(' · ')),
+      h('div', { class: 'botoes' },
+        h('button', { class: 'grande coleta', onclick: () => responder('aceitar') }, 'Aceitar'),
+        h('button', { onclick: () => responder('recusar') }, 'Recusar')),
+      erro));
+  }
 
   if (turno.almoco_ate) {
     partes.push(h('div', { class: 'cartao livre' },
@@ -261,8 +288,8 @@ function desenharTurno() {
     }
   } else if (!turno.almoco_ate) {
     partes.push(h('div', { class: 'cartao livre' },
-      h('h2', null, 'Sem demanda no momento'),
-      h('p', { class: 'nota' }, 'Fique por perto e com o app ligado. Quando entrar demanda, o celular avisa.')));
+      h('h2', null, ofertas.length ? 'Escolha uma entrega acima' : 'Sem demanda no momento'),
+      h('p', { class: 'nota' }, 'Fique com o app ligado. Quando entrar demanda perto de você, o celular avisa.')));
   }
 
   const carregando = rota.some((p) => p.tipo === 'entrega' && !rota.some((c) => c.tipo === 'coleta' && c.demanda_id === p.demanda_id));
@@ -272,10 +299,32 @@ function desenharTurno() {
         carregando ? 'Almoço: entregue o que já coletou primeiro' : 'Iniciar almoço')));
   }
 
+  if (ganhos) {
+    partes.push(h('div', { class: 'titulo-secao' }, `Ganhos deste turno: ${reais(ganhos.total)}`),
+      ganhos.entregas.length
+        ? h('div', { class: 'cartao' }, ganhos.entregas.map((g) => h('div', { class: 'proxima' },
+          h('span', { class: 'etiqueta entrega' }, reais(g.repasse || 0)),
+          h('div', null, h('div', null, `#${g.id} · ${g.entrega_endereco}`), h('div', { class: 'detalhe' }, `${g.servico ? `${g.servico} · ` : ''}entregue ${hora(g.entregue_em)}`)))))
+        : h('p', { class: 'nota' }, 'Cada entrega concluída aparece aqui com o seu valor.'));
+  }
+  if (motoboy.tipo === 'avulso') {
+    const erroFim = h('div', { class: 'erro', role: 'alert' });
+    partes.push(h('div', { class: 'botoes' },
+      h('button', {
+        disabled: !estado.pode_encerrar,
+        onclick: async () => {
+          if (!window.confirm('Encerrar agora e parar de receber entregas?')) return;
+          try { await api('POST', '/api/motoboy/encerrar', {}); encerrado(); } catch (e) { erroFim.textContent = e.message; }
+        },
+      }, estado.pode_encerrar ? 'Encerrar por hoje' : 'Para encerrar, termine as entregas aceitas')), erroFim);
+  }
+
   trocar(raiz, 
     h('div', { class: 'topo' },
       h('div', { class: 'nome' }, motoboy.nome),
-      h('div', { class: 'info' }, `Turno até ${hora(turno.fim_previsto)} · ${rota.length} parada(s)`)),
+      h('div', { class: 'info' }, motoboy.tipo === 'avulso'
+        ? `Online · ${rota.length} parada(s)`
+        : `Turno até ${hora(turno.fim_previsto)} · ${rota.length} parada(s)`)),
     faixaSinal(),
     h('div', { class: 'conteudo' }, partes));
 }
@@ -338,6 +387,8 @@ function cartaoParada(p) {
     h('span', { class: `etiqueta ${p.tipo}` }, coleta ? 'AGORA: COLETA' : 'AGORA: ENTREGA'),
     h('div', { class: 'endereco' }, p.endereco),
     h('div', { class: 'detalhe' }, `Cliente: ${p.cliente}`),
+    p.servico && h('div', { class: 'detalhe' }, `Serviço: ${p.servico}`),
+    p.repasse != null && h('div', { class: 'detalhe' }, `Você recebe: ${reais(p.repasse)}`),
     p.contato && h('div', { class: 'detalhe' }, `Contato: ${p.contato}`),
     p.descricao && h('div', { class: 'detalhe' }, p.descricao),
     area, erro);

@@ -12,6 +12,7 @@ raiz.append(cabecalho, corpo);
 let mapa = null;
 let camada = null;
 let enquadrado = '';
+let ultimo = '';
 
 const SELO = {
   sem_local: ['Conferindo o endereço', 'espera'], aguardando: ['Procurando motoboy', 'espera'],
@@ -50,8 +51,12 @@ function desenharMapa(p) {
 function desenhar(p) {
   document.title = `Pedido #${p.id} — ${p.empresa}`;
   trocar(cabecalho, h('div', { class: 'dentro' }, h('div', { class: 'logo' }, p.empresa), h('div', { class: 'sub' }, `Pedido #${p.id}`)));
-  const [rotulo, classe] = p.retida && !['entregue', 'cancelada'].includes(p.status)
-    ? ['Aguardando confirmação', 'espera'] : SELO[p.status];
+  const [rotulo, classe] = p.pix ? ['Aguardando o pagamento', 'espera']
+    : p.retida && !['entregue', 'cancelada'].includes(p.status) ? ['Aguardando confirmação', 'espera'] : SELO[p.status];
+  const copiar = p.pix && h('button', {
+    type: 'button', class: 'primario',
+    onclick: async () => { try { await navigator.clipboard.writeText(p.pix.codigo); copiar.textContent = 'Código copiado ✓'; } catch { /* copia manual */ } },
+  }, 'Copiar código Pix');
   const etapas = [
     ['Pedido recebido', p.criada_em],
     ['Motoboy a caminho da coleta', p.atribuida_em],
@@ -66,13 +71,19 @@ function desenhar(p) {
         `${p.motoboy.nome} (${p.motoboy.veiculo === 'bike' ? 'bike' : 'moto'}) está com o seu pedido.`,
         p.paradas_antes > 0 ? ` Ele tem ${p.paradas_antes} parada(s) antes da sua.` : '',
       ].join('')
-        : p.retida ? 'Assim que o pedido for confirmado, chamamos o motoboy.' : 'Estamos chamando o motoboy mais próximo.';
+        : p.pix ? `Pague ${reais(p.valor)} por Pix até ${hora(p.pix.expira)} para liberar o motoboy.`
+          : p.retida ? 'Assim que o pedido for confirmado, chamamos o motoboy.' : 'Estamos chamando o motoboy mais próximo.';
 
   trocar(corpo,
     h('div', { class: 'cartao' },
       h('span', { class: `selo ${classe}` }, rotulo),
       h('p', { 'aria-live': 'polite' }, frase),
-      temMapa && mapaEl),
+      p.pix && [
+        p.pix.qr && h('img', { class: 'qr', alt: 'QR code do Pix', width: 220, height: 220, src: `data:image/png;base64,${p.pix.qr}` }),
+        h('label', { for: 'pix' }, 'Pix copia e cola'),
+        h('textarea', { id: 'pix', readonly: true, rows: 4, value: p.pix.codigo }),
+        copiar],
+      temMapa && !p.pix && mapaEl),
     p.status !== 'cancelada' && h('div', { class: 'cartao' },
       h('ol', { class: 'passos' }, etapas.map(([nome, ts], i) =>
         h('li', { class: i < atual || p.status === 'entregue' ? 'feito' : i === atual ? 'agora' : '' },
@@ -80,17 +91,19 @@ function desenhar(p) {
     h('div', { class: 'cartao' },
       h('div', { class: 'linha-end' }, h('div', { class: 'ponto coleta' }, 'C'), h('div', null, p.coleta.endereco)),
       h('div', { class: 'linha-end' }, h('div', { class: 'ponto entrega' }, 'E'), h('div', null, p.entrega.endereco)),
-      p.descricao && h('p', { class: 'nota' }, p.descricao),
+      (p.servico || p.descricao) && h('p', { class: 'nota' }, [p.servico, p.descricao].filter(Boolean).join(' · ')),
       p.valor != null && h('div', { class: 'preco' }, h('span', { class: 'nota' }, 'Valor'), h('b', null, reais(p.valor)))),
     h('a', { class: 'botao primario', href: '/pedir/' }, 'Fazer novo pedido'));
-  if (temMapa) desenharMapa(p);
+  if (temMapa && !p.pix) desenharMapa(p);
 }
 
 async function atualizar() {
   try {
     const p = await api('GET', `/api/publico/pedido?c=${encodeURIComponent(codigo)}`);
-    desenhar(p);
-    if (!['entregue', 'cancelada'].includes(p.status)) setTimeout(atualizar, 10000);
+    // Só redesenha quando algo muda (o cliente pode estar copiando o código do Pix).
+    const chave = JSON.stringify([p.status, p.pagamento, p.retida, p.motoboy, p.paradas_antes]);
+    if (chave !== ultimo) { ultimo = chave; desenhar(p); }
+    if (!['entregue', 'cancelada'].includes(p.status)) setTimeout(atualizar, p.pix ? 5000 : 10000);
   } catch (e) {
     if (e.status === 404 || !codigo) {
       trocar(cabecalho, h('div', { class: 'dentro' }, h('div', { class: 'logo' }, 'Acompanhar pedido')));

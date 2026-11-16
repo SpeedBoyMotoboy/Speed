@@ -48,3 +48,7 @@ label.marcar input { width: 24px; height: 24px; flex: none; margin-top: 1px; }
 .pendencia:first-child { border-top: 0; }
 .pendencia .sim { color: var(--ok); font-weight: 700; }
 .pendencia .nao { color: var(--erro); font-weight: 700; }
+.cartao.oferta { border: 2px solid var(--destaque); }
+.etiqueta.oferta { background: var(--destaque); color: #111318; }
+.ganho { font-size: 22px; font-weight: 800; margin: 8px 0 4px; color: var(--ok); }
+.cartao.oferta .botoes { display: grid; grid-template-columns: 2fr 1fr; gap: 8px; margin-top: 12px; }

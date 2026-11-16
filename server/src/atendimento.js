@@ -4,7 +4,8 @@ import crypto from 'node:crypto';
 import { Erro } from './servico.js';
 import { conversar, reais } from './robo.js';
 import { interpretar, enviar as enviarPadrao, normalizarTelefone, destinoDe } from './mensageiro.js';
-import { coordValida } from './geo.js';
+import { coordValida, kmPelasRuas } from './geo.js';
+import * as mercadoPago from './mercadopago.js';
 
 const MIN = 60_000;
 const VALIDADE_CONVERSA = 30 * MIN;
@@ -18,7 +19,9 @@ const ALERTAS_AVISADOS = {
 const txt = (v, max) => String(v ?? '').trim().slice(0, max);
 const hora = (ts) => new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 
-export function criarAtendimento({ servico, geocodificar = null, enviar = enviarPadrao }) {
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+export function criarAtendimento({ servico, geocodificar = null, enviar = enviarPadrao, pagamentos = mercadoPago, kmRota = kmPelasRuas }) {
   const { q, tx, cfgBruta, auditar, agora } = servico.interno;
   const ligado = () => cfgBruta().whats_provedor !== '';
   const base = () => cfgBruta().url_publica.replace(/\/+$/, '');
@@ -109,12 +112,14 @@ export function criarAtendimento({ servico, geocodificar = null, enviar = enviar
   }
 
   // -------------------------------------------------------------- clientes
-  function lembrarCliente(telefone, nome, coleta) {
+  function lembrarCliente(telefone, nome, coleta, email = '') {
     const t = agora();
-    q(`INSERT INTO clientes (telefone, nome, criado_em, pedidos, ult_endereco, ult_lat, ult_lon) VALUES (?,?,?,1,?,?,?)
-       ON CONFLICT(telefone) DO UPDATE SET nome = excluded.nome, pedidos = pedidos + 1,
-         ult_endereco = excluded.ult_endereco, ult_lat = excluded.ult_lat, ult_lon = excluded.ult_lon`)
-      .run(telefone, nome, t, coleta.endereco, coleta.lat, coleta.lon);
+    // Cliente fixo mantém o nome que o admin cadastrou.
+    q(`INSERT INTO clientes (telefone, nome, criado_em, pedidos, ult_endereco, ult_lat, ult_lon, email) VALUES (?,?,?,1,?,?,?,?)
+       ON CONFLICT(telefone) DO UPDATE SET nome = CASE WHEN faturado = 1 THEN nome ELSE excluded.nome END, pedidos = pedidos + 1,
+         ult_endereco = excluded.ult_endereco, ult_lat = excluded.ult_lat, ult_lon = excluded.ult_lon,
+         email = CASE WHEN excluded.email <> '' THEN excluded.email ELSE email END`)
+      .run(telefone, nome, t, coleta.endereco, coleta.lat, coleta.lon, email);
   }
   const abertosDe = (telefone) => q(`SELECT * FROM demandas WHERE cliente_telefone = ?
       AND status IN ('sem_local','aguardando','atribuida','coletada') ORDER BY id DESC`).all(telefone);
@@ -135,6 +140,63 @@ export function criarAtendimento({ servico, geocodificar = null, enviar = enviar
     return '';
   }
 
+  // Km pelas ruas quando há chave de rota; senão o servico.js usa linha reta × 1,35.
+  async function distancia(coleta, entrega) {
+    const chave = cfgBruta().ors_chave;
+    if (!chave || coleta.lat == null || entrega.lat == null) return null;
+    return kmRota(chave, coleta, entrega);
+  }
+  const clienteFixo = (telefone) => q('SELECT * FROM clientes WHERE telefone = ? AND faturado = 1').get(telefone) || null;
+
+  // ------------------------------------------------------------ pagamento (Pix)
+  async function gerarPix(d) {
+    const c = cfgBruta();
+    const expira = agora() + Number(c.pagamento_validade_min) * MIN;
+    const pix = await pagamentos.criarPix(c.mp_token, {
+      valor: d.valor, descricao: `${c.empresa_nome} - entrega #${d.id}`, email: d.email, referencia: d.codigo,
+      avisoUrl: base().startsWith('https://') ? `${base()}/api/pagamento/mp?s=${c.whats_segredo}` : null,
+      expiraEm: expira,
+    });
+    servico.registrarPix(d.id, { pagId: pix.id, pix: pix.codigo, qr: pix.qr, expira });
+    return { codigo: pix.codigo, qr: pix.qr, expira };
+  }
+  // Confere no Mercado Pago (nunca confia no aviso recebido). Devolve true se ficou pago.
+  const conferidos = new Map();
+  async function verificarPagamento(d, { forcar = false } = {}) {
+    if (d.pagamento !== 'pendente' || !d.pag_id) return d.pagamento === 'pago';
+    if (!forcar && agora() - (conferidos.get(d.id) || 0) < 5000) return false;
+    conferidos.set(d.id, agora());
+    if (conferidos.size > 2000) conferidos.clear();
+    const p = await pagamentos.consultar(cfgBruta().mp_token, d.pag_id);
+    if (p.status !== 'approved' || p.referencia !== d.codigo || !(p.valor >= d.valor - 0.01)) return false;
+    servico.marcarPago(d.id);
+    return true;
+  }
+  async function webhookPagamento(corpo, url) {
+    const id = corpo?.data?.id ?? url.searchParams.get('data.id') ?? url.searchParams.get('id');
+    const d = id ? q('SELECT * FROM demandas WHERE pag_id = ?').get(String(id)) : null;
+    if (d) await verificarPagamento(d, { forcar: true });
+  }
+  // Página de acompanhamento: enquanto espera o Pix, confere o pagamento a cada consulta.
+  async function pedidoVivo(codigo) {
+    const d = typeof codigo === 'string' ? q('SELECT * FROM demandas WHERE codigo = ?').get(codigo) : null;
+    if (d && d.pagamento === 'pendente' && d.status !== 'cancelada') await verificarPagamento(d).catch(() => {});
+    return servico.pedidoPublico(codigo);
+  }
+  // Pix vencido sem pagamento: confere uma última vez e cancela o pedido.
+  async function expirarPagamentos() {
+    const vencidos = q(`SELECT * FROM demandas WHERE pagamento = 'pendente' AND pag_expira < ?
+                        AND retida = 1 AND status IN ('sem_local','aguardando')`).all(agora());
+    for (const d of vencidos) {
+      let pago = false;
+      try { pago = await verificarPagamento(d, { forcar: true }); } catch { continue; } // banco fora do ar: tenta na próxima
+      if (pago) continue;
+      silenciarCancelamento = true;
+      try { servico.cancelarDemanda(d.id, 'sistema'); } finally { silenciarCancelamento = false; }
+      if (d.cliente_telefone) mandar(d.cliente_telefone, `Pedido #${d.id} cancelado: o Pix não foi pago a tempo. Envie *oi* para pedir de novo.`, 'cliente');
+    }
+  }
+
   // ----------------------------------------------------- robô do WhatsApp
   let silenciarCancelamento = false;
   function ajudas(msg) {
@@ -145,18 +207,34 @@ export function criarAtendimento({ servico, geocodificar = null, enviar = enviar
       empresa: cfgBruta().empresa_nome,
       fechado: () => motivoRecusa(msg.telefone),
       geocodificar: (texto) => (geocodificar ? geocodificar(texto, { cidadeBase: cfgBruta().cidade_base, limite: 1 }) : []),
-      cotar: (c, e) => servico.cotar(c, e),
+      cotar: async (c, e, servicoId) => servico.cotar(c, e, { km: await distancia(c, e), servicoId, telefone: msg.telefone }),
+      servicos: () => servico.listarServicos().filter((x) => x.ativo).map((x) => ({ id: x.id, nome: x.nome })),
+      pedeEmail: (dados) => pagaNaHora(msg.telefone) && !dados.email && !EMAIL.test(cliente?.email || ''),
       ultimoEndereco: () => (cliente?.ult_endereco && cliente.ult_lat != null
         ? { endereco: cliente.ult_endereco, lat: cliente.ult_lat, lon: cliente.ult_lon } : null),
       pedidos: () => abertosDe(msg.telefone).map((d) => ({ id: d.id, status: d.status, link: link(d) })),
-      criarPedido: (dados) => {
+      criarPedido: async (dados) => {
         const contato = `${nome} ${msg.telefone}`;
+        const fixo = clienteFixo(msg.telefone);
+        const email = dados.email || cliente?.email || '';
+        const km = await distancia(dados.coleta, dados.entrega);
+        const previa = servico.cotar(dados.coleta, dados.entrega, { km, servicoId: dados.servico_id, telefone: msg.telefone });
+        const pagar = pagaNaHora(msg.telefone) && previa.valor != null && EMAIL.test(email);
         const d = servico.criarPedido({
           cliente: nome, telefone: msg.telefone, descricao: dados.descricao, requisito: dados.requisito,
+          urgente: true, servico_id: dados.servico_id, km, email,
           coleta: { ...dados.coleta, contato }, entrega: dados.entrega,
-        }, 'robo');
-        lembrarCliente(msg.telefone, nome, dados.coleta);
-        return { id: d.id, status: d.status, link: link(d) };
+        }, 'robo', { retida: pagar, pagamento: fixo ? 'faturado' : '' });
+        lembrarCliente(msg.telefone, nome, dados.coleta, email);
+        const r = { id: d.id, status: d.status, link: link(d), valor: d.valor, validade_min: Number(cfgBruta().pagamento_validade_min) };
+        if (!pagar) return r;
+        try {
+          return { ...r, pix: (await gerarPix(d)).codigo };
+        } catch (e) {
+          // Sem Pix agora: o pedido fica esperando aprovação no painel em vez de se perder.
+          avisarAdmin(`⚠️ Não consegui gerar o Pix do pedido #${d.id} (${e.message}). Ele está esperando sua aprovação no painel.`);
+          return { ...r, status: 'sem_local' };
+        }
       },
       confirmarSite: (id) => {
         const d = minha(id);
@@ -239,9 +317,6 @@ export function criarAtendimento({ servico, geocodificar = null, enviar = enviar
     };
     if (evento === 'demanda_criada') {
       if (d.status === 'sem_local') avisarAdmin(`📍 Pedido #${d.id} de ${d.cliente} entrou sem local no mapa. Marque o ponto no painel.`);
-      else if (d.retida && d.origem === 'site' && modoConfirmacao() === 'painel') {
-        avisarAdmin(`🆕 Pedido #${d.id} de ${d.cliente} chegou pelo site e espera sua aprovação no painel.`);
-      }
     } else if (evento === 'demanda_atribuida') {
       aoCliente(`🛵 Pedido #${d.id}: ${motoboy.nome.split(/\s+/)[0]} está a caminho da coleta.\n\nAcompanhe: ${link(d)}`);
     } else if (evento === 'demanda_coletada') {
@@ -250,6 +325,25 @@ export function criarAtendimento({ servico, geocodificar = null, enviar = enviar
       aoCliente(`✅ Pedido #${d.id} entregue para ${d.recebedor || 'o destinatário'} às ${hora(d.entregue_em)}.\n\nObrigado por escolher a ${c.empresa_nome}!`);
     } else if (evento === 'demanda_cancelada') {
       if (!silenciarCancelamento) aoCliente(`Pedido #${d.id} foi cancelado. Qualquer dúvida, é só chamar por aqui.`);
+      if (d.pagamento === 'pago') avisarAdmin(`💸 Pedido #${d.id} foi cancelado depois de pago. Devolva o Pix de ${reais(d.valor)} pelo Mercado Pago.`);
+    } else if (evento === 'demanda_paga') {
+      aoCliente(`✅ Pagamento do pedido #${d.id} confirmado! Já estamos chamando o motoboy.\n\nAcompanhe: ${link(d)}`);
+    } else if (evento === 'cobrar') {
+      // Endereço conferido pelo admin: agora há valor, então o cliente recebe o Pix.
+      gerarPix(d).then((pix) => {
+        if (!d.cliente_telefone) return;
+        mandar(d.cliente_telefone, `📍 Endereço do pedido #${d.id} conferido. Valor: *${reais(d.valor)}*. Para liberar o motoboy, pague o Pix (copia e cola na próxima mensagem) em até ${c.pagamento_validade_min} min.\n\nQR code: ${link(d)}`, 'cliente');
+        mandar(d.cliente_telefone, pix.codigo, 'cliente');
+      }).catch((e) => {
+        avisarAdmin(`⚠️ Não consegui gerar o Pix do pedido #${d.id} (${e.message}). Ele está esperando sua aprovação no painel.`);
+      });
+    } else if (evento === 'pago_cancelado') {
+      avisarAdmin(`💸 O Pix do pedido #${d.id} caiu depois de o pedido ser cancelado. Devolva ${reais(d.valor)} pelo Mercado Pago.`);
+    } else if (evento === 'oferta') {
+      const ganho = turno.tipo === 'avulso' && d.repasse != null ? ` (${reais(d.repasse)} para você)` : '';
+      mandar(motoboy.telefone, `🛵 Entrega disponível${ganho}: coleta em ${d.coleta_endereco}. Abra o app Speed Motoboy para aceitar.`, 'oferta');
+    } else if (evento === 'sem_aceite') {
+      avisarAdmin(`⏰ Pedido #${d.id} de ${d.cliente} está há ${c.oferta_alerta_min} min sem motoboy aceitar. Veja no painel.`);
     } else if (evento === 'convocacao') {
       mandar(motoboy.telefone,
         `Olá, ${motoboy.nome.split(/\s+/)[0]}! A ${c.empresa_nome} convocou você para o turno de hoje. Abra o app Speed Motoboy e inicie o turno.`,
@@ -263,14 +357,20 @@ export function criarAtendimento({ servico, geocodificar = null, enviar = enviar
 
   // -------------------------------------------------------- pedido pelo site
   function modoConfirmacao() {
-    const modo = cfgBruta().site_confirmacao;
-    return modo === 'whatsapp' && !ligado() ? 'painel' : modo;
+    const c = cfgBruta();
+    if (c.site_confirmacao === 'whatsapp' && !ligado()) return 'painel';
+    if (c.site_confirmacao === 'pagamento' && !c.mp_token) return 'painel';
+    return c.site_confirmacao;
   }
+  // Paga antes de liberar? (cliente fixo vai para a fatura mensal)
+  const pagaNaHora = (telefone) => modoConfirmacao() === 'pagamento' && !clienteFixo(telefone);
   function infoPublica() {
     const c = cfgBruta();
     return {
       empresa: c.empresa_nome, ativo: c.pedidos_site === '1', fechado: servico.foraDoHorario(),
       mapa: { lat: Number(c.mapa_lat), lon: Number(c.mapa_lon) },
+      prazo_min: Number(c.urgente_prazo_min), pagamento: modoConfirmacao() === 'pagamento',
+      servicos: servico.listarServicos().filter((x) => x.ativo).map((x) => ({ id: x.id, nome: x.nome, adicional: x.adicional })),
     };
   }
   function lerPontoPublico(p) {
@@ -288,7 +388,10 @@ export function criarAtendimento({ servico, geocodificar = null, enviar = enviar
       if (p.endereco.length < 6) throw new Erro(422, 'endereco_invalido', `Escreva o endereço de ${nome} com rua, número e bairro.`);
       await acharNoMapa(p);
     }
-    return { coleta, entrega, ...servico.cotar(coleta, entrega) };
+    const cot = servico.cotar(coleta, entrega, {
+      km: await distancia(coleta, entrega), servicoId: dados?.servico_id, telefone: normalizarTelefone(dados?.telefone),
+    });
+    return { coleta, entrega, km: cot.km, valor: cot.valor };
   }
   async function pedidoSite(dados, ip) {
     const c = cfgBruta();
@@ -307,11 +410,32 @@ export function criarAtendimento({ servico, geocodificar = null, enviar = enviar
     await acharNoMapa(coleta);
     await acharNoMapa(entrega);
     if (!coleta.contato) coleta.contato = `${nome} ${telefone}`;
-    const modo = modoConfirmacao();
+    const km = await distancia(coleta, entrega);
+    const previa = servico.cotar(coleta, entrega, { km, servicoId: dados?.servico_id, telefone });
+    const fixo = clienteFixo(telefone);
+    const email = txt(dados?.email, 120).toLowerCase();
+    // Cliente fixo não paga na hora, mas precisa provar que é ele (qualquer um pode digitar o telefone dele).
+    let modo = fixo ? (ligado() ? 'whatsapp' : 'painel') : modoConfirmacao();
+    if (modo === 'pagamento') {
+      if (!EMAIL.test(email)) throw new Erro(422, 'email_invalido', 'Informe um e-mail válido: o comprovante do Pix vai para ele.');
+      if (previa.valor == null) modo = 'painel'; // sem ponto no mapa não há preço: a equipe confere e o Pix vai depois
+    }
     const d = servico.criarPedido({
-      cliente: nome, telefone, descricao: dados?.descricao, requisito: dados?.requisito ?? 'qualquer', coleta, entrega,
-    }, 'site', { retida: modo !== 'nenhuma' });
-    lembrarCliente(telefone, nome, coleta);
+      cliente: fixo?.nome || nome, telefone, descricao: dados?.descricao, requisito: dados?.requisito ?? 'qualquer',
+      urgente: true, servico_id: dados?.servico_id, km, email, coleta, entrega,
+    }, 'site', { retida: modo !== 'nenhuma', pagamento: fixo ? 'faturado' : '' });
+    lembrarCliente(telefone, nome, coleta, email);
+
+    let pix = null;
+    if (modo === 'pagamento') {
+      try {
+        pix = await gerarPix(d);
+      } catch (e) {
+        modo = 'painel';
+        avisarAdmin(`⚠️ Não consegui gerar o Pix do pedido #${d.id} (${e.message}).`);
+      }
+    }
+    if (modo === 'painel') avisarAdmin(`🆕 Pedido #${d.id} de ${d.cliente} chegou pelo site e espera sua aprovação no painel.`);
 
     if (modo === 'whatsapp') {
       const conversa = conversaDe(telefone, nome);
@@ -324,7 +448,7 @@ export function criarAtendimento({ servico, geocodificar = null, enviar = enviar
         '', 'Foi você? Responda:', '*1* - Confirmar', '*2* - Cancelar',
       ].filter((l) => l !== null).join('\n'), 'robo', 'Robô');
     }
-    return { id: d.id, codigo: d.codigo, status: d.status, valor: d.valor, confirmacao: modo };
+    return { id: d.id, codigo: d.codigo, status: d.status, valor: d.valor, confirmacao: modo, pix };
   }
 
   // ------------------------------------------------------ painel do admin
@@ -390,11 +514,12 @@ export function criarAtendimento({ servico, geocodificar = null, enviar = enviar
       }
     }
     q('DELETE FROM saida WHERE criada_em < ?').run(agora() - 30 * 24 * 60 * MIN);
+    expirarPagamentos().catch((e) => console.error('[pagamento]', e));
   }
 
   return {
     definirOrigem, receber, segredoConfere, despacharSaida, rotina,
-    infoPublica, cotarPublico, pedidoSite,
+    infoPublica, cotarPublico, pedidoSite, pedidoVivo, webhookPagamento, expirarPagamentos,
     resumo, responder, modoConversa, testar,
   };
 }

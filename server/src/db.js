@@ -144,6 +144,27 @@ CREATE TABLE IF NOT EXISTS saida (
   erro TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_saida_pendente ON saida(enviada_em, proxima_em);
+-- Tipos de serviço (complexidade da demanda): cada um soma um valor ao preço.
+CREATE TABLE IF NOT EXISTS servicos (
+  id INTEGER PRIMARY KEY,
+  nome TEXT NOT NULL,
+  adicional REAL NOT NULL DEFAULT 0,
+  repasse_pct REAL,
+  ativo INTEGER NOT NULL DEFAULT 1,
+  ordem INTEGER NOT NULL DEFAULT 0
+);
+-- Oferta de uma demanda a um motoboy online e perto: o primeiro que aceitar leva.
+CREATE TABLE IF NOT EXISTS ofertas (
+  id INTEGER PRIMARY KEY,
+  demanda_id INTEGER NOT NULL REFERENCES demandas(id),
+  turno_id INTEGER NOT NULL REFERENCES turnos(id),
+  criada_em INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'aberta' CHECK (status IN ('aberta','aceita','recusada','encerrada')),
+  respondida_em INTEGER,
+  dist_km REAL,
+  UNIQUE (demanda_id, turno_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ofertas_turno ON ofertas(turno_id, status);
 CREATE TABLE IF NOT EXISTS auditoria (
   id INTEGER PRIMARY KEY,
   ts INTEGER NOT NULL,
@@ -211,14 +232,36 @@ export const CONFIG_PADRAO = {
   convocacao_auto: '0',
   convocacao_auto_max: '3',
   convocacao_auto_espera_min: '3',
+  // Entrega urgente: prazo prometido na página, repasse ao motoboy avulso e ofertas.
+  urgente_prazo_min: '30',
+  repasse_pct: '60',
+  repasse_minimo: '15',
+  oferta_raio_km: '5',
+  oferta_alerta_min: '5',
+  avulso_max_horas: '12',
+  // Pix pelo Mercado Pago (token secreto) e rota real pelas ruas (OpenRouteService, opcional).
+  mp_token: '',
+  pagamento_validade_min: '30',
+  ors_chave: '',
 };
+
+const SERVICOS_PADRAO = [
+  'Entrega de documento ou encomenda', 'Ida e volta (leva e traz)', 'Cartório ou protocolo',
+  'Xerox ou impressão + entrega', 'Visita ou vistoria com fotos', 'Compra e entrega',
+];
 
 // Colunas acrescentadas depois da primeira versão (o banco em produção já existe).
 const COLUNAS_NOVAS = {
   demandas: {
     codigo: 'TEXT', cliente_telefone: "TEXT NOT NULL DEFAULT ''", valor: 'REAL', km: 'REAL',
     retida: 'INTEGER NOT NULL DEFAULT 0',
+    urgente: 'INTEGER NOT NULL DEFAULT 0', servico: "TEXT NOT NULL DEFAULT ''", repasse: 'REAL',
+    pagamento: "TEXT NOT NULL DEFAULT ''", pag_id: 'TEXT', pag_pix: 'TEXT', pag_qr: 'TEXT', pag_expira: 'INTEGER',
+    pago_em: 'INTEGER', fila_em: 'INTEGER', email: "TEXT NOT NULL DEFAULT ''", sem_aceite_avisado: 'INTEGER NOT NULL DEFAULT 0',
   },
+  motoboys: { tipo: "TEXT NOT NULL DEFAULT 'diaria'" },
+  turnos: { tipo: "TEXT NOT NULL DEFAULT 'diaria'" },
+  clientes: { faturado: 'INTEGER NOT NULL DEFAULT 0', preco_pct: 'REAL NOT NULL DEFAULT 100', email: "TEXT NOT NULL DEFAULT ''" },
   convocacoes: { origem: "TEXT NOT NULL DEFAULT 'admin'" },
   conversas: {
     telefone: 'TEXT', destino: 'TEXT', etapa: "TEXT NOT NULL DEFAULT ''", dados: "TEXT NOT NULL DEFAULT '{}'",
@@ -249,5 +292,9 @@ export function abrirBanco(arquivo) {
   migrar(db);
   const inserir = db.prepare('INSERT OR IGNORE INTO config (chave, valor) VALUES (?, ?)');
   for (const [chave, valor] of Object.entries(CONFIG_PADRAO)) inserir.run(chave, valor);
+  if (db.prepare('SELECT COUNT(*) AS n FROM servicos').get().n === 0) {
+    const novo = db.prepare('INSERT INTO servicos (nome, ordem) VALUES (?, ?)');
+    SERVICOS_PADRAO.forEach((nome, i) => novo.run(nome, i));
+  }
   return db;
 }

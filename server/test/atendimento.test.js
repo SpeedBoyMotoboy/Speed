@@ -25,8 +25,21 @@ function montar(config = {}) {
     const p = MAPA[texto.toLowerCase()];
     return p ? [{ nome: `${texto} (mapa)`, ...p }] : [];
   };
+  // Mercado Pago de mentira: guarda as cobranças e deixa o teste dizer quando foi paga.
+  const banco = { cobrancas: [], pagos: new Set(), falhar: false };
+  const pagamentos = {
+    criarPix: async (token, dados) => {
+      if (banco.falhar) throw new Error('fora do ar');
+      banco.cobrancas.push({ token, ...dados });
+      return { id: `mp${banco.cobrancas.length}`, codigo: `PIX-${dados.referencia}`, qr: 'QUJD' };
+    },
+    consultar: async (token, id) => {
+      const c = banco.cobrancas[Number(id.slice(2)) - 1];
+      return { status: banco.pagos.has(id) ? 'approved' : 'pending', referencia: c.referencia, valor: c.valor };
+    },
+  };
   const a = criarAtendimento({
-    servico: s, geocodificar,
+    servico: s, geocodificar, pagamentos,
     enviar: async (cfg, destino, texto) => { enviadas.push({ destino, texto }); },
   });
   s.salvarConfig({
@@ -39,17 +52,21 @@ function montar(config = {}) {
     await a.receber({ telefone: '5511977770001', nome: 'Carla Souza', texto, ...extra });
     return enviadas.map((m) => m.texto).join('\n---\n');
   };
-  const motoboyEmTurno = () => {
-    const id = s.criarMotoboy({ nome: 'Ana Lima', telefone: '11999990001', pin: '123456', veiculo: 'moto', tem_bag: true }, 'teste');
-    s.convocar(id, 'teste');
-    const { token } = s.loginMotoboy({ telefone: '11999990001', pin: '123456', aceito_termo: true, dispositivo: 'a', origem: 'app' }, 'ip');
-    s.registrarPosicoes(s.autenticarMotoboy(token), { pontos: [{ ...P(0), ts: relogio.t, precisao: 10 }], gps_ligado: true });
+  const motoboyEmTurno = (extra = {}, km = 0) => {
+    const m = { nome: 'Ana Lima', telefone: '11999990001', pin: '123456', veiculo: 'moto', tem_bag: true, ...extra };
+    const id = s.criarMotoboy(m, 'teste');
+    if (m.tipo !== 'avulso') s.convocar(id, 'teste');
+    const { token } = s.loginMotoboy({ telefone: m.telefone, pin: '123456', aceito_termo: true, dispositivo: 'a', origem: 'app' }, 'ip');
+    s.registrarPosicoes(s.autenticarMotoboy(token), { pontos: [{ ...P(km), ts: relogio.t, precisao: 10 }], gps_ligado: true });
     return { id, token };
   };
+  const estadoDe = (token) => s.estadoMotoboy(s.autenticarMotoboy(token));
+  // Aceita a primeira oferta aberta do motoboy.
+  const aceitar = (token) => s.responderOferta(s.autenticarMotoboy(token), { oferta_id: estadoDe(token).ofertas[0].id, acao: 'aceitar' });
   const demandas = () => s.estadoAdmin().demandas;
   // Envia o que estava na fila e zera a lista, para conferir só o que vier depois.
   const limpar = async () => { await a.despacharSaida(); enviadas.length = 0; };
-  return { s, a, db, relogio, enviadas, cliente, motoboyEmTurno, demandas, limpar };
+  return { s, a, db, relogio, enviadas, cliente, motoboyEmTurno, demandas, limpar, banco, estadoDe, aceitar };
 }
 
 test('telefones: normaliza DDI, nono dígito e ids do WhatsApp', () => {
@@ -100,9 +117,11 @@ test('robô: conversa completa vira pedido, despacha e avisa cliente a cada etap
   assert.match(await cliente('sim'), /endereço de \*ENTREGA\*/);
   assert.match(await cliente('Rua Que Nao Existe 999'), /Não achei esse endereço/);
   assert.match(await cliente('Rua da Entrega, 20, Centro'), /Achei no mapa/);
-  assert.match(await cliente('1'), /O que vamos levar/);
+  assert.match(await cliente('1'), /Que tipo de serviço[\s\S]*1\* - Entrega de documento[\s\S]*3\* - Cartório/);
+  assert.match(await cliente('9'), /Que tipo de serviço/, 'opção que não existe repete a lista');
+  assert.match(await cliente('3'), /Descreva o que precisa/);
   const resumo = await cliente('Caixa grande, precisa de baú. Entregar para João');
-  assert.match(resumo, /Confira o pedido[\s\S]*Rua da Coleta[\s\S]*Rua da Entrega[\s\S]*R\$\s12,00/);
+  assert.match(resumo, /Confira o pedido[\s\S]*Rua da Coleta[\s\S]*Rua da Entrega[\s\S]*Cartório ou protocolo[\s\S]*R\$\s12,00/);
   assert.equal(demandas().length, 0, 'nada criado antes de confirmar');
 
   const fim = await cliente('1');
@@ -112,6 +131,9 @@ test('robô: conversa completa vira pedido, despacha e avisa cliente a cada etap
   assert.equal(d.cliente, 'Carla Souza');
   assert.equal(d.cliente_telefone, '11977770001');
   assert.equal(d.requisito, 'bau');
+  assert.equal(d.urgente, 1);
+  assert.equal(d.servico, 'Cartório ou protocolo');
+  assert.equal(d.repasse, 15, '60% de R$ 12 daria R$ 7,20: vale o mínimo de R$ 15');
   assert.equal(d.valor, 12, '8 de base + 2 km a mais x R$ 2 (3 km x 1,35 = 4,1 km)');
   assert.equal(d.status, 'aguardando', 'a motoboy em turno não tem baú');
 
@@ -142,7 +164,8 @@ test('robô: localização enviada vale como endereço e endereço não achado v
   await cliente('1');
   assert.match(await cliente('', P(1)), /endereço de \*ENTREGA\*/);
   await cliente('Travessa Sumida 5');
-  assert.match(await cliente('Travessa Sumida 5, Bairro Novo'), /Anotei o endereço[\s\S]*O que vamos levar/);
+  assert.match(await cliente('Travessa Sumida 5, Bairro Novo'), /Anotei o endereço[\s\S]*Que tipo de serviço/);
+  await cliente('1');
   await cliente('Envelope');
   assert.match(await cliente('1'), /Pedido #1 recebido/);
   assert.equal(demandas()[0].status, 'sem_local');
@@ -197,8 +220,8 @@ test('fila de envio: tenta de novo com espera crescente e registra o erro', asyn
 });
 
 test('site: pedido fica retido até o admin aprovar', async () => {
-  const { s, a, motoboyEmTurno, demandas, enviadas } = montar();
-  motoboyEmTurno();
+  const { s, a, motoboyEmTurno, demandas, enviadas, aceitar, estadoDe } = montar();
+  const { token } = motoboyEmTurno();
   const cotacao = await a.cotarPublico({ coleta: { endereco: 'Rua da Coleta, 10, Centro' }, entrega: { endereco: 'Rua da Entrega, 20, Centro' } }, 'ip');
   assert.equal(cotacao.valor, 12);
   assert.equal(cotacao.coleta.lat, P(0).lat);
@@ -219,7 +242,11 @@ test('site: pedido fica retido até o admin aprovar', async () => {
   assert.equal(publico.motoboy, null);
   assert.throws(() => s.pedidoPublico('codigo-errado'), { codigo: 'nao_encontrado' });
 
+  assert.equal(estadoDe(token).ofertas.length, 0, 'retido não é oferecido');
   s.liberarDemanda(r.id, 'admin:teste');
+  assert.equal(demandas()[0].status, 'aguardando', 'urgente espera alguém aceitar');
+  assert.equal(demandas()[0].ofertas, 1);
+  aceitar(token);
   assert.equal(demandas()[0].status, 'atribuida');
   const depois = s.pedidoPublico(r.codigo);
   assert.equal(depois.motoboy.nome, 'Ana');
@@ -230,8 +257,8 @@ test('site: pedido fica retido até o admin aprovar', async () => {
 });
 
 test('site: cliente confirma pelo WhatsApp; sem resposta o pedido é cancelado', async () => {
-  const { a, relogio, motoboyEmTurno, demandas, enviadas, limpar } = montar({ site_confirmacao: 'whatsapp' });
-  motoboyEmTurno();
+  const { a, relogio, motoboyEmTurno, demandas, enviadas, limpar, aceitar } = montar({ site_confirmacao: 'whatsapp' });
+  const { token } = motoboyEmTurno();
   const pedido = (telefone) => ({
     nome: 'Carla Souza', telefone, descricao: 'Envelope',
     coleta: { endereco: 'Rua da Coleta, 10, Centro' }, entrega: { endereco: 'Rua da Entrega, 20, Centro' },
@@ -245,7 +272,8 @@ test('site: cliente confirma pelo WhatsApp; sem resposta o pedido é cancelado',
 
   enviadas.length = 0;
   await a.receber({ telefone: '5511977770001', nome: 'Carla Souza', texto: '1' });
-  assert.match(enviadas[0].texto, /Pedido #1 confirmado/);
+  assert.ok(enviadas.some((m) => m.destino === '5511977770001' && /Pedido #1 confirmado/.test(m.texto)));
+  aceitar(token);
   assert.equal(demandas()[0].status, 'atribuida');
 
   const outro = await a.pedidoSite(pedido('11955550003'), 'ip');
@@ -377,4 +405,201 @@ test('HTTP: páginas públicas, webhook com segredo e segredos fora da resposta'
   const publico = await (await fetch(`${base}/api/publico/pedido?c=${codigo}`)).json();
   assert.equal(publico.retida, false);
   assert.equal(publico.coleta.endereco, 'Rua A, 100');
+});
+
+test('avulso: entra sem convocação, vê a oferta com o repasse, aceita, recebe e encerra quando quiser', async () => {
+  const { s, a, relogio, cliente, motoboyEmTurno, demandas, enviadas, estadoDe, aceitar } = montar({ preco_base: 20, preco_km_incluso: 0, preco_km: 5 });
+  assert.throws(() => s.convocar(s.criarMotoboy({ nome: 'Zeca', telefone: '11999990009', pin: '123456', veiculo: 'moto', tipo: 'avulso' }, 'teste'), 'teste'), { codigo: 'avulso' });
+  const { token } = motoboyEmTurno({ nome: 'Beto Reis', telefone: '11999990002', tipo: 'avulso' });
+  assert.equal(estadoDe(token).motoboy.tipo, 'avulso');
+  assert.equal(estadoDe(token).pode_encerrar, true);
+
+  for (const texto of ['oi', '1', 'Rua da Coleta, 10, Centro', '1', 'Rua da Entrega, 20, Centro', '1', '1', 'Envelope', '1']) await cliente(texto);
+  const [d] = demandas();
+  assert.equal(d.valor, 40, 'R$ 20 + 4 km x R$ 5');
+  assert.equal(d.repasse, 24, '60% do valor');
+  assert.equal(d.status, 'aguardando');
+  await a.despacharSaida();
+  assert.ok(enviadas.some((m) => m.destino === '5511999990002' && /Entrega disponível \(R\$\s24,00 para você\)/.test(m.texto)));
+
+  const [oferta] = estadoDe(token).ofertas;
+  assert.equal(oferta.repasse, 24);
+  assert.equal(oferta.coleta_endereco, 'Rua da Coleta, 10, Centro');
+  const posicao = s.registrarPosicoes(s.autenticarMotoboy(token), { pontos: [{ ...P(0), ts: relogio.t + 1000, precisao: 10 }] });
+  assert.equal(posicao.pendentes, 1, 'a oferta conta como pendência: o app nativo avisa o motoboy');
+
+  aceitar(token);
+  assert.equal(demandas()[0].status, 'atribuida');
+  assert.equal(estadoDe(token).rota[0].repasse, 24);
+  assert.throws(() => s.encerrarPeloMotoboy(s.autenticarMotoboy(token)), { codigo: 'com_demanda' });
+  s.confirmarParada(s.autenticarMotoboy(token), { demanda_id: d.id, tipo: 'coleta' });
+  s.registrarPosicoes(s.autenticarMotoboy(token), { pontos: [{ ...P(3), ts: relogio.t + 2000, precisao: 10 }] });
+  s.confirmarParada(s.autenticarMotoboy(token), { demanda_id: d.id, tipo: 'entrega', recebedor: 'João' });
+  assert.deepEqual(estadoDe(token).ganhos.total, 24);
+  assert.equal(estadoDe(token).ganhos.entregas[0].id, d.id);
+
+  const [linha] = s.relatorio(relogio.t - MIN, relogio.t + MIN);
+  assert.deepEqual([linha.diarias, linha.repasses, linha.valor], [0, 24, 24], 'avulso recebe por entrega, não diária');
+  const [entrega] = s.relatorioEntregas(relogio.t - MIN, relogio.t + MIN);
+  assert.deepEqual([entrega.valor, entrega.repasse, entrega.margem, entrega.motoboy], [40, 24, 16, 'Beto Reis']);
+
+  s.encerrarPeloMotoboy(s.autenticarMotoboy(token));
+  assert.throws(() => s.autenticarMotoboy(token), { codigo: 'turno_encerrado' });
+});
+
+test('oferta: só para quem está perto, o primeiro que aceita leva, recusa some e o raio cresce com a espera', async () => {
+  const { s, relogio, motoboyEmTurno, demandas, estadoDe, aceitar, enviadas, a } = montar();
+  const perto = motoboyEmTurno({ nome: 'Ana', telefone: '11999990001', tipo: 'avulso' }, 1);
+  const tambem = motoboyEmTurno({ nome: 'Beto', telefone: '11999990002' }, 2); // diária também vê urgente
+  const longe = motoboyEmTurno({ nome: 'Caio', telefone: '11999990003', tipo: 'avulso' }, 9); // 9 km x 1,35 = fora do raio de 5 km
+  const pedido = () => s.criarPedido({ cliente: 'Loja', urgente: true, coleta: { endereco: 'Rua A, 1', ...P(0) }, entrega: { endereco: 'Rua B, 2', ...P(3) } }, 'site');
+
+  const d1 = pedido();
+  assert.deepEqual([perto, tambem, longe].map((m) => estadoDe(m.token).ofertas.length), [1, 1, 0]);
+  assert.equal(estadoDe(tambem.token).ofertas[0].repasse, null, 'diária não vê repasse');
+  aceitar(tambem.token);
+  assert.equal(demandas().find((d) => d.id === d1.id).motoboy_id, tambem.id);
+  assert.equal(estadoDe(perto.token).ofertas.length, 0, 'a oferta some para os outros');
+  assert.throws(() => s.responderOferta(s.autenticarMotoboy(perto.token), { oferta_id: 1, acao: 'aceitar' }), { codigo: 'oferta_encerrada' });
+
+  const d2 = pedido();
+  s.responderOferta(s.autenticarMotoboy(perto.token), { oferta_id: estadoDe(perto.token).ofertas[0].id, acao: 'recusar' });
+  s.despacharPendentes();
+  assert.equal(estadoDe(perto.token).ofertas.length, 0, 'quem recusou não recebe de novo');
+
+  // Ninguém aceitou: o raio dobra a cada 1,5 min, o motoboy longe passa a ver e o responsável é avisado.
+  for (let i = 0; i < 4; i++) {
+    relogio.t += 1.5 * MIN;
+    for (const m of [perto, tambem, longe]) s.registrarPosicoes(s.autenticarMotoboy(m.token), { pontos: [], gps_ligado: true });
+    s.despacharPendentes();
+  }
+  assert.equal(estadoDe(longe.token).ofertas[0].demanda_id, d2.id);
+  enviadas.length = 0;
+  await a.despacharSaida();
+  assert.ok(enviadas.some((m) => m.destino === '5511988880000' && /sem motoboy aceitar/.test(m.texto)));
+});
+
+test('demanda comum continua indo direto para a diária; sem diária, é oferecida ao avulso', () => {
+  const { s, motoboyEmTurno, demandas, estadoDe } = montar();
+  const avulso = motoboyEmTurno({ nome: 'Ana', telefone: '11999990001', tipo: 'avulso' });
+  const comum = () => s.criarDemanda({ cliente: 'Loja', coleta: { endereco: 'Rua A, 1', ...P(0) }, entrega: { endereco: 'Rua B, 2', ...P(2) } }, 'teste');
+  const d1 = comum();
+  assert.equal(demandas().find((d) => d.id === d1.id).status, 'aguardando');
+  assert.equal(estadoDe(avulso.token).ofertas.length, 1);
+  const diaria = motoboyEmTurno({ nome: 'Beto', telefone: '11999990002' });
+  assert.equal(demandas().find((d) => d.id === d1.id).motoboy_id, diaria.id, 'entrou diária: recebe direto');
+  assert.equal(estadoDe(avulso.token).ofertas.length, 0);
+});
+
+test('tipo de serviço soma no preço e pode ter repasse próprio', () => {
+  const { s } = montar();
+  const cartorio = s.listarServicos().find((x) => x.nome === 'Cartório ou protocolo');
+  s.salvarServico({ id: cartorio.id, nome: cartorio.nome, adicional: 30, repasse_pct: 70 }, 'teste');
+  const cot = s.cotar(P(0), P(3), { servicoId: cartorio.id });
+  assert.equal(cot.valor, 42, 'R$ 12 da distância + R$ 30 do cartório');
+  assert.equal(cot.repasse, 29.4, '70% para o motoboy');
+  assert.equal(s.cotar(P(0), P(3), { km: 10 }).valor, 24, 'km pelas ruas, quando informado, vale mais que a linha reta');
+  assert.throws(() => s.salvarServico({ nome: 'X' }, 'teste'), { codigo: 'servico_invalido' });
+});
+
+test('Pix: pedido só é liberado depois de pago; vencido sem pagar é cancelado', async () => {
+  const { s, a, relogio, banco, motoboyEmTurno, demandas, estadoDe, enviadas, limpar } = montar({ site_confirmacao: 'pagamento', mp_token: 'TOKEN-SECRETO' });
+  const { token } = motoboyEmTurno({ tipo: 'avulso' });
+  const pedido = (telefone, extra = {}) => a.pedidoSite({
+    nome: 'Bruno', telefone, email: 'bruno@exemplo.com', descricao: 'Envelope', servico_id: 1,
+    coleta: { endereco: 'Rua da Coleta, 10, Centro' }, entrega: { endereco: 'Rua da Entrega, 20, Centro' }, ...extra,
+  }, 'ip');
+  assert.equal(a.infoPublica().pagamento, true);
+  await assert.rejects(pedido('11966660002', { email: 'sem-arroba' }), { codigo: 'email_invalido' });
+
+  await limpar();
+  const r = await pedido('11966660002');
+  assert.equal(r.confirmacao, 'pagamento');
+  assert.equal(r.pix.codigo, `PIX-${r.codigo}`);
+  assert.deepEqual([banco.cobrancas[0].valor, banco.cobrancas[0].email, banco.cobrancas[0].token], [12, 'bruno@exemplo.com', 'TOKEN-SECRETO']);
+  assert.equal(banco.cobrancas[0].avisoUrl.startsWith('https://speed.exemplo/api/pagamento/mp?s='), true);
+  assert.equal(estadoDe(token).ofertas.length, 0, 'sem pagar, nenhum motoboy vê');
+  let publico = await a.pedidoVivo(r.codigo);
+  assert.deepEqual([publico.pagamento, publico.pix.codigo, publico.pix.qr], ['pendente', r.pix.codigo, 'QUJD']);
+  assert.equal(s.estadoAdmin().demandas[0].pag_pix, undefined, 'código do Pix não vai para a lista do painel');
+
+  banco.pagos.add('mp1');
+  await a.webhookPagamento({ type: 'payment', data: { id: 'mp1' } }, new URL('http://x/'));
+  publico = await a.pedidoVivo(r.codigo);
+  assert.deepEqual([publico.pagamento, publico.pix, publico.retida], ['pago', null, false]);
+  assert.equal(estadoDe(token).ofertas.length, 1, 'pago: oferecido aos motoboys');
+  await a.despacharSaida();
+  assert.ok(enviadas.some((m) => /Pagamento do pedido #1 confirmado/.test(m.texto)));
+
+  // Aviso falso (pagamento que o banco não confirma) não libera nada.
+  const r2 = await pedido('11955550003');
+  await a.webhookPagamento({ data: { id: 'mp2' } }, new URL('http://x/'));
+  assert.equal(demandas().find((d) => d.id === r2.id).pagamento, 'pendente');
+  relogio.t += 31 * MIN;
+  await a.expirarPagamentos();
+  assert.equal(demandas().find((d) => d.id === r2.id).status, 'cancelada');
+
+  // Pago que precisa ser cancelado: o responsável é avisado para devolver.
+  enviadas.length = 0;
+  s.cancelarDemanda(r.id, 'admin:teste');
+  await a.despacharSaida();
+  assert.ok(enviadas.some((m) => m.destino === '5511988880000' && /Devolva o Pix de R\$\s12,00/.test(m.texto)));
+
+  // Mercado Pago fora do ar: o pedido não se perde, fica para aprovação.
+  banco.falhar = true;
+  assert.equal((await pedido('11944440004')).confirmacao, 'painel');
+});
+
+test('Pix pelo robô: pede e-mail uma vez, manda o copia e cola e libera quando pagar', async () => {
+  const { a, banco, cliente, demandas } = montar({ site_confirmacao: 'pagamento', mp_token: 'TOKEN' });
+  for (const texto of ['oi', '1', 'Rua da Coleta, 10, Centro', '1', 'Rua da Entrega, 20, Centro', '1', '1', 'Envelope']) await cliente(texto);
+  assert.match(await cliente('1'), /me diga seu \*e-mail\*/);
+  assert.match(await cliente('nao sei'), /Não entendi o e-mail/);
+  const fim = await cliente('Carla@Exemplo.com');
+  assert.match(fim, /Pedido #1 reservado[\s\S]*R\$\s12,00[\s\S]*PIX-[\s\S]*aviso por aqui/);
+  assert.deepEqual([demandas()[0].retida, demandas()[0].pagamento, banco.cobrancas[0].email], [1, 'pendente', 'carla@exemplo.com']);
+  banco.pagos.add('mp1');
+  await a.pedidoVivo(demandas()[0].codigo);
+  assert.equal(demandas()[0].pagamento, 'pago');
+  // Segundo pedido: e-mail já conhecido, vai direto ao Pix.
+  for (const texto of ['oi', '1', '1', 'Rua da Entrega, 20, Centro', '1', '1', 'Outro envelope']) await cliente(texto);
+  assert.match(await cliente('1'), /Pedido #2 reservado/);
+});
+
+test('cliente fixo: preço próprio, vai para a fatura e confirma pelo WhatsApp em vez de pagar', async () => {
+  const { s, a, demandas, enviadas, limpar } = montar({ site_confirmacao: 'pagamento', mp_token: 'TOKEN' });
+  s.salvarCliente({ telefone: '(11) 97777-0001', nome: 'Clínica Vida', faturado: true, preco_pct: 80 }, 'teste');
+  await limpar();
+  const r = await a.pedidoSite({
+    nome: 'Recepção', telefone: '11977770001', descricao: 'Exames',
+    coleta: { endereco: 'Rua da Coleta, 10, Centro' }, entrega: { endereco: 'Rua da Entrega, 20, Centro' },
+  }, 'ip');
+  assert.deepEqual([r.confirmacao, r.pix, r.valor], ['whatsapp', null, 9.6]);
+  const [d] = demandas();
+  assert.deepEqual([d.cliente, d.pagamento, d.retida], ['Clínica Vida', 'faturado', 1]);
+  await a.receber({ telefone: '5511977770001', nome: 'Recepção', texto: '1' });
+  assert.equal(demandas()[0].retida, 0);
+  assert.ok(enviadas.some((m) => /Pedido #1 confirmado/.test(m.texto)));
+});
+
+test('Pix: pedido que entrou sem local só é cobrado depois que o admin marca o ponto', async () => {
+  const { s, a, banco, demandas, enviadas, limpar, motoboyEmTurno, estadoDe } = montar({ site_confirmacao: 'pagamento', mp_token: 'TOKEN' });
+  const { token } = motoboyEmTurno({ tipo: 'avulso' });
+  const dados = { nome: 'Bruno', telefone: '11966660002', descricao: 'Envelope', coleta: { endereco: 'Rua da Coleta, 10, Centro' }, entrega: { endereco: 'Beco Sem Mapa, 7' } };
+  await assert.rejects(a.pedidoSite(dados, 'ip'), { codigo: 'email_invalido' });
+  const r = await a.pedidoSite({ ...dados, email: 'bruno@exemplo.com' }, 'ip');
+  assert.deepEqual([r.confirmacao, r.pix, r.status], ['painel', null, 'sem_local']);
+  await limpar();
+
+  s.definirLocais(r.id, { entrega: { endereco: 'Beco Sem Mapa, 7', ...P(3) } }, 'admin:teste');
+  await new Promise((ok) => setImmediate(ok));
+  const [d] = demandas();
+  assert.deepEqual([d.status, d.retida, d.pagamento, d.valor], ['aguardando', 1, 'pendente', 12]);
+  assert.equal(estadoDe(token).ofertas.length, 0);
+  await a.despacharSaida();
+  assert.ok(enviadas.some((m) => /Endereço do pedido #1 conferido[\s\S]*R\$\s12,00/.test(m.texto)));
+  assert.ok(enviadas.some((m) => m.texto === `PIX-${r.codigo}`));
+  banco.pagos.add('mp1');
+  await a.pedidoVivo(r.codigo);
+  assert.equal(estadoDe(token).ofertas.length, 1);
 });
