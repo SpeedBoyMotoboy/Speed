@@ -1,6 +1,7 @@
 :root {
-  --fundo: #f3f4f6; --cartao: #ffffff; --texto: #16181d; --suave: #5b6472; --borda: #d9dde3;
-  --marca: #111318; --destaque: #f5a300; --ok: #15803d; --aviso: #b45309; --erro: #b91c1c; --info: #1d4ed8;
+  /* Mesmas cores do site speedboy.com.br */
+  --fundo: #faf8f3; --cartao: #ffffff; --texto: #0d0d0d; --suave: #5f5f5f; --borda: #e2ded6;
+  --marca: #001f6b; --destaque: #ff5400; --ok: #15803d; --aviso: #b45309; --erro: #b91c1c; --info: #1d4ed8;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; }
@@ -52,5 +53,5 @@ button:disabled { opacity: .55; cursor: default; }
 .passos time { margin-left: auto; font-weight: 400; color: var(--suave); font-variant-numeric: tabular-nums; }
 @media (prefers-reduced-motion: no-preference) {
   .passos li.agora::before { animation: pulso 1.6s ease-in-out infinite; }
-  @keyframes pulso { 50% { box-shadow: 0 0 0 6px rgba(245,163,0,.25); } }
+  @keyframes pulso { 50% { box-shadow: 0 0 0 6px rgba(255,84,0,.25); } }
 }

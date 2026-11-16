@@ -186,7 +186,7 @@ export const CONFIG_PADRAO = {
   termo_versao: '1',
   termo_texto: TERMO_PADRAO,
   api_chave_hash: '',
-  empresa_nome: 'Speedboy',
+  empresa_nome: 'SpeedBoy',
   url_publica: '',
   // Preço mostrado ao cliente (site e robô). Tudo zero = "a combinar".
   preco_base: '0',

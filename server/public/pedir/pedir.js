@@ -4,7 +4,7 @@ import { h, trocar, api, reais, km, camadaBase, icone } from '/site/base.js';
 const L = window.L;
 const raiz = document.getElementById('raiz');
 const guardado = (() => { try { return JSON.parse(localStorage.getItem('speed_cliente') || '{}'); } catch { return {}; } })();
-let info = { empresa: 'Speedboy', ativo: true, fechado: '', mapa: { lat: -23.5505, lon: -46.6333 } };
+let info = { empresa: 'SpeedBoy', ativo: true, fechado: '', mapa: { lat: -23.5505, lon: -46.6333 } };
 let pedido = null; // { coleta, entrega, km, valor }
 
 function moldura(...conteudo) {

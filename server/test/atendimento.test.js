@@ -193,7 +193,7 @@ test('fila de envio: tenta de novo com espera crescente e registra o erro', asyn
   assert.equal(await a.despacharSaida(), 0, 'ainda dentro da espera');
   relogio.t += MIN;
   assert.equal(await a.despacharSaida(), 1);
-  assert.match(enviadas[0], /Olá, Ana! A Speedboy convocou você/);
+  assert.match(enviadas[0], /Olá, Ana! A SpeedBoy convocou você/);
 });
 
 test('site: pedido fica retido até o admin aprovar', async () => {
@@ -341,7 +341,7 @@ test('HTTP: páginas públicas, webhook com segredo e segredos fora da resposta'
     assert.equal((await fetch(base + pagina)).status, 200, pagina);
   }
   assert.equal((await fetch(`${base}/pedir`, { redirect: 'manual' })).headers.get('location'), '/pedir/');
-  assert.equal((await (await fetch(`${base}/api/publico/info`)).json()).empresa, 'Speedboy');
+  assert.equal((await (await fetch(`${base}/api/publico/info`)).json()).empresa, 'SpeedBoy');
   assert.equal((await fetch(`${base}/api/publico/pedido?c=nao-existe-123`)).status, 404);
 
   const login = await fetch(`${base}/api/admin/login`, json({ usuario: 'admin', senha: 'senha-de-teste-123' }));
