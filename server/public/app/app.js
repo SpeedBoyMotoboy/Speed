@@ -231,6 +231,7 @@ function faixaSinal() {
   if (estado.semConexao) return h('div', { class: 'faixa ruim' }, 'Sem internet. Tentando reconectar…');
   if (nativo) {
     const i = infoNativo();
+    if (!i.permLocal) return h('div', { class: 'faixa ruim', onclick: () => nativo.pedirPermissoes() }, 'Permissão de localização removida! Toque aqui para liberar. A Speed já foi avisada.');
     if (!i.gpsLigado) return h('div', { class: 'faixa ruim', onclick: () => nativo.abrirAjustesLocal() }, 'GPS desligado! Toque aqui para ligar. A Speed já foi avisada.');
     if (!i.servicoAtivo) { nativo.iniciarTurno(token, estado.turno.fim_previsto); }
   }

@@ -31,7 +31,8 @@ export function criarApp({ servico, geocodificar, confiarProxy = false, cookieSe
   };
 
   const ipDe = (req) => {
-    const encaminhado = confiarProxy ? String(req.headers['x-forwarded-for'] || '').split(',')[0].trim() : '';
+    // O último item é o que o proxy da hospedagem acrescentou; os anteriores o cliente pode inventar.
+    const encaminhado = confiarProxy ? String(req.headers['x-forwarded-for'] || '').split(',').pop().trim() : '';
     return encaminhado || req.socket.remoteAddress || '';
   };
   const cookieDe = (req) => {
