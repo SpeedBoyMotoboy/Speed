@@ -1,0 +1,5 @@
+# HTTPS automático (Let's Encrypt). O domínio vem do arquivo .env.
+{$DOMINIO} {
+	encode gzip
+	reverse_proxy speed:3000
+}

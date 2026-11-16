@@ -59,7 +59,23 @@ volume serve (VPS, Railway, Fly.io, Render com disco).
 | `COOKIE_SECURE` | `1` exige HTTPS no cookie do painel | ligado em produção |
 | `TZ` | Fuso horário | `America/Sao_Paulo` |
 
-Faça cópia de segurança da pasta de dados (`speed.db`).
+### Instalação em VPS (Hostinger ou outra)
+
+Precisa de uma VPS com Docker (na Hostinger: VPS KVM com o modelo "Docker") e de um endereço
+(ex.: `despacho.suaempresa.com.br`) com registro DNS tipo A apontando para o IP da VPS.
+Hospedagem compartilhada de site não serve: o sistema fica ligado o tempo todo e grava o banco em disco.
+
+```bash
+git clone https://github.com/SpeedBoyMotoboy/Speed.git && cd Speed
+cp .env.example .env      # preencha DOMINIO e ADMIN_PASSWORD
+docker compose up -d --build
+```
+
+O Caddy tira o certificado HTTPS sozinho. Em um ou dois minutos o painel abre em `https://SEU-DOMINIO/painel/`.
+Atualizar depois: `git pull && docker compose up -d --build`.
+
+Faça cópia de segurança do banco de tempos em tempos:
+`docker compose cp speed:/dados/speed.db ./speed-backup.db`
 
 ## Gerar o app Android (APK)
 

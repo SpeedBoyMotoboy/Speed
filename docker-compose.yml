@@ -1,0 +1,31 @@
+# Instalação em VPS: servidor Speed + Caddy (HTTPS automático).
+# Uso: copie .env.example para .env, preencha e rode `docker compose up -d --build`.
+services:
+  speed:
+    build: .
+    restart: unless-stopped
+    environment:
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?defina ADMIN_PASSWORD no arquivo .env}
+      TRUST_PROXY: "1"
+    volumes:
+      - dados:/dados
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - speed
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMINIO: ${DOMINIO:?defina DOMINIO no arquivo .env}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  dados:
+  caddy_data:
+  caddy_config:
