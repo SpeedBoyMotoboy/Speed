@@ -3,6 +3,8 @@
 // 'webhook' (genérico: n8n, Make ou qualquer robô que fale JSON simples).
 
 export const PROVEDORES = ['', 'evolution', 'meta', 'webhook'];
+const MIDIAS = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'application/pdf'];
+const MIDIA_MAX = 7 * 1024 * 1024; // caracteres em base64 (cerca de 5 MB de arquivo)
 
 // Telefone brasileiro como o sistema guarda: DDD + número (10 ou 11 dígitos). '' se não der.
 export function normalizarTelefone(bruto) {
@@ -36,12 +38,19 @@ export function interpretar(provedor, corpo) {
     const b = Number(lon);
     return Number.isFinite(a) && Number.isFinite(b) && (a !== 0 || b !== 0) ? { lat: a, lon: b } : { lat: null, lon: null };
   };
-  const juntar = (bruto, nome, texto, local = {}, destino = bruto) => {
+  // Foto ou PDF que veio junto (quando o provedor entrega o arquivo em base64).
+  const midiaDe = (mime, base64) => {
+    const tipo = String(mime || '').split(';')[0].trim().toLowerCase();
+    const dados = typeof base64 === 'string' ? base64.replace(/^data:[^,]*,/, '') : '';
+    return MIDIAS.includes(tipo) && dados.length > 100 && dados.length <= MIDIA_MAX ? { mime: tipo, base64: dados } : null;
+  };
+  const juntar = (bruto, nome, texto, local = {}, midia = null, destino = bruto) => {
     const telefone = normalizarTelefone(bruto);
     if (!telefone) return;
     lista.push({
       telefone, destino: destinoDe(destino), nome: String(nome || '').trim().slice(0, 80),
       texto: String(texto || '').trim().slice(0, 2000), ...coord(local.lat, local.lon),
+      ...(midia ? { midia } : {}),
     });
   };
 
@@ -55,8 +64,10 @@ export function interpretar(provedor, corpo) {
       if (jid.endsWith('@g.us') || jid.endsWith('@broadcast') || jid.endsWith('@newsletter')) continue;
       const numero = jid.endsWith('@lid') ? (chave.senderPn || chave.remoteJidAlt || item.senderPn || '') : jid;
       const loc = item.message?.locationMessage || item.message?.liveLocationMessage;
+      const arquivo = item.message?.imageMessage || item.message?.documentMessage;
       juntar(numero, item.pushName, textoEvolution(item.message),
-        loc ? { lat: loc.degreesLatitude, lon: loc.degreesLongitude } : {});
+        loc ? { lat: loc.degreesLatitude, lon: loc.degreesLongitude } : {},
+        arquivo ? midiaDe(arquivo.mimetype, item.message?.base64 ?? item.base64) : null);
     }
   } else if (provedor === 'meta') {
     for (const entrada of corpo?.entry || []) {
@@ -72,7 +83,8 @@ export function interpretar(provedor, corpo) {
       }
     }
   } else if (provedor === 'webhook') {
-    juntar(corpo?.telefone, corpo?.nome, corpo?.texto, { lat: corpo?.lat, lon: corpo?.lon });
+    juntar(corpo?.telefone, corpo?.nome, corpo?.texto, { lat: corpo?.lat, lon: corpo?.lon },
+      midiaDe(corpo?.midia_tipo, corpo?.midia_base64));
   }
   return lista;
 }

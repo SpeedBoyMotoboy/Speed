@@ -132,3 +132,31 @@ Como gerar a chave: console.anthropic.com → entrar → **API Keys** → **Crea
 ## Não testado com serviço real
 
 Daqui não há acesso à API da Anthropic nem a banco. A IA foi testada com respostas simuladas e o código Pix foi conferido contra o exemplo oficial do Banco Central (CRC). Antes de divulgar: clique em **Testar a IA** e faça um Pix de valor baixo lendo o QR code no app do seu banco.
+
+---
+
+# Etapa 5: arquivos para a IA analisar (16/11/2026)
+
+Nova aba **IA** no painel.
+
+| O que enviar | O que a IA devolve |
+|---|---|
+| Foto ou print de conversa, pedido anotado à mão | Pedidos em aberto, cada um com botão **Criar demanda** (já abre com cliente, endereços, contatos e serviço preenchidos e procura os endereços no mapa) |
+| Comprovante de Pix (foto ou PDF) | Valor, recebedor, pagador, data e transação; diz se o recebedor é a empresa e aponta qual pedido esperando Pix tem aquele valor, com botão **Confirmar pagamento** |
+| Conversa exportada do WhatsApp (.txt ou .zip) | Resumo, pedidos em aberto, pontos de atenção |
+| Pergunta livre junto com os arquivos | Resposta direta com base no material |
+
+- Até 6 arquivos por vez. Foto é reduzida no navegador antes de subir (fica leve e sem os dados escondidos da câmera).
+- Na aba *WhatsApp*, cada conversa tem o botão **Analisar com IA** (vale para importadas e ao vivo).
+- **O arquivo não fica guardado**: só o resultado, nas "Análises anteriores" (as 200 mais recentes).
+- Conversa longa: a IA lê as últimas 500 mensagens e a tela avisa quantas ficaram de fora.
+- O tipo do arquivo é conferido pelo conteúdo, não pela extensão. Outros tipos são recusados.
+- A IA não inventa endereço: campo que o material não traz fica vazio, com a observação do que falta.
+- Texto dentro do material que tente dar ordens à IA é ignorado e aparece em "Atenção".
+
+**Comprovante pelo WhatsApp ao vivo:** quando o cliente manda a foto do comprovante, a IA lê e manda a leitura
+ao responsável (valor confere ou não, recebedor, alertas). Quem libera continua sendo o responsável (`pago 12`).
+Isso depende de o provedor entregar o arquivo junto com a mensagem: na Evolution API, ligar "Webhook Base64"
+na configuração do webhook; no webhook genérico, mandar `midia_tipo` e `midia_base64`. Na API da Meta ainda não lê a foto.
+
+O que a IA diz sobre um comprovante é a leitura de uma imagem. Ela não vê a conta: confira no banco.

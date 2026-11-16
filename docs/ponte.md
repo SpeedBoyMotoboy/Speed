@@ -91,6 +91,7 @@ Content-Type: application/json
 - "Atendente" passa a conversa para uma pessoa. A pessoa responde pela aba *WhatsApp* do painel.
 - O cliente recebe aviso automático: motoboy a caminho, coletado, entregue, cancelado.
 - Comandos do responsável (só do número cadastrado): `pago 12` libera o pedido, `cancelar 12` cancela.
+- Aba *IA* do painel: quem atende envia fotos, prints, comprovantes, PDFs ou conversas exportadas; a IA devolve os pedidos prontos para virar demanda e a leitura do comprovante. O arquivo não fica guardado.
 - Provedores aceitos: Evolution API, WhatsApp Cloud API (Meta) ou webhook genérico (n8n/Make). Detalhes em `deploy/evolution.md` e no README.
 
 ## 6. Regras que valem para todos

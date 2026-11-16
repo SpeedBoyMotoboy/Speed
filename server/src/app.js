@@ -123,7 +123,7 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
     // Responde na hora; a conversa (que pode consultar o mapa) segue em segundo plano.
     atendimento.receber(corpo).catch((e) => console.error('[whatsapp]', e));
     return { ok: true };
-  }, 2 * 1024 * 1024);
+  }, 10 * 1024 * 1024);
 
   // Entrada automática de demandas (app de clientes, Make, robô de WhatsApp).
   rota('POST', '/api/entrada/demandas', 'api', async ({ corpo }) => {
@@ -165,6 +165,10 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
   });
   rota('POST', '/api/admin/whatsapp-teste', 'admin', () => atendimento.testar());
   rota('POST', '/api/admin/ia-teste', 'admin', () => atendimento.testarIA());
+  // Fotos, PDFs e conversas para a IA ler (o arquivo não é guardado, só o resultado).
+  rota('POST', '/api/admin/analises', 'admin', ({ admin, corpo }) => atendimento.analisarArquivos(corpo, ator(admin)), 48 * 1024 * 1024);
+  rota('GET', '/api/admin/analises', 'admin', () => ({ analises: atendimento.listarAnalises() }));
+  rota('POST', '/api/admin/whatsapp/:id/analisar', 'admin', ({ admin, corpo, p }) => atendimento.analisarConversa(p.id, corpo.pergunta, ator(admin)));
   // Confirmação manual do pagamento (Pix na chave da empresa, ou Mercado Pago que não avisou).
   rota('POST', '/api/admin/demandas/:id/pago', 'admin', ({ admin, p }) => {
     if (!servico.marcarPago(p.id, ator(admin))) throw new Erro(409, 'ja_pago', 'Esse pedido não está esperando pagamento.');

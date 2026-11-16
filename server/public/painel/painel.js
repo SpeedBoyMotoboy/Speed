@@ -142,7 +142,7 @@ const els = {};
 function pararAtualizacao() { clearInterval(temporizador); temporizador = null; }
 
 function telaPrincipal() {
-  const abas = [['operacao', 'Operação'], ['motoboys', 'Motoboys'], ['whatsapp', 'WhatsApp'], ['relatorio', 'Relatório'], ['config', 'Configurações']];
+  const abas = [['operacao', 'Operação'], ['motoboys', 'Motoboys'], ['whatsapp', 'WhatsApp'], ['ia', 'IA'], ['relatorio', 'Relatório'], ['config', 'Configurações']];
   els.conexao = h('span', { class: 'conexao' });
   els.botoesAba = abas.map(([id, nome]) => h('button', { 'data-aba': id, onclick: () => abrirAba(id) }, nome));
   els.mapa = h('div', { id: 'mapa' });
@@ -181,6 +181,7 @@ function abrirAba(id) {
   if (id === 'motoboys') desenharMotoboys();
   if (id === 'relatorio') desenharRelatorio();
   if (id === 'whatsapp') desenharWhatsapp();
+  if (id === 'ia') desenharIa();
   if (id === 'config') desenharConfig();
 }
 
@@ -475,7 +476,7 @@ function janelaDemanda(existente = null, previa = null) {
   dialogo(existente ? `Demanda #${existente.id} — marcar locais` : 'Nova demanda', (dlg) => {
     const cliente = h('input', { maxlength: 120, value: existente?.cliente || previa?.cliente || '', disabled: Boolean(existente) });
     const requisito = h('select', { disabled: Boolean(existente) },
-      Object.entries(ROTULO_REQUISITO).map(([v, r]) => h('option', { value: v, selected: existente?.requisito === v }, r)));
+      Object.entries(ROTULO_REQUISITO).map(([v, r]) => h('option', { value: v, selected: (existente?.requisito ?? previa?.requisito) === v }, r)));
     const descricao = h('input', { maxlength: 500, value: existente?.descricao || previa?.descricao?.replace(/\s*\n+\s*/g, ' · ').slice(0, 500) || '', disabled: Boolean(existente), placeholder: 'O que é, observações' });
     const campos = {};
     const botoesAlvo = {};
@@ -496,8 +497,8 @@ function janelaDemanda(existente = null, previa = null) {
     };
 
     const bloco = (qual, titulo) => {
-      const endereco = h('input', { maxlength: 200, value: existente?.[`${qual}_endereco`] || '', placeholder: 'Rua, número, bairro' });
-      const contato = h('input', { maxlength: 120, value: existente?.[`${qual}_contato`] || '', disabled: Boolean(existente), placeholder: 'Nome / telefone no local' });
+      const endereco = h('input', { maxlength: 200, value: existente?.[`${qual}_endereco`] || previa?.[qual]?.endereco || '', placeholder: 'Rua, número, bairro' });
+      const contato = h('input', { maxlength: 120, value: existente?.[`${qual}_contato`] || previa?.[qual]?.contato || '', disabled: Boolean(existente), placeholder: 'Nome / telefone no local' });
       const resultados = h('div', { class: 'resultados' });
       const situacao = h('span', { class: 'falta' }, 'Falta marcar no mapa');
       const buscar = h('button', {
@@ -512,7 +513,7 @@ function janelaDemanda(existente = null, previa = null) {
           } catch (e) { trocar(resultados, h('div', { class: 'nota' }, e.message)); }
         },
       }, 'Buscar');
-      campos[qual] = { endereco, contato, situacao };
+      campos[qual] = { endereco, contato, situacao, buscar };
       return h('div', null,
         h('label', null, `${titulo} — endereço`),
         h('div', { class: 'linha' }, h('div', { class: 'cresce' }, endereco), buscar),
@@ -553,6 +554,10 @@ function janelaDemanda(existente = null, previa = null) {
         if (pontos[qual].lat != null) marcar(qual, pontos[qual].lat, pontos[qual].lon, false);
       }
       escolherAlvo(alvo);
+      // Veio da IA com endereço escrito: já procura no mapa para o admin só escolher.
+      for (const qual of ['coleta', 'entrega']) {
+        if (previa?.[qual]?.endereco && pontos[qual].lat == null) campos[qual].buscar.click();
+      }
     }, 0);
 
     return [
@@ -754,12 +759,140 @@ async function desenharWhatsapp(mensagemAviso = '') {
       h('div', null,
         h('div', { class: 'linha' }, h('h3', { class: 'cresce' }, 'Mensagens (mais recentes primeiro)'),
           conversaAberta && h('button', {
+            class: 'pequeno',
+            onclick: async (ev) => {
+              const botao = ev.currentTarget;
+              botao.disabled = true;
+              botao.textContent = 'A IA está lendo…';
+              try {
+                const r = await api('POST', `/api/admin/whatsapp/${conversaAberta}/analisar`, {});
+                dialogo('Análise da conversa', (dlg) => [cartoesAnalise(r, conversa?.nome), h('div', { class: 'linha fim' }, h('button', { onclick: dlg.fechar }, 'Fechar'))], { largo: true });
+              } catch (e) { trocar(mensagens, h('div', { class: 'erro' }, e.message)); }
+              botao.disabled = false;
+              botao.textContent = 'Analisar com IA';
+            },
+          }, 'Analisar com IA'),
+          conversaAberta && h('button', {
             class: 'pequeno perigo',
             onclick: () => confirmar('Excluir conversa', 'Apagar esta conversa e as mensagens importadas? As demandas já criadas continuam.', 'Excluir',
               async () => { await api('DELETE', `/api/admin/whatsapp/${conversaAberta}`); conversaAberta = null; }),
           }, 'Excluir conversa')),
         aoVivo, busca, mensagens)));
   carregar();
+}
+
+// --------------------------------------------------------------------- IA
+// Foto vira JPEG de até 1800 px antes de subir: fica leve e sem os dados escondidos da câmera.
+async function prepararArquivoIa(arquivo) {
+  const ehImagem = arquivo.type.startsWith('image/');
+  if (ehImagem) {
+    try {
+      const bitmap = await createImageBitmap(arquivo);
+      const escala = Math.min(1, 1800 / Math.max(bitmap.width, bitmap.height));
+      const tela = h('canvas', { width: Math.round(bitmap.width * escala), height: Math.round(bitmap.height * escala) });
+      tela.getContext('2d').drawImage(bitmap, 0, 0, tela.width, tela.height);
+      const blob = await new Promise((ok) => tela.toBlob(ok, 'image/jpeg', 0.85));
+      if (blob) return { nome: arquivo.name, conteudo: await lerArquivoBase64(blob) };
+    } catch { /* formato que o navegador não abre: tenta mandar como está */ }
+  }
+  if (arquivo.size > 12 * 1024 * 1024) throw new Error(`${arquivo.name}: maior que 12 MB.`);
+  return { nome: arquivo.name, conteudo: await lerArquivoBase64(arquivo) };
+}
+
+// Mostra o que a IA achou: resposta, alertas, comprovante e pedidos prontos para virar demanda.
+function cartoesAnalise(r, clientePadrao = '') {
+  const cp = r.comprovante;
+  return h('div', null,
+    r.avisos?.map((a) => h('div', { class: 'nota' }, a)),
+    r.resposta && h('div', { class: 'cartao sugestao' }, h('div', { class: 'titulo' }, 'Resposta'), h('div', { class: 'sub texto-msg' }, r.resposta)),
+    h('div', { class: 'cartao' }, h('div', { class: 'titulo' }, 'Resumo'), h('div', { class: 'sub texto-msg' }, r.resumo || 'Sem resumo.')),
+    r.alertas.length > 0 && h('div', { class: 'cartao alerta' },
+      h('div', { class: 'titulo' }, `Atenção (${r.alertas.length})`), h('ul', { class: 'lista' }, r.alertas.map((a) => h('li', null, a)))),
+    cp && h('div', { class: 'cartao' },
+      h('div', { class: 'titulo' }, 'Comprovante de pagamento',
+        cp.valor != null && chip(reais(cp.valor), 'entregue'),
+        chip(cp.confere_recebedor ? 'Recebedor confere' : 'Recebedor diferente', cp.confere_recebedor ? 'entregue' : 'sem_sinal')),
+      h('div', { class: 'sub' }, `Recebedor: ${cp.recebedor || '—'} · Pagador: ${cp.pagador || '—'}`),
+      h('div', { class: 'sub' }, `Data: ${cp.data_hora || '—'} · Transação: ${cp.identificador || '—'}`),
+      h('div', { class: 'nota' }, 'A IA lê a imagem; ela não vê sua conta. Confira no app do banco antes de liberar.'),
+      h('div', { class: 'acoes' }, cp.pedidos_compativeis.length
+        ? cp.pedidos_compativeis.map((id) => h('button', {
+          class: 'pequeno primario',
+          onclick: () => confirmar('Confirmar pagamento', `O Pix do pedido #${id} já caiu na sua conta? Ao confirmar, o pedido é liberado aos motoboys.`,
+            'Sim, o Pix caiu', () => api('POST', `/api/admin/demandas/${id}/pago`), false),
+        }, `Confirmar pagamento do pedido #${id}`))
+        : h('span', { class: 'nota' }, 'Nenhum pedido esperando Pix com esse valor.'))),
+    h('h3', null, `Pedidos encontrados (${r.pedidos.length})`),
+    r.pedidos.length === 0 && h('div', { class: 'vazio' }, 'Nenhum pedido em aberto neste material.'),
+    r.pedidos.map((p) => h('div', { class: 'cartao' },
+      h('div', { class: 'titulo' }, p.cliente || clientePadrao || 'Cliente não identificado',
+        p.servico && chip(p.servico), p.requisito !== 'qualquer' && chip(ROTULO_REQUISITO[p.requisito])),
+      h('div', { class: 'sub' }, `C: ${p.coleta_endereco || '—'}${p.coleta_contato ? ` (${p.coleta_contato})` : ''}`),
+      h('div', { class: 'sub' }, `E: ${p.entrega_endereco || '—'}${p.entrega_contato ? ` (${p.entrega_contato})` : ''}`),
+      p.descricao && h('div', { class: 'sub' }, p.descricao),
+      p.telefone && h('div', { class: 'sub' }, `Telefone: ${p.telefone}`),
+      p.observacao && h('div', { class: 'sub falta' }, p.observacao),
+      h('div', { class: 'acoes' }, h('button', {
+        class: 'pequeno primario',
+        onclick: () => janelaDemanda(null, {
+          cliente: p.cliente || clientePadrao, descricao: [p.servico, p.descricao].filter(Boolean).join(' · '), requisito: p.requisito,
+          coleta: { endereco: p.coleta_endereco, contato: p.coleta_contato }, entrega: { endereco: p.entrega_endereco, contato: p.entrega_contato },
+        }),
+      }, 'Criar demanda')))));
+}
+
+let analiseAberta = null;
+async function desenharIa(mensagem = '') {
+  let analises = [];
+  try { ({ analises } = await api('GET', '/api/admin/analises')); } catch { return; }
+  if (abaAtual !== 'ia') return;
+  const escolhidos = h('div', { class: 'nota' }, 'Nenhum arquivo escolhido.');
+  const entrada = h('input', { type: 'file', multiple: true, hidden: true, accept: 'image/*,.pdf,.txt,.zip,application/pdf,text/plain,application/zip' });
+  entrada.addEventListener('change', () => {
+    escolhidos.textContent = entrada.files.length ? [...entrada.files].map((f) => f.name).join(', ') : 'Nenhum arquivo escolhido.';
+  });
+  const pergunta = h('input', { maxlength: 1000, placeholder: 'Opcional. Ex.: quais pedidos ainda estão em aberto? Este comprovante confere?' });
+  const aviso = h('div', { class: 'erro' }, mensagem);
+  const enviar = h('button', {
+    class: 'primario',
+    onclick: async () => {
+      aviso.textContent = '';
+      if (!entrada.files.length) { aviso.textContent = 'Escolha pelo menos um arquivo.'; return; }
+      enviar.disabled = true;
+      enviar.textContent = 'A IA está lendo…';
+      try {
+        const arquivos = [];
+        for (const f of entrada.files) arquivos.push(await prepararArquivoIa(f));
+        analiseAberta = await api('POST', '/api/admin/analises', { arquivos, pergunta: pergunta.value });
+        desenharIa();
+      } catch (e) {
+        aviso.textContent = e.message;
+        enviar.disabled = false;
+        enviar.textContent = 'Analisar';
+      }
+    },
+  }, 'Analisar');
+  const aberta = analiseAberta && (analises.find((a) => a.id === analiseAberta.id) || analiseAberta);
+
+  trocar(els.pagina,
+    h('h2', null, 'Analisar com IA'),
+    h('p', { class: 'nota' }, estado?.ia.ligada
+      ? 'Envie fotos (print de conversa, pedido anotado, comprovante de Pix), PDF ou conversa exportada do WhatsApp (.txt ou .zip). A IA lê, lista os pedidos prontos para virar demanda e confere comprovantes. O arquivo não fica guardado: só o resultado.'
+      : 'A IA está desligada. Cole a chave em Configurações → Conferência dos pedidos por IA para usar esta tela.'),
+    h('div', { class: 'cartao' },
+      entrada,
+      h('div', { class: 'linha' }, h('button', { onclick: () => entrada.click() }, 'Escolher arquivos (até 6)'), escolhidos),
+      h('label', null, 'O que você quer saber?'), pergunta,
+      h('div', { class: 'linha fim' }, aviso, enviar)),
+    aberta && [h('h3', null, `Resultado: ${aberta.titulo}`), aberta.pergunta && h('div', { class: 'nota' }, `Pergunta: ${aberta.pergunta}`), cartoesAnalise(aberta)],
+    h('h3', null, `Análises anteriores (${analises.length})`),
+    analises.length === 0 ? h('div', { class: 'vazio' }, 'Nenhuma análise ainda.')
+      : analises.map((a) => h('div', {
+        class: `cartao clicavel ${a.id === aberta?.id ? 'sugestao' : ''}`,
+        onclick: () => { analiseAberta = a; desenharIa(); window.scrollTo(0, 0); },
+      },
+      h('div', { class: 'titulo' }, a.titulo, a.comprovante && chip('comprovante'), a.pedidos.length > 0 && chip(`${a.pedidos.length} pedido(s)`, 'em_rota')),
+      h('div', { class: 'sub' }, `${dataHora(a.criada_em)} · ${a.resumo.slice(0, 160)}`))));
 }
 
 // -------------------------------------------------------------- relatório

@@ -41,9 +41,14 @@ function montar(config = {}) {
     },
   };
   // IA de mentira: o teste escolhe a resposta; guarda o que foi enviado a ela.
-  const iaFalsa = { resposta: null, pedidos: [] };
+  const iaFalsa = { resposta: null, pedidos: [], analise: null, analises: [] };
   const ia = {
     conferir: async (cfg, pedido) => { iaFalsa.pedidos.push(pedido); return iaFalsa.resposta && { ...iaFalsa.resposta }; },
+    analisar: async (cfg, entrada) => {
+      iaFalsa.analises.push(entrada);
+      if (!iaFalsa.analise) throw new Error('IA fora do ar');
+      return structuredClone(iaFalsa.analise);
+    },
     ultimoErro: () => '',
   };
   const a = criarAtendimento({
@@ -765,4 +770,113 @@ test('IA: chamada à API com o modelo escolhido, saída estruturada e falha sem 
   resposta = new Error('caiu');
   assert.equal(await ia.conferir({ ia_chave: 'k' }, pedido), null);
   await assert.rejects(ia.conferir({ ia_chave: 'k' }, pedido, { lancar: true }), /caiu/);
+});
+
+const b64 = (dados) => Buffer.from(dados).toString('base64');
+const PNG = b64(Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(40)]));
+const SEM_PEDIDOS = { resumo: 'Nada.', resposta: '', pedidos: [], comprovante: null, alertas: [] };
+
+test('IA lê arquivos: foto, PDF e conversa do WhatsApp viram pedidos prontos; tipo é conferido pelo conteúdo', async () => {
+  const { s, a, iaFalsa } = montar({ ia_chave: 'chave-da-ia' });
+  iaFalsa.analise = {
+    resumo: 'Cliente pede uma entrega.', resposta: 'Há 1 pedido em aberto.', comprovante: null, alertas: ['Falta o número da rua de entrega.'],
+    pedidos: [{ cliente: 'Loja X', telefone: '27 99999-0000', coleta_endereco: 'Rua A, 100', coleta_contato: 'Maria', entrega_endereco: 'Rua B', entrega_contato: '',
+      descricao: '2 caixas', servico_id: 2, requisito: 'bau', observacao: 'Falta o número.' },
+    { cliente: 'Outro', telefone: '', coleta_endereco: '', coleta_contato: '', entrega_endereco: '', entrega_contato: '', descricao: '', servico_id: 999, requisito: 'qualquer', observacao: '' }],
+  };
+  const conversa = '16/11/2026 14:32 - Maria: Preciso de um motoboy\n16/11/2026 14:33 - Maria: Coleta na Rua A, 100';
+  const r = await a.analisarArquivos({
+    pergunta: 'Quais pedidos estão em aberto?',
+    arquivos: [
+      { nome: 'print.jpg', conteudo: PNG }, // extensão errada de propósito: vale o conteúdo
+      { nome: 'nota.pdf', conteudo: b64('%PDF-1.4 conteudo') },
+      { nome: 'Conversa do WhatsApp com Maria.txt', conteudo: b64(conversa) },
+    ],
+  }, 'admin:teste');
+  const enviado = iaFalsa.analises[0];
+  assert.deepEqual(enviado.arquivos.map((x) => [x.tipo, x.mime]), [['imagem', 'image/png'], ['pdf', undefined], ['texto', undefined]]);
+  assert.equal(enviado.arquivos[2].texto, '[16/11 14:32] Maria: Preciso de um motoboy\n[16/11 14:33] Maria: Coleta na Rua A, 100');
+  assert.equal(enviado.pergunta, 'Quais pedidos estão em aberto?');
+  assert.deepEqual(Object.keys(enviado.contexto).sort(), ['cidades_atendidas', 'data_de_hoje', 'empresa', 'pedidos_esperando_pagamento', 'recebedor_dos_pagamentos', 'tipos_de_servico']);
+  assert.deepEqual([r.pedidos[0].servico, r.pedidos[0].requisito, r.resposta], ['Ida e volta (leva e traz)', 'bau', 'Há 1 pedido em aberto.']);
+  assert.deepEqual([r.pedidos[1].servico_id, r.pedidos[1].servico], [null, ''], 'tipo de serviço inventado pela IA é descartado');
+
+  const [guardada] = a.listarAnalises();
+  assert.deepEqual([guardada.id, guardada.titulo, guardada.pedidos.length], [r.id, 'print.jpg, nota.pdf, Conversa do WhatsApp com Maria.txt', 2]);
+  assert.equal(JSON.stringify(s.interno.q('SELECT * FROM analises').all()).includes(PNG), false, 'o arquivo não fica guardado');
+
+  await assert.rejects(a.analisarArquivos({ arquivos: [] }, 'x'), { codigo: 'sem_arquivo' });
+  await assert.rejects(a.analisarArquivos({ arquivos: [{ nome: 'virus.exe', conteudo: b64(Buffer.from([0x4d, 0x5a, 0x00, 0x00, 0x01])) }] }, 'x'), { codigo: 'tipo_invalido' });
+  await assert.rejects(a.analisarArquivos({ arquivos: Array(7).fill({ nome: 'a.png', conteudo: PNG }) }, 'x'), { codigo: 'muitos_arquivos' });
+  iaFalsa.analise = null;
+  await assert.rejects(a.analisarArquivos({ arquivos: [{ nome: 'a.png', conteudo: PNG }] }, 'x'), { codigo: 'ia_falhou' });
+  s.salvarConfig({ ia_ativa: '0' }, 'teste');
+  await assert.rejects(a.analisarArquivos({ arquivos: [{ nome: 'a.png', conteudo: PNG }] }, 'x'), { codigo: 'ia_desligada' });
+});
+
+test('IA lê conversa já importada e avisa quando só coube o final', async () => {
+  const { s, a, iaFalsa } = montar({ ia_chave: 'chave-da-ia' });
+  iaFalsa.analise = SEM_PEDIDOS;
+  const linhas = Array.from({ length: 620 }, (_, i) => `16/11/2026 ${String(8 + Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')} - Maria: mensagem ${i + 1}`);
+  const { conversa_id: id } = s.importarWhatsapp({ arquivo: 'Conversa do WhatsApp com Maria.txt', conteudo: b64(linhas.join('\n')) }, 'teste');
+  const r = await a.analisarConversa(id, '', 'admin:teste');
+  assert.deepEqual(r.avisos, ['Maria: conversa longa, analisei as últimas 500 de 620 mensagens.']);
+  const texto = iaFalsa.analises[0].arquivos[0].texto;
+  assert.ok(texto.startsWith('[16/11 10:00] Maria: mensagem 121') && texto.endsWith('mensagem 620'));
+  await assert.rejects(a.analisarConversa(999, '', 'x'), { codigo: 'nao_encontrado' });
+});
+
+test('IA confere comprovante: acha o pedido pelo valor e, no WhatsApp, manda a leitura ao responsável', async () => {
+  const { a, cliente, demandas, enviadas, iaFalsa, limpar } = montar({
+    ia_chave: 'chave-da-ia', site_confirmacao: 'pix', pix_tipo: 'cnpj', pix_chave: '46178859000196', pix_nome: 'SpeedBoy Motoboy',
+  });
+  iaFalsa.resposta = { aprovado: true, servico_id: 1, motivos: [], resumo: 'Levar envelope.' };
+  for (const texto of ['oi', '1', 'Rua da Coleta, 10, Centro', '1', 'Rua da Entrega, 20, Centro', '1', 'Envelope', '1']) await cliente(texto);
+  assert.equal(demandas()[0].pagamento, 'pendente');
+
+  iaFalsa.analise = {
+    resumo: 'Comprovante de Pix.', resposta: '', pedidos: [], alertas: [],
+    comprovante: { valor: 12, recebedor: 'SPEEDBOY MOTOBOY', pagador: 'Carla Souza', data_hora: '16/11/2026 21:58', identificador: 'E123', confere_recebedor: true },
+  };
+  // Pelo painel: aponta qual pedido esperando Pix tem esse valor.
+  const r = await a.analisarArquivos({ arquivos: [{ nome: 'comprovante.png', conteudo: PNG }] }, 'admin:teste');
+  assert.deepEqual(r.comprovante.pedidos_compativeis, [1]);
+  assert.deepEqual(JSON.parse(JSON.stringify(iaFalsa.analises[0].contexto.pedidos_esperando_pagamento)), [{ id: 1, valor: 12 }]);
+  assert.deepEqual(iaFalsa.analises[0].contexto.recebedor_dos_pagamentos, { nome: 'SpeedBoy Motoboy', chave_pix: '46178859000196' });
+
+  // Pelo WhatsApp: o cliente manda a foto; a leitura vai ao responsável, que ainda precisa responder "pago 1".
+  await limpar();
+  iaFalsa.analise.comprovante.valor = 10;
+  iaFalsa.analise.alertas = ['Parece agendamento, não pagamento feito.'];
+  await a.receber({ telefone: '5511977770001', nome: 'Carla Souza', texto: '', midia_tipo: 'image/png', midia_base64: PNG.repeat(4) });
+  for (let i = 0; i < 20 && !enviadas.some((m) => /Leitura do comprovante/.test(m.texto)); i++) await new Promise((ok) => setTimeout(ok, 5));
+  const leitura = enviadas.find((m) => /Leitura do comprovante do pedido #1/.test(m.texto));
+  assert.equal(leitura.destino, '5511988880000');
+  assert.match(leitura.texto, /R\$\s10,00 ⚠️ o pedido é de R\$\s12,00[\s\S]*SPEEDBOY MOTOBOY \(confere\)[\s\S]*Parece agendamento[\s\S]*pago 1/);
+  assert.equal(demandas()[0].pagamento, 'pendente', 'a IA nunca libera sozinha');
+});
+
+test('IA: análise de arquivos monta imagem, PDF e texto na chamada e devolve o resultado limpo', async () => {
+  const chamadas = [];
+  const ia = criarIA({ criarCliente: () => ({ beta: { messages: { parse: async (corpo, opcoes) => {
+    chamadas.push({ corpo, opcoes });
+    return { stop_reason: 'end_turn', parsed_output: {
+      resumo: ' Resumo. ', resposta: '', alertas: ['', 'Olhar isso'],
+      pedidos: [{ cliente: 'A', telefone: '', coleta_endereco: 'Rua A', coleta_contato: '', entrega_endereco: 'Rua B', entrega_contato: '', descricao: 'x', servico_id: 0, requisito: 'caminhao', observacao: '' }],
+      comprovante: { encontrado: false, valor: 0, recebedor: '', pagador: '', data_hora: '', identificador: '', confere_recebedor: false },
+    } };
+  } } } }) });
+  const r = await ia.analisar({ ia_chave: 'k', ia_modelo: 'claude-sonnet-5-5' }, {
+    arquivos: [{ nome: 'f.png', tipo: 'imagem', mime: 'image/png', base64: 'AAAA' }, { nome: 'd.pdf', tipo: 'pdf', base64: 'BBBB' }, { nome: 'c.txt', tipo: 'texto', texto: 'oi' }],
+    contexto: { empresa: 'SpeedBoy' }, pergunta: '',
+  });
+  const { corpo, opcoes } = chamadas[0];
+  assert.deepEqual(corpo.messages[0].content.map((b) => b.type), ['text', 'image', 'text', 'document', 'text', 'text', 'text']);
+  assert.deepEqual(corpo.messages[0].content[1].source, { type: 'base64', media_type: 'image/png', data: 'AAAA' });
+  assert.deepEqual(corpo.messages[0].content[3].source, { type: 'base64', media_type: 'application/pdf', data: 'BBBB' });
+  assert.match(corpo.messages[0].content[6].text, /"empresa":"SpeedBoy"[\s\S]*nenhuma; faça a análise padrão/);
+  assert.deepEqual([corpo.model, corpo.max_tokens, corpo.output_config.effort, corpo.fallbacks, opcoes.timeout], ['claude-sonnet-5-5', 16000, 'medium', 'default', 120000]);
+  assert.match(corpo.system, /não invente|não complete endereço de memória/i);
+  assert.deepEqual([r.resumo, r.alertas, r.comprovante, r.pedidos[0].servico_id, r.pedidos[0].requisito], ['Resumo.', ['Olhar isso'], null, null, 'qualquer']);
+  await assert.rejects(ia.analisar({ ia_chave: '' }, { arquivos: [], contexto: {}, pergunta: '' }), /chave da IA/);
 });

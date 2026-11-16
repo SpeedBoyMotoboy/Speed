@@ -165,6 +165,15 @@ CREATE TABLE IF NOT EXISTS ofertas (
   UNIQUE (demanda_id, turno_id)
 );
 CREATE INDEX IF NOT EXISTS idx_ofertas_turno ON ofertas(turno_id, status);
+-- Análises feitas pela IA em fotos, PDFs e conversas (só o resultado; o arquivo não é guardado).
+CREATE TABLE IF NOT EXISTS analises (
+  id INTEGER PRIMARY KEY,
+  criada_em INTEGER NOT NULL,
+  ator TEXT NOT NULL,
+  titulo TEXT NOT NULL,
+  pergunta TEXT NOT NULL DEFAULT '',
+  resultado TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS auditoria (
   id INTEGER PRIMARY KEY,
   ts INTEGER NOT NULL,

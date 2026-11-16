@@ -8,6 +8,7 @@ import { coordValida, kmPelasRuas } from './geo.js';
 import * as mercadoPago from './mercadopago.js';
 import { brCode } from './pix.js';
 import { criarIA } from './ia.js';
+import { lerConversa, textoDoZip } from './whatsapp.js';
 
 const MIN = 60_000;
 const VALIDADE_CONVERSA = 30 * MIN;
@@ -22,6 +23,12 @@ const txt = (v, max) => String(v ?? '').trim().slice(0, max);
 const hora = (ts) => new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+const ARQUIVOS_MAX = 6;
+const IMAGEM_MAX = 4.5 * 1024 * 1024;
+const PDF_MAX = 12 * 1024 * 1024;
+const TEXTO_IA_MAX = 80_000; // letras de conversa por análise
+const MENSAGENS_IA_MAX = 500;
+const ANALISES_GUARDADAS = 200;
 
 const semAcento = (t) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 const DISSE_QUE_PAGOU = /\b(paguei|pago|comprovante|transferi|pix feito|fiz o pix|ja fiz|enviado)\b/;
@@ -254,6 +261,132 @@ export function criarAtendimento({
     }
   }
 
+  // --------------------------------------- análise de arquivos pela IA
+  // Tipo pelo conteúdo (não pela extensão): foto, PDF, ou texto/zip de conversa do WhatsApp.
+  function prepararArquivo(a, avisos) {
+    const nome = txt(a?.nome, 120) || 'arquivo';
+    const buf = Buffer.from(String(a?.conteudo || ''), 'base64');
+    if (!buf.length) throw new Erro(422, 'arquivo_vazio', `${nome}: arquivo vazio.`);
+    const inicio = buf.subarray(0, 12);
+    const mime = inicio[0] === 0xff && inicio[1] === 0xd8 ? 'image/jpeg'
+      : inicio.subarray(1, 4).toString('latin1') === 'PNG' ? 'image/png'
+        : inicio.subarray(0, 4).toString('latin1') === 'GIF8' ? 'image/gif'
+          : inicio.subarray(0, 4).toString('latin1') === 'RIFF' && inicio.subarray(8, 12).toString('latin1') === 'WEBP' ? 'image/webp' : '';
+    if (mime) {
+      if (buf.length > IMAGEM_MAX) throw new Erro(413, 'arquivo_grande', `${nome}: foto grande demais (máximo 4,5 MB).`);
+      return { nome, tipo: 'imagem', mime, base64: buf.toString('base64') };
+    }
+    if (inicio.subarray(0, 5).toString('latin1') === '%PDF-') {
+      if (buf.length > PDF_MAX) throw new Erro(413, 'arquivo_grande', `${nome}: PDF grande demais (máximo 12 MB).`);
+      return { nome, tipo: 'pdf', base64: buf.toString('base64') };
+    }
+    let bruto;
+    try {
+      bruto = buf.readUInt32LE(0) === 0x04034b50 ? textoDoZip(buf) : buf.toString('utf8');
+    } catch (e) {
+      throw new Erro(422, 'arquivo_invalido', `${nome}: não consegui abrir (${e.message}).`);
+    }
+    if (bruto.includes('\u0000')) {
+      throw new Erro(422, 'tipo_invalido', `${nome}: tipo de arquivo não aceito. Envie foto, PDF ou conversa do WhatsApp (.txt ou .zip).`);
+    }
+    const mensagens = lerConversa(bruto);
+    if (mensagens.length) return { nome, tipo: 'texto', texto: textoDaConversa(nome, mensagens, avisos) };
+    if (bruto.length > TEXTO_IA_MAX) avisos.push(`${nome}: texto longo, analisei só o final (${TEXTO_IA_MAX.toLocaleString('pt-BR')} de ${bruto.length.toLocaleString('pt-BR')} letras).`);
+    return { nome, tipo: 'texto', texto: bruto.slice(-TEXTO_IA_MAX) };
+  }
+  // Conversa em linhas "[dia/mês hora] autor: texto". Se for longa, fica com o final e avisa (nada é cortado em silêncio).
+  function textoDaConversa(nome, mensagens, avisos) {
+    const linhas = mensagens.map((m) => {
+      const d = new Date(m.ts);
+      const quando = `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')} ${hora(m.ts)}`;
+      return `[${quando}] ${m.autor || 'aviso do WhatsApp'}: ${m.texto}`;
+    });
+    let usadas = linhas.slice(-MENSAGENS_IA_MAX);
+    while (usadas.length > 1 && usadas.reduce((n, l) => n + l.length + 1, 0) > TEXTO_IA_MAX) usadas = usadas.slice(Math.ceil(usadas.length / 10));
+    if (usadas.length < linhas.length) avisos.push(`${nome}: conversa longa, analisei as últimas ${usadas.length} de ${linhas.length} mensagens.`);
+    return usadas.join('\n');
+  }
+  function contextoIA() {
+    const c = cfgBruta();
+    return {
+      empresa: c.empresa_nome, cidades_atendidas: c.cidades_atendidas,
+      tipos_de_servico: servico.listarServicos().filter((x) => x.ativo).map((x) => ({ id: x.id, nome: x.nome })),
+      recebedor_dos_pagamentos: { nome: c.pix_nome || c.empresa_nome, chave_pix: c.pix_chave },
+      // Só número e valor: nome de cliente não vai para a IA por este caminho.
+      pedidos_esperando_pagamento: q(`SELECT id, valor FROM demandas WHERE pagamento = 'pendente'
+        AND status IN ('sem_local','aguardando') ORDER BY id DESC LIMIT 30`).all(),
+      data_de_hoje: new Date(agora()).toLocaleDateString('pt-BR'),
+    };
+  }
+  async function analisarProntos(prontos, avisos, titulo, pergunta, ator) {
+    if (!iaLigada()) throw new Erro(409, 'ia_desligada', 'Ligue a IA e cole a chave em Configurações para analisar arquivos.');
+    let r;
+    try {
+      r = await ia.analisar(cfgBruta(), { arquivos: prontos, contexto: contextoIA(), pergunta: txt(pergunta, 1000) });
+    } catch (e) {
+      throw new Erro(502, 'ia_falhou', e.message);
+    }
+    const tipos = new Map(servico.listarServicos().map((x) => [x.id, x.nome]));
+    const resultado = {
+      ...r, avisos,
+      pedidos: r.pedidos.map((p) => ({ ...p, servico_id: tipos.has(p.servico_id) ? p.servico_id : null, servico: tipos.get(p.servico_id) || '' })),
+      comprovante: r.comprovante && {
+        ...r.comprovante,
+        // Pedidos esperando Pix com o mesmo valor do comprovante.
+        pedidos_compativeis: r.comprovante.valor == null ? [] : q(`SELECT id FROM demandas WHERE pagamento = 'pendente'
+          AND status IN ('sem_local','aguardando') AND ABS(valor - ?) < 0.005 ORDER BY id`).all(r.comprovante.valor).map((d) => d.id),
+      },
+    };
+    const id = Number(q('INSERT INTO analises (criada_em, ator, titulo, pergunta, resultado) VALUES (?,?,?,?,?)')
+      .run(agora(), ator, txt(titulo, 200), txt(pergunta, 1000), JSON.stringify(resultado)).lastInsertRowid);
+    auditar(ator, 'ia_analise', txt(titulo, 200));
+    q('DELETE FROM analises WHERE id <= ?').run(id - ANALISES_GUARDADAS);
+    return { id, criada_em: agora(), titulo: txt(titulo, 200), pergunta: txt(pergunta, 1000), ...resultado };
+  }
+  // Fotos, PDFs e conversas enviados pelo painel.
+  async function analisarArquivos({ arquivos, pergunta }, ator) {
+    const lista = Array.isArray(arquivos) ? arquivos : [];
+    if (!lista.length) throw new Erro(422, 'sem_arquivo', 'Escolha pelo menos um arquivo.');
+    if (lista.length > ARQUIVOS_MAX) throw new Erro(422, 'muitos_arquivos', `No máximo ${ARQUIVOS_MAX} arquivos por vez.`);
+    const avisos = [];
+    const prontos = lista.map((a) => prepararArquivo(a, avisos));
+    return analisarProntos(prontos, avisos, prontos.map((p) => p.nome).join(', '), pergunta, ator);
+  }
+  // Conversa que já está no sistema (importada ou ao vivo).
+  async function analisarConversa(conversaId, pergunta, ator) {
+    const c = q('SELECT * FROM conversas WHERE id = ?').get(conversaId);
+    if (!c) throw new Erro(404, 'nao_encontrado', 'Conversa não encontrada.');
+    const mensagens = q('SELECT ts, autor, texto FROM mensagens WHERE conversa_id = ? ORDER BY ts, id').all(conversaId);
+    if (!mensagens.length) throw new Erro(422, 'sem_mensagens', 'Essa conversa não tem mensagens.');
+    const avisos = [];
+    const texto = textoDaConversa(c.nome, mensagens, avisos);
+    return analisarProntos([{ nome: `Conversa do WhatsApp com ${c.nome}`, tipo: 'texto', texto }], avisos, `Conversa: ${c.nome}`, pergunta, ator);
+  }
+  const listarAnalises = () => q('SELECT * FROM analises ORDER BY id DESC LIMIT 30').all()
+    .map(({ resultado, ...a }) => ({ ...a, ...JSON.parse(resultado) }));
+
+  // Comprovante que chegou como foto no WhatsApp: a IA lê e manda a leitura ao responsável (quem libera é ele).
+  async function lerComprovante(d, midia) {
+    const r = await ia.analisar(cfgBruta(), {
+      arquivos: [{ nome: 'comprovante enviado pelo cliente', tipo: midia.mime === 'application/pdf' ? 'pdf' : 'imagem', mime: midia.mime, base64: midia.base64 }],
+      contexto: contextoIA(), pergunta: `Este é o comprovante do pedido #${d.id}, de ${reais(d.valor)}. Confere?`,
+    });
+    const cp = r.comprovante;
+    if (!cp) {
+      avisarAdmin(`🤖 Li o arquivo enviado para o pedido #${d.id} e não parece um comprovante de pagamento. ${r.resumo}`);
+      return;
+    }
+    const linhas = [
+      `🤖 Leitura do comprovante do pedido #${d.id}:`,
+      `Valor: ${cp.valor != null ? reais(cp.valor) : 'não consegui ler'}${cp.valor != null && Math.abs(cp.valor - d.valor) < 0.005 ? ' (confere)' : ` ⚠️ o pedido é de ${reais(d.valor)}`}`,
+      `Recebedor: ${cp.recebedor || 'não consegui ler'}${cp.confere_recebedor ? ' (confere)' : ' ⚠️ não parece ser a empresa'}`,
+      cp.data_hora && `Data: ${cp.data_hora}`,
+      ...r.alertas.map((x) => `⚠️ ${x}`),
+      `Confira no banco e responda *pago ${d.id}* para liberar.`,
+    ];
+    avisarAdmin(linhas.filter(Boolean).join('\n'));
+  }
+
   // ----------------------------------------------------- robô do WhatsApp
   let silenciarCancelamento = false;
   function ajudas(msg) {
@@ -324,7 +457,7 @@ export function criarAtendimento({
   async function tratar(msg) {
     const c = conversaDe(msg.telefone, msg.nome, msg.destino);
     const local = msg.lat != null ? `📍 Localização: ${msg.lat.toFixed(5)}, ${msg.lon.toFixed(5)}` : '';
-    anotar(c, msg.nome || msg.telefone, [msg.texto, local].filter(Boolean).join('\n') || '(mídia sem texto)', 'entrada');
+    anotar(c, msg.nome || msg.telefone, [msg.texto, local, msg.midia && '(enviou foto ou arquivo)'].filter(Boolean).join('\n') || '(mídia sem texto)', 'entrada');
 
     // Responsável confirmando ou cancelando pelo WhatsApp: "pago 12" / "cancelar 12".
     const comando = msg.telefone === cfgBruta().admin_telefone ? /^\s*(pago|cancelar)\s*#?(\d+)\s*$/i.exec(msg.texto) : null;
@@ -359,6 +492,9 @@ export function criarAtendimento({
         q('UPDATE conversas SET pendente = 1 WHERE id = ?').run(c.id);
         avisarAdmin(`🧾 ${aPagar.cliente} enviou o comprovante do pedido #${aPagar.id} (${reais(aPagar.valor)}). Confira na sua conta e responda *pago ${aPagar.id}* para liberar o motoboy.`);
         resposta = `Recebi! Estamos conferindo o pagamento do pedido #${aPagar.id} e já liberamos o motoboy. 👍`;
+        if (msg.midia && iaLigada()) {
+          lerComprovante(aPagar, msg.midia).then(() => despacharSaida()).catch((e) => console.error('[comprovante]', e.message));
+        }
       }
       if (resposta) { anotar(c, 'Robô', resposta, 'saida'); enfileirar(c.destino, resposta, 'robo'); }
       return;
@@ -642,6 +778,6 @@ export function criarAtendimento({
   return {
     definirOrigem, receber, segredoConfere, despacharSaida, rotina,
     infoPublica, cotarPublico, pedidoSite, pedidoVivo, webhookPagamento, expirarPagamentos,
-    resumo, responder, modoConversa, testar, testarIA,
+    resumo, responder, modoConversa, testar, testarIA, analisarArquivos, analisarConversa, listarAnalises,
   };
 }
