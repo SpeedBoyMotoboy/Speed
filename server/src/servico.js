@@ -1,0 +1,879 @@
+// Regras de negócio: motoboys, convocação, turno, posições, alertas, demandas e despacho.
+import {
+  hashSenha, verificarSenha, novoToken, hashToken, HASH_FALSO,
+} from './auth.js';
+import { distM, coordValida } from './geo.js';
+import { atende, escolherMotoboy, melhorInsercao, REQUISITOS } from './despacho.js';
+
+export class Erro extends Error {
+  constructor(status, codigo, mensagem, extra = {}) {
+    super(mensagem);
+    this.status = status;
+    this.codigo = codigo;
+    this.extra = extra;
+  }
+}
+
+const MIN = 60_000;
+const LIMITE_FALHAS = 5;
+const JANELA_FALHAS = 15 * MIN;
+const SESSAO_ADMIN = 12 * 60 * MIN;
+const RAIO_PARADO_M = 60;
+const PRECISAO_MAX_M = 100;
+const FOLGA_FIM_TURNO = 20 * MIN;
+
+const CFG_NUM = {
+  horas_turno: [1, 16], prorrogacao_max_min: [0, 240], parado_min: [2, 120],
+  espera_parada_min: [2, 240], sem_sinal_min: [1, 60], cerca_m: [30, 2000],
+  bike_max_km: [0.5, 50], capacidade: [1, 20], retencao_dias: [7, 730],
+  diaria_valor: [0, 100000], almoco_valor: [0, 100000], almoco_min: [10, 180],
+  mapa_lat: [-90, 90], mapa_lon: [-180, 180],
+};
+const CFG_TXT = { cidade_base: 120, termo_texto: 8000 };
+
+const txt = (v, max) => String(v ?? '').trim().slice(0, max);
+const soDigitos = (v) => String(v ?? '').replace(/\D/g, '');
+
+export function criarServico({ db, agora = () => Date.now(), geocodificar = null }) {
+  const preparados = new Map();
+  const q = (sql) => {
+    let s = preparados.get(sql);
+    if (!s) { s = db.prepare(sql); preparados.set(sql, s); }
+    return s;
+  };
+
+  let nivelTx = 0;
+  function tx(fn) {
+    if (nivelTx > 0) return fn();
+    db.exec('BEGIN IMMEDIATE');
+    nivelTx++;
+    try {
+      const r = fn();
+      db.exec('COMMIT');
+      return r;
+    } catch (e) {
+      db.exec('ROLLBACK');
+      throw e;
+    } finally {
+      nivelTx--;
+    }
+  }
+
+  const auditar = (ator, acao, detalhe = '') =>
+    q('INSERT INTO auditoria (ts, ator, acao, detalhe) VALUES (?,?,?,?)')
+      .run(agora(), ator, acao, String(detalhe).slice(0, 500));
+
+  // ---------------------------------------------------------------- config
+  let cacheCfg = null;
+  function cfgBruta() {
+    if (!cacheCfg) {
+      cacheCfg = {};
+      for (const r of q('SELECT chave, valor FROM config').all()) cacheCfg[r.chave] = r.valor;
+    }
+    return cacheCfg;
+  }
+  function cfg() {
+    const c = cfgBruta();
+    return {
+      turnoMs: Number(c.horas_turno) * 60 * MIN,
+      prorrogacaoMs: Number(c.prorrogacao_max_min) * MIN,
+      paradoMs: Number(c.parado_min) * MIN,
+      esperaParadaMs: Number(c.espera_parada_min) * MIN,
+      semSinalMs: Number(c.sem_sinal_min) * MIN,
+      cercaM: Number(c.cerca_m),
+      bikeMaxKm: Number(c.bike_max_km),
+      capacidade: Number(c.capacidade),
+      retencaoMs: Number(c.retencao_dias) * 24 * 60 * MIN,
+      almocoMs: Number(c.almoco_min) * MIN,
+    };
+  }
+  function lerConfig() {
+    const { api_chave_hash, ...resto } = cfgBruta();
+    return { ...resto, api_chave_definida: api_chave_hash !== '' };
+  }
+  function salvarConfig(dados, ator) {
+    const gravar = q('UPDATE config SET valor = ? WHERE chave = ?');
+    tx(() => {
+      for (const [chave, bruto] of Object.entries(dados || {})) {
+        if (chave in CFG_NUM) {
+          const n = Number(bruto);
+          const [min, max] = CFG_NUM[chave];
+          if (!Number.isFinite(n) || n < min || n > max) {
+            throw new Erro(422, 'config_invalida', `Valor inválido para ${chave} (entre ${min} e ${max}).`);
+          }
+          gravar.run(String(n), chave);
+        } else if (chave in CFG_TXT) {
+          const valor = txt(bruto, CFG_TXT[chave]);
+          if (chave === 'termo_texto') {
+            if (valor.length < 50) throw new Erro(422, 'config_invalida', 'O termo está curto demais.');
+            if (valor !== cfgBruta().termo_texto) {
+              gravar.run(String(Number(cfgBruta().termo_versao) + 1), 'termo_versao');
+            }
+          }
+          gravar.run(valor, chave);
+        }
+      }
+      cacheCfg = null;
+      auditar(ator, 'config', Object.keys(dados || {}).join(','));
+    });
+    return lerConfig();
+  }
+  function gerarChaveApi(ator) {
+    const chave = novoToken();
+    q('UPDATE config SET valor = ? WHERE chave = ?').run(hashToken(chave), 'api_chave_hash');
+    cacheCfg = null;
+    auditar(ator, 'chave_api_gerada');
+    return chave;
+  }
+  function chaveApiValida(chave) {
+    const guardado = cfgBruta().api_chave_hash;
+    return guardado !== '' && typeof chave === 'string' && chave.length > 20 && hashToken(chave) === guardado;
+  }
+
+  // ------------------------------------------------- limite de tentativas
+  const falhas = new Map();
+  function recentes(chave) {
+    const lista = (falhas.get(chave) || []).filter((t) => t > agora() - JANELA_FALHAS);
+    if (lista.length) falhas.set(chave, lista); else falhas.delete(chave);
+    return lista;
+  }
+  function exigirNaoBloqueado(chave, limite = LIMITE_FALHAS) {
+    if (recentes(chave).length >= limite) {
+      throw new Erro(429, 'bloqueado', 'Muitas tentativas erradas. Aguarde 15 minutos.');
+    }
+  }
+  const registrarFalha = (chave) => falhas.set(chave, [...recentes(chave), agora()]);
+
+  // ------------------------------------------------------------- admin
+  function garantirAdmin(usuario, senha) {
+    if (q('SELECT COUNT(*) AS n FROM admins').get().n > 0) return false;
+    q('INSERT INTO admins (usuario, senha_hash, criado_em) VALUES (?,?,?)')
+      .run(usuario, hashSenha(senha), agora());
+    return true;
+  }
+  function loginAdmin(usuario, senha, ip) {
+    const u = txt(usuario, 60).toLowerCase();
+    exigirNaoBloqueado(`ip:${ip}`, 20);
+    exigirNaoBloqueado(`adm:${u}`);
+    const admin = q('SELECT * FROM admins WHERE usuario = ?').get(u);
+    const ok = verificarSenha(senha, admin ? admin.senha_hash : HASH_FALSO);
+    if (!admin || !ok) {
+      registrarFalha(`ip:${ip}`);
+      registrarFalha(`adm:${u}`);
+      throw new Erro(401, 'login_invalido', 'Usuário ou senha incorretos.');
+    }
+    const token = novoToken();
+    q('INSERT INTO sessoes (token_hash, tipo, ref_id, criada_em, expira_em) VALUES (?,?,?,?,?)')
+      .run(hashToken(token), 'admin', admin.id, agora(), agora() + SESSAO_ADMIN);
+    auditar(`admin:${admin.usuario}`, 'login', ip);
+    return { token, expiraEm: agora() + SESSAO_ADMIN, usuario: admin.usuario };
+  }
+  function autenticarAdmin(token) {
+    if (!token) return null;
+    const s = q("SELECT * FROM sessoes WHERE token_hash = ? AND tipo = 'admin'").get(hashToken(token));
+    if (!s || s.expira_em <= agora()) return null;
+    return q('SELECT id, usuario FROM admins WHERE id = ?').get(s.ref_id) || null;
+  }
+  function sairAdmin(token) {
+    if (token) q('DELETE FROM sessoes WHERE token_hash = ?').run(hashToken(token));
+  }
+  function trocarSenhaAdmin(adminId, atual, nova) {
+    const admin = q('SELECT * FROM admins WHERE id = ?').get(adminId);
+    if (!admin || !verificarSenha(atual, admin.senha_hash)) {
+      throw new Erro(403, 'senha_incorreta', 'Senha atual incorreta.');
+    }
+    if (String(nova || '').length < 10) {
+      throw new Erro(422, 'senha_fraca', 'A nova senha precisa de pelo menos 10 caracteres.');
+    }
+    tx(() => {
+      q('UPDATE admins SET senha_hash = ? WHERE id = ?').run(hashSenha(nova), adminId);
+      q("DELETE FROM sessoes WHERE tipo = 'admin' AND ref_id = ?").run(adminId);
+      auditar(`admin:${admin.usuario}`, 'troca_senha');
+    });
+  }
+
+  // ----------------------------------------------------------- motoboys
+  function validarMotoboy(d, novo) {
+    const m = {};
+    if (novo || d.nome !== undefined) {
+      m.nome = txt(d.nome, 80);
+      if (m.nome.length < 2) throw new Erro(422, 'nome_invalido', 'Informe o nome do motoboy.');
+    }
+    if (novo || d.telefone !== undefined) {
+      m.telefone = soDigitos(d.telefone);
+      if (m.telefone.length < 10 || m.telefone.length > 11) {
+        throw new Erro(422, 'telefone_invalido', 'Telefone com DDD: 10 ou 11 números.');
+      }
+    }
+    if (novo || (d.pin !== undefined && d.pin !== '')) {
+      if (!/^\d{6}$/.test(String(d.pin ?? ''))) {
+        throw new Erro(422, 'pin_invalido', 'A senha do motoboy deve ter 6 números.');
+      }
+      m.pin_hash = hashSenha(d.pin);
+    }
+    if (novo || d.veiculo !== undefined) {
+      if (!['moto', 'bike'].includes(d.veiculo)) throw new Erro(422, 'veiculo_invalido', 'Veículo: moto ou bike.');
+      m.veiculo = d.veiculo;
+    }
+    if (novo || d.tem_bau !== undefined) m.tem_bau = d.tem_bau ? 1 : 0;
+    if (novo || d.tem_bag !== undefined) m.tem_bag = d.tem_bag ? 1 : 0;
+    if (d.ativo !== undefined) m.ativo = d.ativo ? 1 : 0;
+    return m;
+  }
+  function telefoneLivre(telefone, excetoId = 0) {
+    const outro = q('SELECT id FROM motoboys WHERE telefone = ? AND id <> ?').get(telefone, excetoId);
+    if (outro) throw new Erro(409, 'telefone_em_uso', 'Já existe motoboy com esse telefone.');
+  }
+  function criarMotoboy(dados, ator) {
+    const m = validarMotoboy(dados || {}, true);
+    telefoneLivre(m.telefone);
+    const r = q(`INSERT INTO motoboys (nome, telefone, pin_hash, veiculo, tem_bau, tem_bag, ativo, criado_em)
+                 VALUES (?,?,?,?,?,?,1,?)`)
+      .run(m.nome, m.telefone, m.pin_hash, m.veiculo, m.tem_bau, m.tem_bag, agora());
+    auditar(ator, 'motoboy_criado', m.nome);
+    return Number(r.lastInsertRowid);
+  }
+  function atualizarMotoboy(id, dados, ator) {
+    const atual = q('SELECT * FROM motoboys WHERE id = ?').get(id);
+    if (!atual) throw new Erro(404, 'nao_encontrado', 'Motoboy não encontrado.');
+    const m = validarMotoboy(dados || {}, false);
+    if (m.telefone) telefoneLivre(m.telefone, id);
+    const campos = Object.keys(m);
+    if (!campos.length) return;
+    tx(() => {
+      q(`UPDATE motoboys SET ${campos.map((c) => `${c} = ?`).join(', ')} WHERE id = ?`)
+        .run(...campos.map((c) => m[c]), id);
+      auditar(ator, 'motoboy_alterado', `${atual.nome}: ${campos.join(',')}`);
+      // Desativado ou com senha trocada: derruba o turno em andamento.
+      if (m.ativo === 0 || m.pin_hash) {
+        const turno = turnoAtivoDoMotoboy(id);
+        if (turno && m.ativo === 0) encerrarTurno(turno.id, 'motoboy_desativado');
+        else if (turno) q("DELETE FROM sessoes WHERE tipo = 'motoboy' AND ref_id = ?").run(turno.id);
+      }
+    });
+  }
+
+  // --------------------------------------------------------- convocação
+  const turnoAtivoDoMotoboy = (motoboyId) =>
+    q('SELECT * FROM turnos WHERE motoboy_id = ? AND fim_real IS NULL').get(motoboyId);
+  const convocacaoValida = (motoboyId) =>
+    q(`SELECT * FROM convocacoes WHERE motoboy_id = ? AND usada_em IS NULL
+       AND cancelada_em IS NULL AND valida_ate > ? ORDER BY id DESC LIMIT 1`).get(motoboyId, agora());
+
+  function convocar(motoboyId, ator) {
+    const m = q('SELECT * FROM motoboys WHERE id = ?').get(motoboyId);
+    if (!m || !m.ativo) throw new Erro(404, 'nao_encontrado', 'Motoboy não encontrado ou inativo.');
+    if (turnoAtivoDoMotoboy(motoboyId)) throw new Erro(409, 'ja_em_turno', 'Esse motoboy já está em turno.');
+    const existente = convocacaoValida(motoboyId);
+    if (existente) return existente;
+    const fimDoDia = new Date(agora());
+    fimDoDia.setHours(23, 59, 59, 999);
+    const r = q('INSERT INTO convocacoes (motoboy_id, criada_em, valida_ate) VALUES (?,?,?)')
+      .run(motoboyId, agora(), fimDoDia.getTime());
+    auditar(ator, 'convocacao', m.nome);
+    return q('SELECT * FROM convocacoes WHERE id = ?').get(Number(r.lastInsertRowid));
+  }
+  function cancelarConvocacao(motoboyId, ator) {
+    const r = q(`UPDATE convocacoes SET cancelada_em = ? WHERE motoboy_id = ?
+                 AND usada_em IS NULL AND cancelada_em IS NULL AND valida_ate > ?`)
+      .run(agora(), motoboyId, agora());
+    if (r.changes) auditar(ator, 'convocacao_cancelada', String(motoboyId));
+  }
+
+  // -------------------------------------------------------------- turno
+  function loginMotoboy({ telefone, pin, aceito_termo, dispositivo, origem }, ip) {
+    const tel = soDigitos(telefone);
+    exigirNaoBloqueado(`ip:${ip}`, 20);
+    exigirNaoBloqueado(`mb:${tel}`);
+    const m = q('SELECT * FROM motoboys WHERE telefone = ?').get(tel);
+    const ok = verificarSenha(String(pin ?? ''), m ? m.pin_hash : HASH_FALSO);
+    if (!m || !ok || !m.ativo) {
+      registrarFalha(`ip:${ip}`);
+      registrarFalha(`mb:${tel}`);
+      throw new Erro(401, 'login_invalido', 'Telefone ou senha incorretos.');
+    }
+    if (aceito_termo !== true) {
+      throw new Erro(422, 'termo_obrigatorio', 'É preciso aceitar o termo para iniciar o turno.');
+    }
+    const disp = txt(dispositivo, 80);
+    const fonte = origem === 'app' ? 'app' : 'navegador';
+    const c = cfg();
+
+    return tx(() => {
+      let turno = turnoAtivoDoMotoboy(m.id);
+      if (turno) {
+        // Só um aparelho por turno: o login novo derruba o anterior.
+        q("DELETE FROM sessoes WHERE tipo = 'motoboy' AND ref_id = ?").run(turno.id);
+        if ((turno.dispositivo || '') !== disp) {
+          alertaPontual(turno, 'troca_aparelho', 'Login refeito em outro aparelho durante o turno.');
+          q('UPDATE turnos SET dispositivo = ?, origem = ? WHERE id = ?').run(disp, fonte, turno.id);
+        }
+      } else {
+        const conv = convocacaoValida(m.id);
+        if (!conv) {
+          throw new Erro(403, 'sem_convocacao', 'Você não foi convocado hoje. Aguarde o chamado da Speed.');
+        }
+        const t = agora();
+        const r = q(`INSERT INTO turnos (motoboy_id, inicio, fim_previsto, termo_versao, termo_aceito_em,
+                     dispositivo, origem, ult_contato) VALUES (?,?,?,?,?,?,?,?)`)
+          .run(m.id, t, t + c.turnoMs, cfgBruta().termo_versao, t, disp, fonte, t);
+        q('UPDATE convocacoes SET usada_em = ? WHERE id = ?').run(t, conv.id);
+        turno = q('SELECT * FROM turnos WHERE id = ?').get(Number(r.lastInsertRowid));
+        auditar(`motoboy:${m.nome}`, 'turno_iniciado', `termo v${turno.termo_versao}`);
+      }
+      const token = novoToken();
+      q('INSERT INTO sessoes (token_hash, tipo, ref_id, criada_em, expira_em) VALUES (?,?,?,?,?)')
+        .run(hashToken(token), 'motoboy', turno.id, agora(), turno.fim_previsto + c.prorrogacaoMs + MIN);
+      despacharPendentes();
+      return { token, fim_previsto: turno.fim_previsto };
+    });
+  }
+
+  function autenticarMotoboy(token) {
+    const negar = () => new Erro(401, 'turno_encerrado', 'Turno encerrado. Faça login de novo quando for convocado.');
+    if (!token) throw negar();
+    const s = q("SELECT * FROM sessoes WHERE token_hash = ? AND tipo = 'motoboy'").get(hashToken(token));
+    if (!s || s.expira_em <= agora()) throw negar();
+    const turno = q('SELECT * FROM turnos WHERE id = ? AND fim_real IS NULL').get(s.ref_id);
+    if (!turno) throw negar();
+    return turno;
+  }
+
+  const emAlmoco = (t) => t.almoco_inicio != null && t.almoco_fim == null;
+
+  function almoco(turno, acao) {
+    const t = agora();
+    if (acao === 'iniciar') {
+      if (turno.almoco_inicio != null) throw new Erro(409, 'almoco_usado', 'O almoço deste turno já foi usado.');
+      const carregando = q("SELECT COUNT(*) AS n FROM demandas WHERE turno_id = ? AND status = 'coletada'").get(turno.id).n;
+      if (carregando) throw new Erro(409, 'com_carga', 'Entregue o que já coletou antes de almoçar.');
+      q('UPDATE turnos SET almoco_inicio = ? WHERE id = ?').run(t, turno.id);
+      fecharAlerta(turno.id, 'parado');
+    } else if (acao === 'encerrar') {
+      if (!emAlmoco(turno)) throw new Erro(409, 'sem_almoco', 'Não há almoço em andamento.');
+      q('UPDATE turnos SET almoco_fim = ?, ancora_ts = ? WHERE id = ?').run(t, t, turno.id);
+    } else {
+      throw new Erro(422, 'acao_invalida', 'Ação inválida.');
+    }
+  }
+
+  function devolverNaoColetadas(turnoId) {
+    return q(`UPDATE demandas SET status = 'aguardando', motoboy_id = NULL, turno_id = NULL, atribuida_em = NULL
+              WHERE turno_id = ? AND status = 'atribuida'`).run(turnoId).changes;
+  }
+
+  function encerrarTurno(turnoId, motivo, ator = 'sistema') {
+    const turno = q('SELECT * FROM turnos WHERE id = ? AND fim_real IS NULL').get(turnoId);
+    if (!turno) throw new Erro(404, 'nao_encontrado', 'Turno não encontrado ou já encerrado.');
+    tx(() => {
+      const t = agora();
+      devolverNaoColetadas(turnoId);
+      q('UPDATE alertas SET fim = ? WHERE turno_id = ? AND fim IS NULL').run(t, turnoId);
+      const comCarga = q("SELECT COUNT(*) AS n FROM demandas WHERE turno_id = ? AND status = 'coletada'").get(turnoId).n;
+      if (comCarga) {
+        alertaPontual(turno, 'carga_pendente', `Turno encerrado com ${comCarga} entrega(s) coletada(s) e não entregue(s).`);
+      }
+      q(`UPDATE turnos SET fim_real = ?, motivo_fim = ?,
+         almoco_fim = CASE WHEN almoco_inicio IS NOT NULL AND almoco_fim IS NULL THEN ? ELSE almoco_fim END
+         WHERE id = ?`).run(t, motivo, t, turnoId);
+      q("DELETE FROM sessoes WHERE tipo = 'motoboy' AND ref_id = ?").run(turnoId);
+      auditar(ator, 'turno_encerrado', `turno ${turnoId}: ${motivo}`);
+      despacharPendentes();
+    });
+  }
+
+  // ------------------------------------------------------------ alertas
+  const alertaAberto = (turnoId, tipo) =>
+    q('SELECT id FROM alertas WHERE turno_id = ? AND tipo = ? AND fim IS NULL').get(turnoId, tipo);
+  function abrirAlerta(turno, tipo, detalhe, inicio = agora()) {
+    if (alertaAberto(turno.id, tipo)) return;
+    q('INSERT INTO alertas (turno_id, motoboy_id, tipo, inicio, detalhe) VALUES (?,?,?,?,?)')
+      .run(turno.id, turno.motoboy_id, tipo, inicio, detalhe);
+  }
+  function fecharAlerta(turnoId, tipo, fim = agora()) {
+    q('UPDATE alertas SET fim = ? WHERE turno_id = ? AND tipo = ? AND fim IS NULL').run(fim, turnoId, tipo);
+  }
+  function alertaPontual(turno, tipo, detalhe) {
+    const t = agora();
+    q('INSERT INTO alertas (turno_id, motoboy_id, tipo, inicio, fim, detalhe) VALUES (?,?,?,?,?,?)')
+      .run(turno.id, turno.motoboy_id, tipo, t, t, detalhe);
+  }
+
+  // ----------------------------------------------------------- posições
+  function registrarPosicoes(turnoInicial, corpo) {
+    const c = cfg();
+    const t = agora();
+    const brutos = Array.isArray(corpo?.pontos) ? corpo.pontos.slice(0, 2000) : [];
+    const pontos = [];
+    for (const p of brutos) {
+      const lat = Number(p?.lat);
+      const lon = Number(p?.lon);
+      let ts = Number(p?.ts);
+      if (!coordValida(lat, lon) || !Number.isFinite(ts)) continue;
+      if (ts > t + MIN) ts = t; // relógio do aparelho adiantado
+      if (ts < turnoInicial.inicio - MIN) continue; // fora do turno: não guarda
+      const precisao = Number.isFinite(Number(p.precisao)) ? Math.max(0, Number(p.precisao)) : null;
+      const velocidade = Number.isFinite(Number(p.velocidade)) ? Math.max(0, Number(p.velocidade)) : null;
+      pontos.push({ lat, lon, ts: Math.round(ts), precisao, velocidade, falso: p.falso ? 1 : 0 });
+    }
+    pontos.sort((a, b) => a.ts - b.ts);
+
+    return tx(() => {
+      const turno = q('SELECT * FROM turnos WHERE id = ?').get(turnoInicial.id);
+      const inserir = q(`INSERT INTO posicoes (turno_id, ts, lat, lon, precisao, velocidade, falso)
+                         VALUES (?,?,?,?,?,?,?)`);
+      let { ult_lat, ult_lon, ult_ts, ult_precisao, ancora_lat, ancora_lon, ancora_ts, km } = turno;
+      const rota = rotaDoTurno(turno.id);
+      const almocando = emAlmoco(turno);
+      let viuFalso = false;
+      let viuReal = false;
+
+      for (const p of pontos) {
+        if (ult_ts != null && p.ts <= ult_ts) continue; // repetido ou fora de ordem
+        inserir.run(turno.id, p.ts, p.lat, p.lon, p.precisao, p.velocidade, p.falso);
+        if (p.falso) viuFalso = true; else viuReal = true;
+        const boa = p.precisao == null || p.precisao <= PRECISAO_MAX_M;
+
+        if (ult_ts != null && boa && (ult_precisao == null || ult_precisao <= PRECISAO_MAX_M)) {
+          const d = distM({ lat: ult_lat, lon: ult_lon }, p);
+          const horas = (p.ts - ult_ts) / 3_600_000;
+          if (d > 1000 && horas > 0 && d / 1000 / horas > 180) {
+            alertaPontual(turno, 'salto', `Posição pulou ${(d / 1000).toFixed(1)} km em ${Math.round(horas * 3600)} s.`);
+          } else if (d > 15) {
+            km += d / 1000;
+          }
+        }
+
+        if (boa) {
+          const longeDaAncora =
+            ancora_ts == null || distM({ lat: ancora_lat, lon: ancora_lon }, p) > RAIO_PARADO_M;
+          if (longeDaAncora) {
+            ancora_lat = p.lat; ancora_lon = p.lon; ancora_ts = p.ts;
+            fecharAlerta(turno.id, 'parado', p.ts);
+          } else if (rota.length && !almocando) {
+            const naParada = distM(rota[0], p) <= c.cercaM;
+            const limite = naParada ? c.esperaParadaMs : c.paradoMs;
+            if (p.ts - ancora_ts >= limite) {
+              abrirAlerta(
+                turno, 'parado',
+                naParada ? 'Parado no local da parada além do tempo de espera.' : 'Parado no meio da rota.',
+                ancora_ts,
+              );
+            }
+          }
+        }
+        ult_lat = p.lat; ult_lon = p.lon; ult_ts = p.ts; ult_precisao = p.precisao;
+      }
+
+      if (viuFalso) abrirAlerta(turno, 'gps_falso', 'O aparelho está usando localização falsa (mock).');
+      else if (viuReal) fecharAlerta(turno.id, 'gps_falso');
+      if (corpo?.gps_ligado === false) abrirAlerta(turno, 'gps_desligado', 'GPS desligado no aparelho.');
+      else if (corpo?.gps_ligado === true || viuReal) fecharAlerta(turno.id, 'gps_desligado');
+      fecharAlerta(turno.id, 'sem_sinal');
+
+      const bat = Number(corpo?.bateria);
+      const bateria = Number.isFinite(bat) && bat >= 0 && bat <= 100 ? Math.round(bat) : turno.bateria;
+      q(`UPDATE turnos SET ult_lat=?, ult_lon=?, ult_ts=?, ult_precisao=?, ancora_lat=?, ancora_lon=?,
+         ancora_ts=?, km=?, ult_contato=?, bateria=? WHERE id=?`)
+        .run(ult_lat, ult_lon, ult_ts, ult_precisao, ancora_lat, ancora_lon, ancora_ts, km, t, bateria, turno.id);
+
+      // Primeira posição do turno: agora dá para escolher por proximidade.
+      if (turno.ult_ts == null && ult_ts != null) despacharPendentes();
+
+      const atual = q('SELECT rota_versao, fim_previsto FROM turnos WHERE id = ?').get(turno.id);
+      return { rota_versao: atual.rota_versao, fim_previsto: atual.fim_previsto, pendentes: rotaDoTurno(turno.id).length };
+    });
+  }
+
+  // ----------------------------------------------------------- demandas
+  function lerPonto(p, nome) {
+    const endereco = txt(p?.endereco, 200);
+    if (endereco.length < 4) throw new Erro(422, 'endereco_invalido', `Informe o endereço de ${nome}.`);
+    const lat = p?.lat == null || p.lat === '' ? null : Number(p.lat);
+    const lon = p?.lon == null || p.lon === '' ? null : Number(p.lon);
+    const temCoord = lat != null && lon != null;
+    if (temCoord && !coordValida(lat, lon)) throw new Erro(422, 'local_invalido', `Local de ${nome} inválido.`);
+    return { endereco, lat: temCoord ? lat : null, lon: temCoord ? lon : null, contato: txt(p?.contato, 120) };
+  }
+  function validarDemanda(d) {
+    const cliente = txt(d?.cliente, 120);
+    if (cliente.length < 2) throw new Erro(422, 'cliente_invalido', 'Informe o cliente.');
+    const requisito = d?.requisito ?? 'qualquer';
+    if (!REQUISITOS.includes(requisito)) throw new Erro(422, 'requisito_invalido', 'Requisito inválido.');
+    return {
+      cliente, requisito, descricao: txt(d?.descricao, 500),
+      coleta: lerPonto(d?.coleta, 'coleta'), entrega: lerPonto(d?.entrega, 'entrega'),
+    };
+  }
+  function inserirDemanda(v, origem, ator) {
+    const completo = v.coleta.lat != null && v.entrega.lat != null;
+    const r = q(`INSERT INTO demandas (cliente, descricao, requisito, origem,
+        coleta_endereco, coleta_lat, coleta_lon, coleta_contato,
+        entrega_endereco, entrega_lat, entrega_lon, entrega_contato, status, criada_em)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(v.cliente, v.descricao, v.requisito, origem,
+        v.coleta.endereco, v.coleta.lat, v.coleta.lon, v.coleta.contato,
+        v.entrega.endereco, v.entrega.lat, v.entrega.lon, v.entrega.contato,
+        completo ? 'aguardando' : 'sem_local', agora());
+    const id = Number(r.lastInsertRowid);
+    auditar(ator, 'demanda_criada', `#${id} ${v.cliente}`);
+    if (completo) despachar(id);
+    return q('SELECT * FROM demandas WHERE id = ?').get(id);
+  }
+  function criarDemanda(dados, ator) {
+    const v = validarDemanda(dados);
+    return tx(() => inserirDemanda(v, 'painel', ator));
+  }
+  // Entrada automática (app de clientes, Make, WhatsApp): endereço em texto vira ponto no mapa.
+  async function criarDemandaExterna(dados) {
+    const v = validarDemanda(dados);
+    if (geocodificar) {
+      for (const ponto of [v.coleta, v.entrega]) {
+        if (ponto.lat != null) continue;
+        try {
+          const achados = await geocodificar(ponto.endereco, { cidadeBase: cfgBruta().cidade_base, limite: 1 });
+          if (achados[0]) { ponto.lat = achados[0].lat; ponto.lon = achados[0].lon; }
+        } catch { /* fica sem local: o admin ajusta no painel */ }
+      }
+    }
+    return tx(() => inserirDemanda(v, 'api', 'api'));
+  }
+  function definirLocais(id, dados, ator) {
+    const d = q('SELECT * FROM demandas WHERE id = ?').get(id);
+    if (!d) throw new Erro(404, 'nao_encontrado', 'Demanda não encontrada.');
+    if (!['sem_local', 'aguardando'].includes(d.status)) {
+      throw new Erro(409, 'ja_atribuida', 'Só dá para mudar o local antes de a demanda ir para um motoboy.');
+    }
+    const coleta = lerPonto({ endereco: d.coleta_endereco, lat: d.coleta_lat, lon: d.coleta_lon, ...dados?.coleta }, 'coleta');
+    const entrega = lerPonto({ endereco: d.entrega_endereco, lat: d.entrega_lat, lon: d.entrega_lon, ...dados?.entrega }, 'entrega');
+    if (coleta.lat == null || entrega.lat == null) throw new Erro(422, 'local_invalido', 'Marque coleta e entrega no mapa.');
+    tx(() => {
+      q(`UPDATE demandas SET coleta_endereco=?, coleta_lat=?, coleta_lon=?, entrega_endereco=?, entrega_lat=?,
+         entrega_lon=?, status='aguardando' WHERE id=?`)
+        .run(coleta.endereco, coleta.lat, coleta.lon, entrega.endereco, entrega.lat, entrega.lon, id);
+      auditar(ator, 'demanda_local', `#${id}`);
+      despachar(id);
+    });
+  }
+  function cancelarDemanda(id, ator) {
+    const d = q('SELECT * FROM demandas WHERE id = ?').get(id);
+    if (!d) throw new Erro(404, 'nao_encontrado', 'Demanda não encontrada.');
+    if (['entregue', 'cancelada'].includes(d.status)) throw new Erro(409, 'ja_finalizada', 'Demanda já finalizada.');
+    tx(() => {
+      q("UPDATE demandas SET status = 'cancelada', cancelada_em = ? WHERE id = ?").run(agora(), id);
+      if (d.turno_id) q('UPDATE turnos SET rota_versao = rota_versao + 1 WHERE id = ?').run(d.turno_id);
+      auditar(ator, 'demanda_cancelada', `#${id}`);
+    });
+  }
+
+  // ----------------------------------------------------- rota e despacho
+  const parada = (d, tipo) => ({
+    demanda_id: d.id,
+    tipo,
+    lat: tipo === 'coleta' ? d.coleta_lat : d.entrega_lat,
+    lon: tipo === 'coleta' ? d.coleta_lon : d.entrega_lon,
+    endereco: tipo === 'coleta' ? d.coleta_endereco : d.entrega_endereco,
+    contato: tipo === 'coleta' ? d.coleta_contato : d.entrega_contato,
+    cliente: d.cliente,
+    descricao: d.descricao,
+    ordem: tipo === 'coleta' ? d.ordem_coleta : d.ordem_entrega,
+  });
+  function rotaDoTurno(turnoId) {
+    const paradas = [];
+    const lista = q("SELECT * FROM demandas WHERE turno_id = ? AND status IN ('atribuida','coletada')").all(turnoId);
+    for (const d of lista) {
+      if (d.status === 'atribuida') paradas.push(parada(d, 'coleta'));
+      paradas.push(parada(d, 'entrega'));
+    }
+    return paradas.sort((a, b) =>
+      a.ordem - b.ordem || a.demanda_id - b.demanda_id || (a.tipo === 'coleta' ? -1 : 1));
+  }
+  function atribuir(d, turno) {
+    const rota = rotaDoTurno(turno.id);
+    const origem = turno.ult_lat != null ? { lat: turno.ult_lat, lon: turno.ult_lon } : null;
+    const { rota: nova } = melhorInsercao(origem, rota, parada(d, 'coleta'), parada(d, 'entrega'));
+    const t = agora();
+    q(`UPDATE demandas SET status = 'atribuida', motoboy_id = ?, turno_id = ?, atribuida_em = ?,
+       coletada_em = NULL, coleta_dist_m = NULL, coleta_justificativa = NULL WHERE id = ?`)
+      .run(turno.motoboy_id, turno.id, t, d.id);
+    nova.forEach((p, i) => {
+      const coluna = p.tipo === 'coleta' ? 'ordem_coleta' : 'ordem_entrega';
+      q(`UPDATE demandas SET ${coluna} = ? WHERE id = ?`).run(i, p.demanda_id);
+    });
+    // Estava livre: o tempo parado esperando serviço não conta contra ele.
+    if (rota.length === 0) q('UPDATE turnos SET ancora_ts = ? WHERE id = ?').run(t, turno.id);
+    q('UPDATE turnos SET rota_versao = rota_versao + 1 WHERE id = ?').run(turno.id);
+  }
+  function candidatos() {
+    const t = agora();
+    return q('SELECT * FROM turnos WHERE fim_real IS NULL').all()
+      .filter((turno) => turno.fim_previsto - t > FOLGA_FIM_TURNO)
+      .map((turno) => ({
+        turno,
+        motoboy: q('SELECT * FROM motoboys WHERE id = ?').get(turno.motoboy_id),
+        rota: rotaDoTurno(turno.id),
+        emAlmoco: emAlmoco(turno),
+      }));
+  }
+  // Escolhe sozinho o melhor motoboy em turno. Devolve true se atribuiu.
+  function despachar(demandaId) {
+    const d = q("SELECT * FROM demandas WHERE id = ? AND status = 'aguardando'").get(demandaId);
+    if (!d) return false;
+    const escolhido = escolherMotoboy(d, candidatos(), cfg());
+    if (!escolhido) return false;
+    atribuir(d, escolhido.turno);
+    auditar('sistema', 'despacho', `#${d.id} -> ${escolhido.motoboy.nome} (+${escolhido.kmExtra.toFixed(1)} km)`);
+    return true;
+  }
+  function despacharPendentes() {
+    let n = 0;
+    tx(() => {
+      for (const { id } of q("SELECT id FROM demandas WHERE status = 'aguardando' ORDER BY criada_em").all()) {
+        if (despachar(id)) n++;
+      }
+    });
+    return n;
+  }
+  // Troca manual feita pelo admin (motoboyId vazio = devolve para a fila e redistribui).
+  function reatribuir(demandaId, motoboyId, ator) {
+    const d = q('SELECT * FROM demandas WHERE id = ?').get(demandaId);
+    if (!d) throw new Erro(404, 'nao_encontrado', 'Demanda não encontrada.');
+    if (!['aguardando', 'atribuida', 'coletada'].includes(d.status)) {
+      throw new Erro(409, 'nao_reatribuivel', 'Essa demanda não pode ser reatribuída.');
+    }
+    tx(() => {
+      if (d.turno_id) q('UPDATE turnos SET rota_versao = rota_versao + 1 WHERE id = ?').run(d.turno_id);
+      q(`UPDATE demandas SET status = 'aguardando', motoboy_id = NULL, turno_id = NULL, atribuida_em = NULL,
+         coletada_em = NULL WHERE id = ?`).run(demandaId);
+      const livre = q('SELECT * FROM demandas WHERE id = ?').get(demandaId);
+      if (motoboyId) {
+        const turno = turnoAtivoDoMotoboy(motoboyId);
+        if (!turno) throw new Erro(409, 'sem_turno', 'Esse motoboy não está em turno.');
+        atribuir(livre, turno);
+        auditar(ator, 'reatribuicao', `#${demandaId} -> motoboy ${motoboyId}`);
+      } else {
+        auditar(ator, 'reatribuicao', `#${demandaId} -> fila`);
+        despachar(demandaId);
+      }
+    });
+  }
+
+  function confirmarParada(turno, { demanda_id, tipo, lat, lon, recebedor, justificativa }) {
+    const d = q('SELECT * FROM demandas WHERE id = ? AND turno_id = ?').get(Number(demanda_id), turno.id);
+    if (!d) throw new Erro(404, 'nao_encontrado', 'Essa parada não está na sua rota.');
+    if (tipo === 'coleta' && d.status !== 'atribuida') throw new Erro(409, 'estado_invalido', 'Coleta já registrada.');
+    if (tipo === 'entrega' && d.status !== 'coletada') throw new Erro(409, 'estado_invalido', 'Registre a coleta antes da entrega.');
+    if (tipo !== 'coleta' && tipo !== 'entrega') throw new Erro(422, 'tipo_invalido', 'Tipo inválido.');
+    const c = cfg();
+    const t = agora();
+    const alvo = parada(d, tipo);
+
+    // Vale a posição que o servidor já tem (rastreio); a enviada pela tela só serve de reserva.
+    let pos = null;
+    if (turno.ult_ts != null && t - turno.ult_ts <= 2 * MIN) pos = { lat: turno.ult_lat, lon: turno.ult_lon };
+    else if (coordValida(Number(lat), Number(lon))) pos = { lat: Number(lat), lon: Number(lon) };
+    const dist = pos ? Math.round(distM(pos, alvo)) : null;
+    const fora = dist == null || dist > c.cercaM;
+    const motivo = txt(justificativa, 300);
+    if (fora && motivo.length < 5) {
+      throw new Erro(422, 'fora_do_local',
+        dist == null
+          ? 'Não consegui confirmar sua localização. Explique o motivo para registrar.'
+          : `Você está a ${dist} m do local. Explique o motivo para registrar.`,
+        { distancia_m: dist });
+    }
+    const nomeRecebedor = txt(recebedor, 80);
+    if (tipo === 'entrega' && nomeRecebedor.length < 2) {
+      throw new Erro(422, 'recebedor_obrigatorio', 'Informe o nome de quem recebeu.');
+    }
+
+    tx(() => {
+      if (tipo === 'coleta') {
+        q(`UPDATE demandas SET status = 'coletada', coletada_em = ?, coleta_dist_m = ?, coleta_justificativa = ?
+           WHERE id = ?`).run(t, dist, fora ? motivo : null, d.id);
+      } else {
+        q(`UPDATE demandas SET status = 'entregue', entregue_em = ?, entrega_dist_m = ?, entrega_justificativa = ?,
+           recebedor = ? WHERE id = ?`).run(t, dist, fora ? motivo : null, nomeRecebedor, d.id);
+      }
+      if (fora) {
+        alertaPontual(turno, 'fora_do_local',
+          `${tipo === 'coleta' ? 'Coleta' : 'Entrega'} #${d.id} registrada ${dist == null ? 'sem localização' : `a ${dist} m do local`}. Motivo: ${motivo}`);
+      }
+      fecharAlerta(turno.id, 'parado');
+      q('UPDATE turnos SET ancora_ts = ? WHERE id = ?').run(t, turno.id);
+    });
+  }
+
+  // ------------------------------------------------------- telas (leitura)
+  function estadoMotoboy(turno) {
+    const m = q('SELECT nome, veiculo FROM motoboys WHERE id = ?').get(turno.motoboy_id);
+    const c = cfg();
+    return {
+      agora: agora(),
+      motoboy: { nome: m.nome, veiculo: m.veiculo },
+      turno: {
+        inicio: turno.inicio,
+        fim_previsto: turno.fim_previsto,
+        almoco_usado: turno.almoco_inicio != null,
+        almoco_ate: emAlmoco(turno) ? turno.almoco_inicio + c.almocoMs : null,
+        ult_ts: turno.ult_ts,
+      },
+      rota_versao: turno.rota_versao,
+      cerca_m: c.cercaM,
+      rota: rotaDoTurno(turno.id).map(({ ordem, ...p }) => p),
+    };
+  }
+
+  function inicioDoDia() {
+    const d = new Date(agora());
+    d.setHours(0, 0, 0, 0);
+    return d.getTime();
+  }
+
+  function statusTurno(turno, pendentes, c) {
+    if (agora() - (turno.ult_contato ?? turno.inicio) > c.semSinalMs) return 'sem_sinal';
+    if (emAlmoco(turno)) return 'almoco';
+    return pendentes > 0 ? 'em_rota' : 'disponivel';
+  }
+
+  function estadoAdmin() {
+    const c = cfg();
+    const hoje = inicioDoDia();
+    const motoboys = q('SELECT id, nome, telefone, veiculo, tem_bau, tem_bag, ativo FROM motoboys ORDER BY nome').all()
+      .map((m) => {
+        const turno = turnoAtivoDoMotoboy(m.id);
+        const conv = turno ? null : convocacaoValida(m.id);
+        const ultimo = q('SELECT MAX(inicio) AS t FROM turnos WHERE motoboy_id = ?').get(m.id).t;
+        let resumo = null;
+        if (turno) {
+          const pendentes = rotaDoTurno(turno.id).length;
+          resumo = {
+            id: turno.id, inicio: turno.inicio, fim_previsto: turno.fim_previsto,
+            lat: turno.ult_lat, lon: turno.ult_lon, ult_ts: turno.ult_ts, ult_contato: turno.ult_contato,
+            bateria: turno.bateria, km: Math.round(turno.km * 10) / 10, origem: turno.origem,
+            pendentes, status: statusTurno(turno, pendentes, c),
+            almoco_ate: emAlmoco(turno) ? turno.almoco_inicio + c.almocoMs : null,
+          };
+        }
+        return { ...m, turno: resumo, convocado_ate: conv ? conv.valida_ate : null, ultimo_turno: ultimo };
+      });
+
+    const demandas = q(`SELECT * FROM demandas
+        WHERE status IN ('sem_local','aguardando','atribuida','coletada')
+           OR entregue_em >= ? OR cancelada_em >= ?
+        ORDER BY criada_em DESC LIMIT 300`).all(hoje, hoje);
+    const alertas = q(`SELECT a.*, m.nome AS motoboy FROM alertas a JOIN motoboys m ON m.id = a.motoboy_id
+        WHERE a.fim IS NULL OR a.inicio >= ? ORDER BY (a.fim IS NULL) DESC, a.inicio DESC LIMIT 100`).all(hoje);
+
+    return {
+      agora: agora(),
+      motoboys,
+      demandas,
+      alertas,
+      sugestoes: sugestoes(motoboys, demandas, c),
+      mapa: { lat: Number(cfgBruta().mapa_lat), lon: Number(cfgBruta().mapa_lon) },
+    };
+  }
+
+  // Quem convocar: demandas sem ninguém em turno que atenda -> rodízio (quem está há mais tempo sem diária).
+  function sugestoes(motoboys, demandas, c) {
+    const fila = demandas.filter((d) => d.status === 'aguardando');
+    if (!fila.length) return [];
+    const emTurnoOuChamado = motoboys.filter((m) => m.ativo && (m.turno || m.convocado_ate));
+    const livres = motoboys
+      .filter((m) => m.ativo && !m.turno && !m.convocado_ate)
+      .sort((a, b) => (a.ultimo_turno ?? 0) - (b.ultimo_turno ?? 0));
+    const escolhidos = new Map();
+    for (const d of fila) {
+      const cobertas = [...escolhidos.values()].filter((s) => s.demandas.length < c.capacidade);
+      const jaCobre = cobertas.find((s) => atende(s.motoboy, d, c));
+      if (jaCobre) { jaCobre.demandas.push(d.id); continue; }
+      // Alguém já chamado/online atende? Então é só questão de fila, não de convocar.
+      if (emTurnoOuChamado.some((m) => atende(m, d, c) && (!m.turno || m.turno.pendentes < c.capacidade * 2))) continue;
+      const m = livres.find((x) => !escolhidos.has(x.id) && atende(x, d, c));
+      if (m) escolhidos.set(m.id, { motoboy: m, demandas: [d.id] });
+    }
+    return [...escolhidos.values()].map((s) => ({
+      motoboy_id: s.motoboy.id, nome: s.motoboy.nome, telefone: s.motoboy.telefone, demandas: s.demandas,
+    }));
+  }
+
+  function trilha(turnoId) {
+    const turno = q('SELECT * FROM turnos WHERE id = ?').get(turnoId);
+    if (!turno) throw new Erro(404, 'nao_encontrado', 'Turno não encontrado.');
+    return {
+      turno: { id: turno.id, inicio: turno.inicio, fim_previsto: turno.fim_previsto, fim_real: turno.fim_real, km: turno.km },
+      pontos: q('SELECT ts, lat, lon, falso FROM posicoes WHERE turno_id = ? ORDER BY ts').all(turnoId),
+      alertas: q('SELECT tipo, inicio, fim, detalhe FROM alertas WHERE turno_id = ? ORDER BY inicio').all(turnoId),
+    };
+  }
+
+  function relatorio(de, ate) {
+    const c = cfgBruta();
+    const porDiaria = Number(c.diaria_valor) + Number(c.almoco_valor);
+    const linhas = q(`
+      SELECT m.id AS motoboy_id, m.nome,
+        COUNT(t.id) AS diarias,
+        COALESCE(SUM(COALESCE(t.fim_real, ?) - t.inicio), 0) AS ms_turno,
+        COALESCE(SUM(t.km), 0) AS km,
+        (SELECT COUNT(*) FROM demandas d JOIN turnos t2 ON t2.id = d.turno_id
+          WHERE t2.motoboy_id = m.id AND d.status = 'entregue' AND t2.inicio >= ? AND t2.inicio < ?) AS entregas,
+        (SELECT COALESCE(SUM(COALESCE(a.fim, ?) - a.inicio), 0) FROM alertas a JOIN turnos t3 ON t3.id = a.turno_id
+          WHERE t3.motoboy_id = m.id AND a.tipo = 'parado' AND t3.inicio >= ? AND t3.inicio < ?) AS ms_parado,
+        (SELECT COUNT(*) FROM alertas a JOIN turnos t4 ON t4.id = a.turno_id
+          WHERE t4.motoboy_id = m.id AND t4.inicio >= ? AND t4.inicio < ?) AS alertas
+      FROM motoboys m JOIN turnos t ON t.motoboy_id = m.id
+      WHERE t.inicio >= ? AND t.inicio < ?
+      GROUP BY m.id ORDER BY m.nome`).all(agora(), de, ate, agora(), de, ate, de, ate, de, ate);
+    return linhas.map((l) => ({
+      motoboy_id: l.motoboy_id,
+      nome: l.nome,
+      diarias: l.diarias,
+      horas: Math.round((l.ms_turno / 3_600_000) * 10) / 10,
+      km: Math.round(l.km * 10) / 10,
+      entregas: l.entregas,
+      min_parado: Math.round(l.ms_parado / MIN),
+      alertas: l.alertas,
+      valor: Math.round(l.diarias * porDiaria * 100) / 100,
+    }));
+  }
+
+  // ------------------------------------------------ rotina (a cada 30 s)
+  let ultimaLimpeza = 0;
+  function rotina() {
+    const c = cfg();
+    const t = agora();
+    for (const turno of q('SELECT * FROM turnos WHERE fim_real IS NULL').all()) {
+      if (t >= turno.fim_previsto) {
+        const comCarga = q("SELECT COUNT(*) AS n FROM demandas WHERE turno_id = ? AND status = 'coletada'").get(turno.id).n;
+        if (!comCarga) { encerrarTurno(turno.id, 'fim_do_turno'); continue; }
+        if (t >= turno.fim_previsto + c.prorrogacaoMs) { encerrarTurno(turno.id, 'tempo_esgotado_com_carga'); continue; }
+        // Prorrogado só para terminar o que já coletou; o resto volta para a fila.
+        if (tx(() => devolverNaoColetadas(turno.id))) despacharPendentes();
+      }
+      if (emAlmoco(turno) && t >= turno.almoco_inicio + c.almocoMs) {
+        q('UPDATE turnos SET almoco_fim = ?, ancora_ts = ? WHERE id = ?').run(t, t, turno.id);
+      }
+      const contato = turno.ult_contato ?? turno.inicio;
+      if (t - contato > c.semSinalMs) {
+        abrirAlerta(turno, 'sem_sinal', 'Aparelho sem contato: app fechado, sem internet ou desligado.', contato);
+      }
+    }
+    q('DELETE FROM sessoes WHERE expira_em <= ?').run(t);
+    if (t - ultimaLimpeza > 6 * 60 * MIN) {
+      ultimaLimpeza = t;
+      q('DELETE FROM posicoes WHERE ts < ?').run(t - c.retencaoMs);
+    }
+  }
+
+  return {
+    cfg, lerConfig, salvarConfig, gerarChaveApi, chaveApiValida,
+    garantirAdmin, loginAdmin, autenticarAdmin, sairAdmin, trocarSenhaAdmin,
+    criarMotoboy, atualizarMotoboy, convocar, cancelarConvocacao,
+    loginMotoboy, autenticarMotoboy, almoco, encerrarTurno, registrarPosicoes,
+    criarDemanda, criarDemandaExterna, definirLocais, cancelarDemanda, reatribuir, confirmarParada,
+    despacharPendentes, estadoMotoboy, estadoAdmin, trilha, relatorio, rotina,
+    termo: () => ({ versao: cfgBruta().termo_versao, texto: cfgBruta().termo_texto }),
+    cidadeBase: () => cfgBruta().cidade_base,
+  };
+}

@@ -1,0 +1,15 @@
+{
+  "name": "speed-despacho",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Servidor de despacho e rastreamento de motoboys da Speed",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/index.js",
+    "test": "node --disable-warning=ExperimentalWarning --test \"test/*.test.js\""
+  },
+  "dependencies": {
+    "leaflet": "1.9.4"
+  }
+}

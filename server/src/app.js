@@ -1,0 +1,234 @@
+// Camada HTTP: rotas da API, autenticação, cabeçalhos de segurança e arquivos estáticos.
+import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+import { Erro } from './servico.js';
+
+const RAIZ = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const PUBLICO = path.join(RAIZ, 'public');
+const LEAFLET = path.join(path.dirname(createRequire(import.meta.url).resolve('leaflet/package.json')), 'dist');
+const TIPOS = {
+  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.svg': 'image/svg+xml',
+  '.json': 'application/json; charset=utf-8', '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json',
+};
+const COOKIE = 'speed_admin';
+const CORPO_MAX = 512 * 1024;
+const CSP = [
+  "default-src 'self'", "script-src 'self'", "style-src 'self'",
+  "img-src 'self' data: https://tile.openstreetmap.org", "connect-src 'self'",
+  "frame-ancestors 'none'", "base-uri 'none'", "form-action 'self'", "object-src 'none'",
+].join('; ');
+
+export function criarApp({ servico, geocodificar, confiarProxy = false, cookieSeguro = false }) {
+  const rotas = [];
+  const rota = (metodo, caminho, acesso, fn) => {
+    const nomes = [];
+    const padrao = caminho.replace(/:(\w+)/g, (_, n) => { nomes.push(n); return '(\\d+)'; });
+    rotas.push({ metodo, re: new RegExp(`^${padrao}$`), nomes, acesso, fn });
+  };
+
+  const ipDe = (req) => {
+    const encaminhado = confiarProxy ? String(req.headers['x-forwarded-for'] || '').split(',')[0].trim() : '';
+    return encaminhado || req.socket.remoteAddress || '';
+  };
+  const cookieDe = (req) => {
+    for (const parte of String(req.headers.cookie || '').split(';')) {
+      const [k, ...v] = parte.trim().split('=');
+      if (k === COOKIE) return v.join('=');
+    }
+    return null;
+  };
+  const cookieAdmin = (token, maxAgeS) =>
+    `${COOKIE}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAgeS}${cookieSeguro ? '; Secure' : ''}`;
+
+  async function lerCorpo(req) {
+    if (!String(req.headers['content-type'] || '').startsWith('application/json')) {
+      throw new Erro(415, 'tipo_invalido', 'Envie JSON.');
+    }
+    let tamanho = 0;
+    const partes = [];
+    for await (const parte of req) {
+      tamanho += parte.length;
+      if (tamanho > CORPO_MAX) throw new Erro(413, 'corpo_grande', 'Requisição grande demais.');
+      partes.push(parte);
+    }
+    if (!tamanho) return {};
+    try {
+      const corpo = JSON.parse(Buffer.concat(partes).toString('utf8'));
+      if (corpo === null || typeof corpo !== 'object' || Array.isArray(corpo)) throw new Error('formato');
+      return corpo;
+    } catch {
+      throw new Erro(400, 'json_invalido', 'JSON inválido.');
+    }
+  }
+
+  function responder(res, status, corpo, cabecalhos = {}) {
+    const dados = JSON.stringify(corpo);
+    res.writeHead(status, {
+      'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...cabecalhos,
+    });
+    res.end(dados);
+  }
+
+  // -------------------------------------------------------------- público
+  rota('GET', '/saude', 'publico', () => ({ ok: true }));
+  rota('GET', '/api/termo', 'publico', () => servico.termo());
+  rota('POST', '/api/motoboy/login', 'publico', ({ corpo, ip }) => servico.loginMotoboy(corpo, ip));
+  rota('POST', '/api/admin/login', 'publico', ({ corpo, ip, res }) => {
+    const s = servico.loginAdmin(corpo.usuario, corpo.senha, ip);
+    res.setHeader('Set-Cookie', cookieAdmin(s.token, Math.floor((s.expiraEm - Date.now()) / 1000)));
+    return { usuario: s.usuario };
+  });
+
+  // Entrada automática de demandas (app de clientes, Make, robô de WhatsApp).
+  rota('POST', '/api/entrada/demandas', 'api', async ({ corpo }) => {
+    const d = await servico.criarDemandaExterna(corpo);
+    return { id: d.id, status: d.status };
+  });
+
+  // -------------------------------------------------------------- motoboy
+  rota('GET', '/api/motoboy/estado', 'motoboy', ({ turno }) => servico.estadoMotoboy(turno));
+  rota('POST', '/api/motoboy/posicoes', 'motoboy', ({ turno, corpo }) => servico.registrarPosicoes(turno, corpo));
+  rota('POST', '/api/motoboy/parada', 'motoboy', ({ turno, corpo }) => {
+    servico.confirmarParada(turno, corpo);
+    return servico.estadoMotoboy(servico.autenticarMotoboy(turno.token));
+  });
+  rota('POST', '/api/motoboy/almoco', 'motoboy', ({ turno, corpo }) => {
+    servico.almoco(turno, corpo.acao);
+    return servico.estadoMotoboy(servico.autenticarMotoboy(turno.token));
+  });
+
+  // ---------------------------------------------------------------- admin
+  const ator = (admin) => `admin:${admin.usuario}`;
+  rota('GET', '/api/admin/estado', 'admin', () => servico.estadoAdmin());
+  rota('POST', '/api/admin/logout', 'admin', ({ req, res }) => {
+    servico.sairAdmin(cookieDe(req));
+    res.setHeader('Set-Cookie', cookieAdmin('', 0));
+    return { ok: true };
+  });
+  rota('POST', '/api/admin/senha', 'admin', ({ admin, corpo, res }) => {
+    servico.trocarSenhaAdmin(admin.id, corpo.atual, corpo.nova);
+    res.setHeader('Set-Cookie', cookieAdmin('', 0));
+    return { ok: true };
+  });
+  rota('POST', '/api/admin/motoboys', 'admin', ({ admin, corpo }) => ({ id: servico.criarMotoboy(corpo, ator(admin)) }));
+  rota('PUT', '/api/admin/motoboys/:id', 'admin', ({ admin, corpo, p }) => {
+    servico.atualizarMotoboy(p.id, corpo, ator(admin));
+    return { ok: true };
+  });
+  rota('POST', '/api/admin/motoboys/:id/convocar', 'admin', ({ admin, p }) => servico.convocar(p.id, ator(admin)));
+  rota('POST', '/api/admin/motoboys/:id/desconvocar', 'admin', ({ admin, p }) => {
+    servico.cancelarConvocacao(p.id, ator(admin));
+    return { ok: true };
+  });
+  rota('POST', '/api/admin/turnos/:id/encerrar', 'admin', ({ admin, p }) => {
+    servico.encerrarTurno(p.id, 'encerrado_pelo_admin', ator(admin));
+    return { ok: true };
+  });
+  rota('GET', '/api/admin/turnos/:id/trilha', 'admin', ({ p }) => servico.trilha(p.id));
+  rota('POST', '/api/admin/demandas', 'admin', ({ admin, corpo }) => servico.criarDemanda(corpo, ator(admin)));
+  rota('PUT', '/api/admin/demandas/:id/locais', 'admin', ({ admin, corpo, p }) => {
+    servico.definirLocais(p.id, corpo, ator(admin));
+    return { ok: true };
+  });
+  rota('POST', '/api/admin/demandas/:id/atribuir', 'admin', ({ admin, corpo, p }) => {
+    servico.reatribuir(p.id, corpo.motoboy_id ? Number(corpo.motoboy_id) : null, ator(admin));
+    return { ok: true };
+  });
+  rota('POST', '/api/admin/demandas/:id/cancelar', 'admin', ({ admin, p }) => {
+    servico.cancelarDemanda(p.id, ator(admin));
+    return { ok: true };
+  });
+  rota('GET', '/api/admin/geocode', 'admin', async ({ url }) => {
+    if (!geocodificar) return { resultados: [] };
+    try {
+      return { resultados: await geocodificar(url.searchParams.get('q') || '', { cidadeBase: servico.cidadeBase() }) };
+    } catch {
+      throw new Erro(502, 'busca_indisponivel', 'Busca de endereço indisponível. Marque o ponto clicando no mapa.');
+    }
+  });
+  rota('GET', '/api/admin/relatorio', 'admin', ({ url }) => {
+    const de = Number(url.searchParams.get('de'));
+    const ate = Number(url.searchParams.get('ate'));
+    if (!Number.isFinite(de) || !Number.isFinite(ate) || ate <= de) throw new Erro(422, 'periodo_invalido', 'Período inválido.');
+    return { linhas: servico.relatorio(de, ate) };
+  });
+  rota('GET', '/api/admin/config', 'admin', () => servico.lerConfig());
+  rota('PUT', '/api/admin/config', 'admin', ({ admin, corpo }) => servico.salvarConfig(corpo, ator(admin)));
+  rota('POST', '/api/admin/chave-api', 'admin', ({ admin }) => ({ chave: servico.gerarChaveApi(ator(admin)) }));
+
+  // ------------------------------------------------------------ estáticos
+  function servirArquivo(res, base, relativo, metodo) {
+    const alvo = path.resolve(base, `.${path.posix.normalize(`/${relativo}`)}`);
+    if (alvo !== base && !alvo.startsWith(base + path.sep)) return false;
+    let arquivo = alvo;
+    try {
+      if (fs.statSync(arquivo).isDirectory()) arquivo = path.join(arquivo, 'index.html');
+      const dados = fs.readFileSync(arquivo);
+      res.writeHead(200, {
+        'Content-Type': TIPOS[path.extname(arquivo)] || 'application/octet-stream',
+        'Cache-Control': base === LEAFLET ? 'public, max-age=86400' : 'no-cache',
+      });
+      res.end(metodo === 'HEAD' ? undefined : dados);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function tratar(req, res) {
+    const url = new URL(req.url, 'http://local');
+    const caminho = decodeURIComponent(url.pathname);
+    res.setHeader('Content-Security-Policy', CSP);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Permissions-Policy', 'geolocation=(self), camera=(), microphone=()');
+    if (cookieSeguro) res.setHeader('Strict-Transport-Security', 'max-age=31536000');
+
+    if (caminho.startsWith('/api/') || caminho === '/saude') {
+      const metodoOk = rotas.filter((r) => r.re.test(caminho));
+      const r = metodoOk.find((x) => x.metodo === req.method);
+      if (!r) throw new Erro(metodoOk.length ? 405 : 404, 'nao_encontrado', 'Rota não encontrada.');
+      const ctx = { req, res, url, ip: ipDe(req), p: {}, corpo: {} };
+      r.re.exec(caminho).slice(1).forEach((v, i) => { ctx.p[r.nomes[i]] = Number(v); });
+
+      if (r.acesso === 'admin') {
+        ctx.admin = servico.autenticarAdmin(cookieDe(req));
+        if (!ctx.admin) throw new Erro(401, 'nao_autenticado', 'Faça login.');
+        // Cookie é SameSite=Strict; o cabeçalho próprio fecha a porta para formulários de outros sites.
+        if (req.method !== 'GET' && req.headers['x-speed'] !== '1') throw new Erro(403, 'origem_invalida', 'Requisição recusada.');
+      } else if (r.acesso === 'motoboy') {
+        const token = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+        ctx.turno = { ...servico.autenticarMotoboy(token), token };
+      } else if (r.acesso === 'api') {
+        if (!servico.chaveApiValida(req.headers['x-api-key'])) throw new Erro(401, 'chave_invalida', 'Chave de API inválida.');
+      }
+      if (req.method !== 'GET') ctx.corpo = await lerCorpo(req);
+      return responder(res, 200, await r.fn(ctx));
+    }
+
+    if (req.method !== 'GET' && req.method !== 'HEAD') throw new Erro(405, 'metodo', 'Método não permitido.');
+    if (caminho === '/') { res.writeHead(302, { Location: '/painel/' }); return res.end(); }
+    if (caminho === '/painel' || caminho === '/app') { res.writeHead(302, { Location: `${caminho}/` }); return res.end(); }
+    if (caminho.startsWith('/vendor/leaflet/')) {
+      if (servirArquivo(res, LEAFLET, caminho.slice('/vendor/leaflet/'.length), req.method)) return undefined;
+    } else if (servirArquivo(res, PUBLICO, caminho, req.method)) {
+      return undefined;
+    }
+    throw new Erro(404, 'nao_encontrado', 'Página não encontrada.');
+  }
+
+  return http.createServer((req, res) => {
+    tratar(req, res).catch((e) => {
+      if (res.headersSent) return res.end();
+      if (e instanceof Erro) return responder(res, e.status, { erro: e.codigo, mensagem: e.message, ...e.extra });
+      if (e instanceof URIError) return responder(res, 400, { erro: 'url_invalida', mensagem: 'Endereço inválido.' });
+      console.error('[erro]', e);
+      return responder(res, 500, { erro: 'interno', mensagem: 'Erro interno. Tente de novo.' });
+    });
+  });
+}
