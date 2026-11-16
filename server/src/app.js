@@ -24,10 +24,10 @@ const CSP = [
 
 export function criarApp({ servico, geocodificar, confiarProxy = false, cookieSeguro = false }) {
   const rotas = [];
-  const rota = (metodo, caminho, acesso, fn) => {
+  const rota = (metodo, caminho, acesso, fn, max = CORPO_MAX) => {
     const nomes = [];
     const padrao = caminho.replace(/:(\w+)/g, (_, n) => { nomes.push(n); return '(\\d+)'; });
-    rotas.push({ metodo, re: new RegExp(`^${padrao}$`), nomes, acesso, fn });
+    rotas.push({ metodo, re: new RegExp(`^${padrao}$`), nomes, acesso, fn, max });
   };
 
   const ipDe = (req) => {
@@ -45,7 +45,7 @@ export function criarApp({ servico, geocodificar, confiarProxy = false, cookieSe
   const cookieAdmin = (token, maxAgeS) =>
     `${COOKIE}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAgeS}${cookieSeguro ? '; Secure' : ''}`;
 
-  async function lerCorpo(req) {
+  async function lerCorpo(req, max = CORPO_MAX) {
     if (!String(req.headers['content-type'] || '').startsWith('application/json')) {
       throw new Erro(415, 'tipo_invalido', 'Envie JSON.');
     }
@@ -53,7 +53,7 @@ export function criarApp({ servico, geocodificar, confiarProxy = false, cookieSe
     const partes = [];
     for await (const parte of req) {
       tamanho += parte.length;
-      if (tamanho > CORPO_MAX) throw new Erro(413, 'corpo_grande', 'Requisição grande demais.');
+      if (tamanho > max) throw new Erro(413, 'corpo_grande', 'Arquivo ou requisição grande demais.');
       partes.push(parte);
     }
     if (!tamanho) return {};
@@ -157,6 +157,13 @@ export function criarApp({ servico, geocodificar, confiarProxy = false, cookieSe
     if (!Number.isFinite(de) || !Number.isFinite(ate) || ate <= de) throw new Erro(422, 'periodo_invalido', 'Período inválido.');
     return { linhas: servico.relatorio(de, ate) };
   });
+  rota('POST', '/api/admin/whatsapp', 'admin', ({ admin, corpo }) => servico.importarWhatsapp(corpo, ator(admin)), 30 * 1024 * 1024);
+  rota('GET', '/api/admin/whatsapp', 'admin', () => ({ conversas: servico.listarConversas() }));
+  rota('GET', '/api/admin/whatsapp/:id', 'admin', ({ p, url }) => ({ mensagens: servico.mensagensDaConversa(p.id, url.searchParams.get('q') || '') }));
+  rota('DELETE', '/api/admin/whatsapp/:id', 'admin', ({ admin, p }) => {
+    servico.excluirConversa(p.id, ator(admin));
+    return { ok: true };
+  });
   rota('GET', '/api/admin/config', 'admin', () => servico.lerConfig());
   rota('PUT', '/api/admin/config', 'admin', ({ admin, corpo }) => servico.salvarConfig(corpo, ator(admin)));
   rota('POST', '/api/admin/chave-api', 'admin', ({ admin }) => ({ chave: servico.gerarChaveApi(ator(admin)) }));
@@ -208,7 +215,7 @@ export function criarApp({ servico, geocodificar, confiarProxy = false, cookieSe
       } else if (r.acesso === 'api') {
         if (!servico.chaveApiValida(req.headers['x-api-key'])) throw new Erro(401, 'chave_invalida', 'Chave de API inválida.');
       }
-      if (req.method !== 'GET') ctx.corpo = await lerCorpo(req);
+      if (req.method !== 'GET') ctx.corpo = await lerCorpo(req, r.max);
       return responder(res, 200, await r.fn(ctx));
     }
 

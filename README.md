@@ -94,6 +94,16 @@ Para atualizar o app sem desinstalar, use sempre a mesma chave de assinatura: va
 `SPEED_KEYSTORE`, `SPEED_KEYSTORE_SENHA` e `SPEED_KEY_ALIAS` na compilação. A tela do motoboy vem do
 servidor, então a maioria das mudanças chega sem precisar de APK novo.
 
+## Conversas do WhatsApp
+
+Aba *WhatsApp* do painel. No celular: abra a conversa → ⋮ → Mais → **Exportar conversa** → **Sem mídia**
+(no iPhone: toque no nome do contato → Exportar conversa). Mande o arquivo para você mesmo e clique em
+*Importar conversa* no painel. Aceita o `.txt` e o `.zip` (até 20 MB).
+
+- Importar a mesma conversa de novo só acrescenta as mensagens novas.
+- Dá para buscar nas mensagens e, com *Criar demanda*, abrir a demanda já preenchida com o cliente e o texto.
+- As mensagens ficam guardadas no banco; *Excluir conversa* apaga a conversa e as mensagens.
+
 ## Entrada automática de demandas
 
 Em *Configurações* gere a chave de API. O app de clientes, um cenário do Make ou um robô de WhatsApp

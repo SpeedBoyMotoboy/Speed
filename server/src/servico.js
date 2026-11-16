@@ -4,6 +4,7 @@ import {
 } from './auth.js';
 import { distM, coordValida } from './geo.js';
 import { atende, escolherMotoboy, melhorInsercao, REQUISITOS } from './despacho.js';
+import { lerConversa, textoDoZip, nomeDaConversa } from './whatsapp.js';
 
 export class Erro extends Error {
   constructor(status, codigo, mensagem, extra = {}) {
@@ -522,7 +523,12 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
   }
   function criarDemanda(dados, ator) {
     const v = validarDemanda(dados);
-    return tx(() => inserirDemanda(v, 'painel', ator));
+    const mensagemId = Number(dados?.mensagem_id) || null;
+    return tx(() => {
+      const d = inserirDemanda(v, mensagemId ? 'whatsapp' : 'painel', ator);
+      if (mensagemId) q('UPDATE mensagens SET demanda_id = ? WHERE id = ?').run(d.id, mensagemId);
+      return d;
+    });
   }
   // Entrada automática (app de clientes, Make, WhatsApp): endereço em texto vira ponto no mapa.
   async function criarDemandaExterna(dados) {
@@ -838,6 +844,56 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     }));
   }
 
+  // ------------------------------------------- conversas do WhatsApp
+  // Importa a conversa exportada. Reimportar a mesma conversa só acrescenta o que é novo.
+  function importarWhatsapp({ arquivo, conteudo }, ator) {
+    const buf = Buffer.from(String(conteudo || ''), 'base64');
+    if (!buf.length) throw new Erro(422, 'arquivo_vazio', 'Arquivo vazio.');
+    let texto;
+    try {
+      texto = buf.readUInt32LE(0) === 0x04034b50 ? textoDoZip(buf) : buf.toString('utf8');
+    } catch (e) {
+      throw new Erro(422, 'arquivo_invalido', `Não consegui abrir o arquivo: ${e.message}.`);
+    }
+    const lista = lerConversa(texto);
+    if (!lista.length) {
+      throw new Erro(422, 'sem_mensagens', 'Não achei mensagens. Use "Exportar conversa" do WhatsApp e envie o .txt ou o .zip.');
+    }
+    const nome = nomeDaConversa(arquivo);
+    return tx(() => {
+      const t = agora();
+      q(`INSERT INTO conversas (nome, criada_em, atualizada_em) VALUES (?,?,?)
+         ON CONFLICT(nome) DO UPDATE SET atualizada_em = excluded.atualizada_em`).run(nome, t, t);
+      const conversa = q('SELECT id FROM conversas WHERE nome = ?').get(nome);
+      const inserir = q('INSERT OR IGNORE INTO mensagens (conversa_id, ts, autor, texto) VALUES (?,?,?,?)');
+      let novas = 0;
+      for (const m of lista) novas += inserir.run(conversa.id, m.ts, m.autor ?? '', m.texto).changes;
+      auditar(ator, 'whatsapp_importado', `${nome}: ${novas} nova(s)`);
+      return { conversa_id: conversa.id, nome, lidas: lista.length, novas };
+    });
+  }
+  function listarConversas() {
+    return q(`SELECT c.id, c.nome, c.atualizada_em, COUNT(m.id) AS total,
+        MIN(m.ts) AS primeira, MAX(m.ts) AS ultima, COUNT(m.demanda_id) AS demandas
+      FROM conversas c LEFT JOIN mensagens m ON m.conversa_id = c.id
+      GROUP BY c.id ORDER BY c.atualizada_em DESC`).all();
+  }
+  function mensagensDaConversa(conversaId, busca = '') {
+    const termo = `%${String(busca).trim().slice(0, 100).replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+    return q(`SELECT id, ts, autor, texto, demanda_id FROM mensagens
+      WHERE conversa_id = ? AND (texto LIKE ? ESCAPE '\\' OR autor LIKE ? ESCAPE '\\')
+      ORDER BY ts DESC, id DESC LIMIT 500`).all(conversaId, termo, termo);
+  }
+  function excluirConversa(conversaId, ator) {
+    const c = q('SELECT nome FROM conversas WHERE id = ?').get(conversaId);
+    if (!c) throw new Erro(404, 'nao_encontrado', 'Conversa não encontrada.');
+    tx(() => {
+      q('DELETE FROM mensagens WHERE conversa_id = ?').run(conversaId);
+      q('DELETE FROM conversas WHERE id = ?').run(conversaId);
+      auditar(ator, 'whatsapp_excluido', c.nome);
+    });
+  }
+
   // ------------------------------------------------ rotina (a cada 30 s)
   let ultimaLimpeza = 0;
   function rotina() {
@@ -873,6 +929,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     loginMotoboy, autenticarMotoboy, almoco, encerrarTurno, registrarPosicoes,
     criarDemanda, criarDemandaExterna, definirLocais, cancelarDemanda, reatribuir, confirmarParada,
     despacharPendentes, estadoMotoboy, estadoAdmin, trilha, relatorio, rotina,
+    importarWhatsapp, listarConversas, mensagensDaConversa, excluirConversa,
     termo: () => ({ versao: cfgBruta().termo_versao, texto: cfgBruta().termo_texto }),
     cidadeBase: () => cfgBruta().cidade_base,
   };

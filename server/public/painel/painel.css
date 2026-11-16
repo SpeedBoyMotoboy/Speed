@@ -104,7 +104,13 @@ dialog h2 { margin-bottom: 6px; }
 .ponto.entrega { background: #db2777; }
 .ponto.espera { background: var(--aviso); }
 
+.grade-whats { display: grid; grid-template-columns: 320px 1fr; gap: 18px; margin-top: 8px; }
+.grade-whats input { margin-bottom: 8px; }
+.clicavel { cursor: pointer; }
+.texto-msg { white-space: pre-wrap; color: var(--texto); font-size: 13.5px; }
+
 @media (max-width: 900px) {
+  .grade-whats { grid-template-columns: 1fr; }
   .operacao { grid-template-columns: 1fr; grid-template-rows: 45vh auto; height: auto; }
   .lateral { border-left: 0; }
   .grade2, .grade3 { grid-template-columns: 1fr; }

@@ -88,7 +88,7 @@ function dialogo(titulo, montar, { largo = false } = {}) {
     executar: async (fn, botao) => {
       erro.textContent = '';
       if (botao) botao.disabled = true;
-      try { await fn(); fechar(); atualizar(); } catch (e) { erro.textContent = e.message; } finally { if (botao) botao.disabled = false; }
+      try { await fn(); fechar(); atualizar(); if (abaAtual === 'whatsapp') desenharWhatsapp(); } catch (e) { erro.textContent = e.message; } finally { if (botao) botao.disabled = false; }
     },
   };
   corpo.append(...[montar(ctx)].flat(Infinity).filter((f) => f != null && f !== false), erro);
@@ -141,7 +141,7 @@ const els = {};
 function pararAtualizacao() { clearInterval(temporizador); temporizador = null; }
 
 function telaPrincipal() {
-  const abas = [['operacao', 'Operação'], ['motoboys', 'Motoboys'], ['relatorio', 'Relatório'], ['config', 'Configurações']];
+  const abas = [['operacao', 'Operação'], ['motoboys', 'Motoboys'], ['whatsapp', 'WhatsApp'], ['relatorio', 'Relatório'], ['config', 'Configurações']];
   els.conexao = h('span', { class: 'conexao' });
   els.botoesAba = abas.map(([id, nome]) => h('button', { 'data-aba': id, onclick: () => abrirAba(id) }, nome));
   els.mapa = h('div', { id: 'mapa' });
@@ -179,6 +179,7 @@ function abrirAba(id) {
   if (id === 'operacao') { mapa.invalidateSize(); desenhar(); }
   if (id === 'motoboys') desenharMotoboys();
   if (id === 'relatorio') desenharRelatorio();
+  if (id === 'whatsapp') desenharWhatsapp();
   if (id === 'config') desenharConfig();
 }
 
@@ -389,7 +390,8 @@ function janelaTrocar(d) {
 }
 
 // Nova demanda, ou (com `existente`) só marcar os pontos de uma demanda sem local.
-function janelaDemanda(existente = null) {
+// `previa` preenche a partir de uma mensagem do WhatsApp: { cliente, descricao, mensagem_id }.
+function janelaDemanda(existente = null, previa = null) {
   const pontos = {
     coleta: { lat: existente?.coleta_lat ?? null, lon: existente?.coleta_lon ?? null, marcador: null },
     entrega: { lat: existente?.entrega_lat ?? null, lon: existente?.entrega_lon ?? null, marcador: null },
@@ -398,10 +400,10 @@ function janelaDemanda(existente = null) {
   let mini = null;
 
   dialogo(existente ? `Demanda #${existente.id} — marcar locais` : 'Nova demanda', (dlg) => {
-    const cliente = h('input', { maxlength: 120, value: existente?.cliente || '', disabled: Boolean(existente) });
+    const cliente = h('input', { maxlength: 120, value: existente?.cliente || previa?.cliente || '', disabled: Boolean(existente) });
     const requisito = h('select', { disabled: Boolean(existente) },
       Object.entries(ROTULO_REQUISITO).map(([v, r]) => h('option', { value: v, selected: existente?.requisito === v }, r)));
-    const descricao = h('input', { maxlength: 500, value: existente?.descricao || '', disabled: Boolean(existente), placeholder: 'O que é, observações' });
+    const descricao = h('input', { maxlength: 500, value: existente?.descricao || previa?.descricao?.replace(/\s*\n+\s*/g, ' · ').slice(0, 500) || '', disabled: Boolean(existente), placeholder: 'O que é, observações' });
     const campos = {};
     const botoesAlvo = {};
 
@@ -461,7 +463,7 @@ function janelaDemanda(existente = null) {
           await api('PUT', `/api/admin/demandas/${existente.id}/locais`, { coleta: ponto('coleta'), entrega: ponto('entrega') });
         } else {
           await api('POST', '/api/admin/demandas', {
-            cliente: cliente.value, requisito: requisito.value, descricao: descricao.value,
+            cliente: cliente.value, requisito: requisito.value, descricao: descricao.value, mensagem_id: previa?.mensagem_id,
             coleta: ponto('coleta'), entrega: ponto('entrega'),
           });
         }
@@ -564,6 +566,92 @@ function desenharMotoboys() {
               class: 'pequeno', onclick: async () => { await api('POST', `/api/admin/motoboys/${m.id}/desconvocar`).catch(() => {}); atualizar(); },
             }, 'Cancelar convocação'),
             h('button', { class: 'pequeno', onclick: () => janelaMotoboy(m) }, 'Editar'))))))));
+}
+
+// --------------------------------------------------------------- whatsapp
+let conversaAberta = null;
+const ARQUIVO_MAX = 20 * 1024 * 1024;
+
+function lerArquivoBase64(arquivo) {
+  return new Promise((ok, falha) => {
+    const leitor = new FileReader();
+    leitor.onload = () => ok(String(leitor.result).split(',')[1] || '');
+    leitor.onerror = () => falha(new Error('Não consegui ler o arquivo.'));
+    leitor.readAsDataURL(arquivo);
+  });
+}
+
+async function desenharWhatsapp(mensagemAviso = '') {
+  const aviso = h('div', { class: 'nota' }, mensagemAviso);
+  const entrada = h('input', { type: 'file', accept: '.txt,.zip,text/plain,application/zip', multiple: true, hidden: true });
+  entrada.addEventListener('change', async () => {
+    const arquivos = [...entrada.files];
+    entrada.value = '';
+    const resultado = [];
+    for (const arq of arquivos) {
+      if (arq.size > ARQUIVO_MAX) { resultado.push(`${arq.name}: maior que 20 MB. Exporte "sem mídia".`); continue; }
+      aviso.textContent = `Enviando ${arq.name}…`;
+      try {
+        const r = await api('POST', '/api/admin/whatsapp', { arquivo: arq.name, conteudo: await lerArquivoBase64(arq) });
+        resultado.push(`${r.nome}: ${r.lidas} mensagens lidas, ${r.novas} novas.`);
+        conversaAberta = r.conversa_id;
+      } catch (e) { resultado.push(`${arq.name}: ${e.message}`); }
+    }
+    desenharWhatsapp(resultado.join(' '));
+  });
+
+  let conversas = [];
+  try { ({ conversas } = await api('GET', '/api/admin/whatsapp')); } catch { return; }
+  if (abaAtual !== 'whatsapp') return;
+  if (!conversas.some((c) => c.id === conversaAberta)) conversaAberta = conversas[0]?.id ?? null;
+
+  const lista = conversas.map((c) => h('div', {
+    class: `cartao clicavel ${c.id === conversaAberta ? 'sugestao' : ''}`,
+    onclick: () => { conversaAberta = c.id; desenharWhatsapp(); },
+  },
+  h('div', { class: 'titulo' }, c.nome),
+  h('div', { class: 'sub' }, `${c.total} mensagens`, c.primeira ? ` · ${dataHora(c.primeira)} a ${dataHora(c.ultima)}` : ''),
+  c.demandas > 0 && h('div', { class: 'sub' }, `${c.demandas} viraram demanda`)));
+
+  const busca = h('input', { placeholder: 'Buscar nas mensagens (ex.: coleta, rua, nome)' });
+  const mensagens = h('div', null);
+  const carregar = async () => {
+    if (!conversaAberta) { trocar(mensagens, h('div', { class: 'vazio' }, 'Nenhuma conversa importada ainda.')); return; }
+    const conversa = conversas.find((c) => c.id === conversaAberta);
+    try {
+      const r = await api('GET', `/api/admin/whatsapp/${conversaAberta}?q=${encodeURIComponent(busca.value)}`);
+      trocar(mensagens,
+        r.mensagens.length === 0 && h('div', { class: 'vazio' }, 'Nenhuma mensagem encontrada.'),
+        r.mensagens.map((m) => h('div', { class: 'cartao' },
+          h('div', { class: 'titulo' }, m.autor || 'Aviso do WhatsApp', h('span', { class: 'nota' }, dataHora(m.ts)),
+            m.demanda_id && chip(`Demanda #${m.demanda_id}`, 'entregue')),
+          h('div', { class: 'sub texto-msg' }, m.texto),
+          m.autor && !m.demanda_id && h('div', { class: 'acoes' }, h('button', {
+            class: 'pequeno primario',
+            onclick: () => janelaDemanda(null, { cliente: conversa?.nome || m.autor, descricao: m.texto, mensagem_id: m.id }),
+          }, 'Criar demanda')))));
+    } catch (e) { trocar(mensagens, h('div', { class: 'erro' }, e.message)); }
+  };
+  let espera = null;
+  busca.addEventListener('input', () => { clearTimeout(espera); espera = setTimeout(carregar, 300); });
+
+  trocar(els.pagina,
+    h('div', { class: 'linha' }, h('h2', { class: 'cresce' }, 'Conversas do WhatsApp'),
+      h('button', { class: 'primario', onclick: () => entrada.click() }, 'Importar conversa')),
+    entrada,
+    h('p', { class: 'nota' }, 'No celular: abra a conversa → ⋮ Mais → Exportar conversa → Sem mídia (no iPhone: toque no nome do contato → Exportar conversa). Mande o arquivo para você e importe aqui (.txt ou .zip). Importar de novo a mesma conversa só acrescenta as mensagens novas.'),
+    aviso,
+    h('div', { class: 'grade-whats' },
+      h('div', null, h('h3', null, `Conversas (${conversas.length})`), lista),
+      h('div', null,
+        h('div', { class: 'linha' }, h('h3', { class: 'cresce' }, 'Mensagens (mais recentes primeiro)'),
+          conversaAberta && h('button', {
+            class: 'pequeno perigo',
+            onclick: () => confirmar('Excluir conversa', 'Apagar esta conversa e as mensagens importadas? As demandas já criadas continuam.', 'Excluir',
+              async () => { await api('DELETE', `/api/admin/whatsapp/${conversaAberta}`); conversaAberta = null; }),
+          }, 'Excluir conversa')),
+        busca, mensagens)));
+  carregar();
 }
 
 // -------------------------------------------------------------- relatório

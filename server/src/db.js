@@ -107,6 +107,22 @@ CREATE TABLE IF NOT EXISTS alertas (
 );
 CREATE INDEX IF NOT EXISTS idx_alertas_turno ON alertas(turno_id, tipo, fim);
 CREATE INDEX IF NOT EXISTS idx_alertas_inicio ON alertas(inicio);
+CREATE TABLE IF NOT EXISTS conversas (
+  id INTEGER PRIMARY KEY,
+  nome TEXT NOT NULL UNIQUE,
+  criada_em INTEGER NOT NULL,
+  atualizada_em INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS mensagens (
+  id INTEGER PRIMARY KEY,
+  conversa_id INTEGER NOT NULL REFERENCES conversas(id) ON DELETE CASCADE,
+  ts INTEGER NOT NULL,
+  autor TEXT NOT NULL DEFAULT '', -- vazio = aviso do sistema
+  texto TEXT NOT NULL,
+  demanda_id INTEGER REFERENCES demandas(id),
+  UNIQUE (conversa_id, ts, autor, texto)
+);
+CREATE INDEX IF NOT EXISTS idx_mensagens_conversa ON mensagens(conversa_id, ts);
 CREATE TABLE IF NOT EXISTS auditoria (
   id INTEGER PRIMARY KEY,
   ts INTEGER NOT NULL,
