@@ -2,7 +2,9 @@
 import {
   hashSenha, verificarSenha, novoToken, hashToken, HASH_FALSO,
 } from './auth.js';
-import { distM, coordValida } from './geo.js';
+import crypto from 'node:crypto';
+import { distM, distRuaKm, coordValida } from './geo.js';
+import { PROVEDORES, normalizarTelefone } from './mensageiro.js';
 import { atende, escolherMotoboy, melhorInsercao, REQUISITOS } from './despacho.js';
 import { lerConversa, textoDoZip, nomeDaConversa } from './whatsapp.js';
 
@@ -29,8 +31,19 @@ const CFG_NUM = {
   bike_max_km: [0.5, 50], capacidade: [1, 20], retencao_dias: [7, 730],
   diaria_valor: [0, 100000], almoco_valor: [0, 100000], almoco_min: [10, 180],
   mapa_lat: [-90, 90], mapa_lon: [-180, 180],
+  preco_base: [0, 100000], preco_km_incluso: [0, 1000], preco_km: [0, 1000], preco_minimo: [0, 100000],
+  convocacao_auto_max: [0, 50], convocacao_auto_espera_min: [0, 120],
 };
-const CFG_TXT = { cidade_base: 120, termo_texto: 8000 };
+const CFG_TXT = {
+  cidade_base: 120, termo_texto: 8000, empresa_nome: 60, url_publica: 200, whats_url: 300, whats_instancia: 120,
+};
+const SIM_NAO = ['0', '1'];
+const CFG_OPC = {
+  pedidos_site: SIM_NAO, rastreio_cliente: SIM_NAO, robo_ativo: SIM_NAO, avisos_cliente: SIM_NAO,
+  convocacao_auto: SIM_NAO, site_confirmacao: ['painel', 'whatsapp', 'nenhuma'], whats_provedor: PROVEDORES,
+};
+const CFG_HORA = ['atendimento_inicio', 'atendimento_fim'];
+const CFG_SECRETAS = ['api_chave_hash', 'whats_token'];
 
 const txt = (v, max) => String(v ?? '').trim().slice(0, max);
 const soDigitos = (v) => String(v ?? '').replace(/\D/g, '');
@@ -59,6 +72,11 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       nivelTx--;
     }
   }
+
+  // Quem quiser reagir (avisos de WhatsApp, etc.) se inscreve aqui. Roda dentro da mesma transação.
+  const ouvintes = [];
+  const aoEvento = (fn) => ouvintes.push(fn);
+  const emitir = (evento, dados) => { for (const fn of ouvintes) fn(evento, dados); };
 
   const auditar = (ator, acao, detalhe = '') =>
     q('INSERT INTO auditoria (ts, ator, acao, detalhe) VALUES (?,?,?,?)')
@@ -89,8 +107,33 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     };
   }
   function lerConfig() {
-    const { api_chave_hash, ...resto } = cfgBruta();
-    return { ...resto, api_chave_definida: api_chave_hash !== '' };
+    if (!cfgBruta().whats_segredo) {
+      q('UPDATE config SET valor = ? WHERE chave = ?').run(crypto.randomBytes(18).toString('base64url'), 'whats_segredo');
+      cacheCfg = null;
+    }
+    const { api_chave_hash, whats_token, ...resto } = cfgBruta();
+    return { ...resto, api_chave_definida: api_chave_hash !== '', whats_token_definido: whats_token !== '' };
+  }
+  // Fora do horário de atendimento? (vazio = atende sempre). Devolve o texto do horário ou ''.
+  function foraDoHorario() {
+    const { atendimento_inicio: ini, atendimento_fim: fim } = cfgBruta();
+    if (!ini || !fim || ini === fim) return '';
+    const d = new Date(agora());
+    const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    const dentro = ini < fim ? hm >= ini && hm < fim : hm >= ini || hm < fim;
+    return dentro ? '' : `${ini} às ${fim}`;
+  }
+  // Preço estimado pela distância. Tudo zero em Configurações = sem preço automático.
+  function cotar(coleta, entrega) {
+    if (coleta?.lat == null || entrega?.lat == null) return { km: null, valor: null };
+    const c = cfgBruta();
+    const km = Math.round(distRuaKm(coleta, entrega) * 10) / 10;
+    const base = Number(c.preco_base);
+    const porKm = Number(c.preco_km);
+    const minimo = Number(c.preco_minimo);
+    if (!base && !porKm && !minimo) return { km, valor: null };
+    const bruto = base + Math.max(0, km - Number(c.preco_km_incluso)) * porKm;
+    return { km, valor: Math.round(Math.max(minimo, bruto) * 100) / 100 };
   }
   function salvarConfig(dados, ator) {
     const gravar = q('UPDATE config SET valor = ? WHERE chave = ?');
@@ -103,6 +146,19 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
             throw new Erro(422, 'config_invalida', `Valor inválido para ${chave} (entre ${min} e ${max}).`);
           }
           gravar.run(String(n), chave);
+        } else if (chave in CFG_OPC) {
+          if (!CFG_OPC[chave].includes(String(bruto))) throw new Erro(422, 'config_invalida', `Valor inválido para ${chave}.`);
+          gravar.run(String(bruto), chave);
+        } else if (CFG_HORA.includes(chave)) {
+          const hm = txt(bruto, 5);
+          if (hm !== '' && !/^([01]\d|2[0-3]):[0-5]\d$/.test(hm)) throw new Erro(422, 'config_invalida', 'Horário no formato 08:00.');
+          gravar.run(hm, chave);
+        } else if (chave === 'whats_token') {
+          if (txt(bruto, 600) !== '') gravar.run(txt(bruto, 600), chave); // vazio = mantém o atual
+        } else if (chave === 'admin_telefone') {
+          const tel = normalizarTelefone(bruto);
+          if (soDigitos(bruto) !== '' && !tel) throw new Erro(422, 'config_invalida', 'Telefone do responsável: DDD + número.');
+          gravar.run(tel, chave);
         } else if (chave in CFG_TXT) {
           const valor = txt(bruto, CFG_TXT[chave]);
           if (chave === 'termo_texto') {
@@ -115,7 +171,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
         }
       }
       cacheCfg = null;
-      auditar(ator, 'config', Object.keys(dados || {}).join(','));
+      auditar(ator, 'config', Object.keys(dados || {}).filter((k) => !CFG_SECRETAS.includes(k)).join(','));
     });
     return lerConfig();
   }
@@ -261,7 +317,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     q(`SELECT * FROM convocacoes WHERE motoboy_id = ? AND usada_em IS NULL
        AND cancelada_em IS NULL AND valida_ate > ? ORDER BY id DESC LIMIT 1`).get(motoboyId, agora());
 
-  function convocar(motoboyId, ator) {
+  function convocar(motoboyId, ator, origem = 'admin') {
     const m = q('SELECT * FROM motoboys WHERE id = ?').get(motoboyId);
     if (!m || !m.ativo) throw new Erro(404, 'nao_encontrado', 'Motoboy não encontrado ou inativo.');
     if (turnoAtivoDoMotoboy(motoboyId)) throw new Erro(409, 'ja_em_turno', 'Esse motoboy já está em turno.');
@@ -269,10 +325,14 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     if (existente) return existente;
     const fimDoDia = new Date(agora());
     fimDoDia.setHours(23, 59, 59, 999);
-    const r = q('INSERT INTO convocacoes (motoboy_id, criada_em, valida_ate) VALUES (?,?,?)')
-      .run(motoboyId, agora(), fimDoDia.getTime());
-    auditar(ator, 'convocacao', m.nome);
-    return q('SELECT * FROM convocacoes WHERE id = ?').get(Number(r.lastInsertRowid));
+    return tx(() => {
+      const r = q('INSERT INTO convocacoes (motoboy_id, criada_em, valida_ate, origem) VALUES (?,?,?,?)')
+        .run(motoboyId, agora(), fimDoDia.getTime(), origem);
+      auditar(ator, 'convocacao', m.nome);
+      const conv = q('SELECT * FROM convocacoes WHERE id = ?').get(Number(r.lastInsertRowid));
+      emitir('convocacao', { motoboy: m, convocacao: conv });
+      return conv;
+    });
   }
   function cancelarConvocacao(motoboyId, ator) {
     const r = q(`UPDATE convocacoes SET cancelada_em = ? WHERE motoboy_id = ?
@@ -390,6 +450,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     if (alertaAberto(turno.id, tipo)) return;
     q('INSERT INTO alertas (turno_id, motoboy_id, tipo, inicio, detalhe) VALUES (?,?,?,?,?)')
       .run(turno.id, turno.motoboy_id, tipo, inicio, detalhe);
+    emitir('alerta', { turno, tipo, detalhe });
   }
   function fecharAlerta(turnoId, tipo, fim = agora()) {
     q('UPDATE alertas SET fim = ? WHERE turno_id = ? AND tipo = ? AND fim IS NULL').run(fim, turnoId, tipo);
@@ -398,6 +459,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     const t = agora();
     q('INSERT INTO alertas (turno_id, motoboy_id, tipo, inicio, fim, detalhe) VALUES (?,?,?,?,?,?)')
       .run(turno.id, turno.motoboy_id, tipo, t, t, detalhe);
+    emitir('alerta', { turno, tipo, detalhe });
   }
 
   // ----------------------------------------------------------- posições
@@ -503,23 +565,46 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     if (!REQUISITOS.includes(requisito)) throw new Erro(422, 'requisito_invalido', 'Requisito inválido.');
     return {
       cliente, requisito, descricao: txt(d?.descricao, 500),
+      telefone: normalizarTelefone(d?.cliente_telefone ?? d?.telefone),
       coleta: lerPonto(d?.coleta, 'coleta'), entrega: lerPonto(d?.entrega, 'entrega'),
     };
   }
-  function inserirDemanda(v, origem, ator) {
+  // `retida`: fica parada (sem despacho) até o admin aprovar ou o cliente confirmar.
+  function inserirDemanda(v, origem, ator, { retida = false } = {}) {
     const completo = v.coleta.lat != null && v.entrega.lat != null;
+    const { km, valor } = cotar(v.coleta, v.entrega);
     const r = q(`INSERT INTO demandas (cliente, descricao, requisito, origem,
         coleta_endereco, coleta_lat, coleta_lon, coleta_contato,
-        entrega_endereco, entrega_lat, entrega_lon, entrega_contato, status, criada_em)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        entrega_endereco, entrega_lat, entrega_lon, entrega_contato, status, criada_em,
+        codigo, cliente_telefone, valor, km, retida)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
       .run(v.cliente, v.descricao, v.requisito, origem,
         v.coleta.endereco, v.coleta.lat, v.coleta.lon, v.coleta.contato,
         v.entrega.endereco, v.entrega.lat, v.entrega.lon, v.entrega.contato,
-        completo ? 'aguardando' : 'sem_local', agora());
+        completo ? 'aguardando' : 'sem_local', agora(),
+        crypto.randomBytes(9).toString('base64url'), v.telefone || '', valor, km, retida ? 1 : 0);
     const id = Number(r.lastInsertRowid);
     auditar(ator, 'demanda_criada', `#${id} ${v.cliente}`);
-    if (completo) despachar(id);
+    emitir('demanda_criada', { demanda: q('SELECT * FROM demandas WHERE id = ?').get(id) });
+    if (completo && !retida) despachar(id);
     return q('SELECT * FROM demandas WHERE id = ?').get(id);
+  }
+  // Pedido vindo do site ou do robô (os dados já foram conferidos por quem chama).
+  function criarPedido(dados, origem, opcoes) {
+    const v = validarDemanda(dados);
+    return tx(() => inserirDemanda(v, origem, origem, opcoes));
+  }
+  // Aprovação no painel ou confirmação do cliente: solta a demanda para o despacho.
+  function liberarDemanda(id, ator) {
+    const d = q('SELECT * FROM demandas WHERE id = ?').get(id);
+    if (!d) throw new Erro(404, 'nao_encontrado', 'Demanda não encontrada.');
+    if (!d.retida || ['entregue', 'cancelada'].includes(d.status)) return false;
+    tx(() => {
+      q('UPDATE demandas SET retida = 0 WHERE id = ?').run(id);
+      auditar(ator, 'demanda_liberada', `#${id}`);
+      despachar(id);
+    });
+    return true;
   }
   function criarDemanda(dados, ator) {
     const v = validarDemanda(dados);
@@ -553,10 +638,11 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     const coleta = lerPonto({ endereco: d.coleta_endereco, lat: d.coleta_lat, lon: d.coleta_lon, ...dados?.coleta }, 'coleta');
     const entrega = lerPonto({ endereco: d.entrega_endereco, lat: d.entrega_lat, lon: d.entrega_lon, ...dados?.entrega }, 'entrega');
     if (coleta.lat == null || entrega.lat == null) throw new Erro(422, 'local_invalido', 'Marque coleta e entrega no mapa.');
+    const { km, valor } = cotar(coleta, entrega);
     tx(() => {
       q(`UPDATE demandas SET coleta_endereco=?, coleta_lat=?, coleta_lon=?, entrega_endereco=?, entrega_lat=?,
-         entrega_lon=?, status='aguardando' WHERE id=?`)
-        .run(coleta.endereco, coleta.lat, coleta.lon, entrega.endereco, entrega.lat, entrega.lon, id);
+         entrega_lon=?, status='aguardando', km=?, valor=?, retida=0 WHERE id=?`)
+        .run(coleta.endereco, coleta.lat, coleta.lon, entrega.endereco, entrega.lat, entrega.lon, km, valor, id);
       auditar(ator, 'demanda_local', `#${id}`);
       despachar(id);
     });
@@ -569,6 +655,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       q("UPDATE demandas SET status = 'cancelada', cancelada_em = ? WHERE id = ?").run(agora(), id);
       if (d.turno_id) q('UPDATE turnos SET rota_versao = rota_versao + 1 WHERE id = ?').run(d.turno_id);
       auditar(ator, 'demanda_cancelada', `#${id}`);
+      emitir('demanda_cancelada', { demanda: d });
     });
   }
 
@@ -609,6 +696,9 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     // Estava livre: o tempo parado esperando serviço não conta contra ele.
     if (rota.length === 0) q('UPDATE turnos SET ancora_ts = ? WHERE id = ?').run(t, turno.id);
     q('UPDATE turnos SET rota_versao = rota_versao + 1 WHERE id = ?').run(turno.id);
+    emitir('demanda_atribuida', {
+      demanda: d, turno, motoboy: q('SELECT * FROM motoboys WHERE id = ?').get(turno.motoboy_id),
+    });
   }
   function candidatos() {
     const t = agora();
@@ -623,7 +713,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
   }
   // Escolhe sozinho o melhor motoboy em turno. Devolve true se atribuiu.
   function despachar(demandaId) {
-    const d = q("SELECT * FROM demandas WHERE id = ? AND status = 'aguardando'").get(demandaId);
+    const d = q("SELECT * FROM demandas WHERE id = ? AND status = 'aguardando' AND retida = 0").get(demandaId);
     if (!d) return false;
     const escolhido = escolherMotoboy(d, candidatos(), cfg());
     if (!escolhido) return false;
@@ -634,7 +724,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
   function despacharPendentes() {
     let n = 0;
     tx(() => {
-      for (const { id } of q("SELECT id FROM demandas WHERE status = 'aguardando' ORDER BY criada_em").all()) {
+      for (const { id } of q("SELECT id FROM demandas WHERE status = 'aguardando' AND retida = 0 ORDER BY criada_em").all()) {
         if (despachar(id)) n++;
       }
     });
@@ -650,7 +740,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     tx(() => {
       if (d.turno_id) q('UPDATE turnos SET rota_versao = rota_versao + 1 WHERE id = ?').run(d.turno_id);
       q(`UPDATE demandas SET status = 'aguardando', motoboy_id = NULL, turno_id = NULL, atribuida_em = NULL,
-         coletada_em = NULL WHERE id = ?`).run(demandaId);
+         coletada_em = NULL, retida = 0 WHERE id = ?`).run(demandaId);
       const livre = q('SELECT * FROM demandas WHERE id = ?').get(demandaId);
       if (motoboyId) {
         const turno = turnoAtivoDoMotoboy(motoboyId);
@@ -707,6 +797,9 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       }
       fecharAlerta(turno.id, 'parado');
       q('UPDATE turnos SET ancora_ts = ? WHERE id = ?').run(t, turno.id);
+      emitir(tipo === 'coleta' ? 'demanda_coletada' : 'demanda_entregue', {
+        demanda: q('SELECT * FROM demandas WHERE id = ?').get(d.id),
+      });
     });
   }
 
@@ -778,12 +871,56 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       alertas,
       sugestoes: sugestoes(motoboys, demandas, c),
       mapa: { lat: Number(cfgBruta().mapa_lat), lon: Number(cfgBruta().mapa_lon) },
+      pendencias: pendencias(motoboys),
+    };
+  }
+
+  // O que ainda falta configurar para o sistema rodar sozinho (aparece no painel).
+  function pendencias(motoboys) {
+    const c = cfgBruta();
+    const falta = [];
+    if (!c.cidade_base) falta.push('Preencher a cidade base (a busca de endereço erra menos).');
+    if (!Number(c.diaria_valor)) falta.push('Definir o valor da diária.');
+    if (!Number(c.preco_base) && !Number(c.preco_km) && !Number(c.preco_minimo)) falta.push('Definir o preço da entrega (o cliente vê o valor na hora).');
+    if (!motoboys.some((m) => m.ativo)) falta.push('Cadastrar os motoboys.');
+    if (!c.whats_provedor) falta.push('Ligar o WhatsApp automático (robô de pedidos, avisos e convocação).');
+    else if (!c.admin_telefone) falta.push('Informar o WhatsApp do responsável (recebe os avisos importantes).');
+    return falta;
+  }
+
+  // O que o cliente vê na página de acompanhamento (link com código secreto).
+  function pedidoPublico(codigo) {
+    const d = typeof codigo === 'string' && codigo.length >= 8
+      ? q('SELECT * FROM demandas WHERE codigo = ?').get(codigo) : null;
+    if (!d) throw new Erro(404, 'nao_encontrado', 'Pedido não encontrado. Confira o link.');
+    const emRota = ['atribuida', 'coletada'].includes(d.status);
+    let motoboy = null;
+    let paradasAntes = null;
+    if (emRota && d.turno_id) {
+      const turno = q('SELECT * FROM turnos WHERE id = ?').get(d.turno_id);
+      const m = q('SELECT nome, veiculo FROM motoboys WHERE id = ?').get(d.motoboy_id);
+      const ver = cfgBruta().rastreio_cliente === '1' && turno?.ult_lat != null;
+      motoboy = {
+        nome: m.nome.split(/\s+/)[0], veiculo: m.veiculo,
+        lat: ver ? turno.ult_lat : null, lon: ver ? turno.ult_lon : null, ult_ts: ver ? turno.ult_ts : null,
+      };
+      const alvo = d.status === 'atribuida' ? 'coleta' : 'entrega';
+      paradasAntes = rotaDoTurno(d.turno_id).findIndex((p) => p.demanda_id === d.id && p.tipo === alvo);
+    }
+    return {
+      agora: agora(), empresa: cfgBruta().empresa_nome,
+      id: d.id, status: d.status, retida: Boolean(d.retida), descricao: d.descricao, valor: d.valor, km: d.km,
+      coleta: { endereco: d.coleta_endereco, lat: d.coleta_lat, lon: d.coleta_lon },
+      entrega: { endereco: d.entrega_endereco, lat: d.entrega_lat, lon: d.entrega_lon },
+      criada_em: d.criada_em, atribuida_em: d.atribuida_em, coletada_em: d.coletada_em,
+      entregue_em: d.entregue_em, cancelada_em: d.cancelada_em, recebedor: d.recebedor,
+      motoboy, paradas_antes: paradasAntes,
     };
   }
 
   // Quem convocar: demandas sem ninguém em turno que atenda -> rodízio (quem está há mais tempo sem diária).
   function sugestoes(motoboys, demandas, c) {
-    const fila = demandas.filter((d) => d.status === 'aguardando');
+    const fila = demandas.filter((d) => d.status === 'aguardando' && !d.retida);
     if (!fila.length) return [];
     const emTurnoOuChamado = motoboys.filter((m) => m.ativo && (m.turno || m.convocado_ate));
     const livres = motoboys
@@ -844,6 +981,15 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     }));
   }
 
+  // Entregas concluídas no período, somadas por cliente (para cobrar).
+  function relatorioClientes(de, ate) {
+    return q(`SELECT cliente, cliente_telefone AS telefone, COUNT(*) AS entregas,
+        COALESCE(SUM(km), 0) AS km, COALESCE(SUM(valor), 0) AS valor
+      FROM demandas WHERE status = 'entregue' AND entregue_em >= ? AND entregue_em < ?
+      GROUP BY cliente, cliente_telefone ORDER BY valor DESC, entregas DESC`).all(de, ate)
+      .map((l) => ({ ...l, km: Math.round(l.km * 10) / 10, valor: Math.round(l.valor * 100) / 100 }));
+  }
+
   // ------------------------------------------- conversas do WhatsApp
   // Importa a conversa exportada. Reimportar a mesma conversa só acrescenta o que é novo.
   function importarWhatsapp({ arquivo, conteudo }, ator) {
@@ -873,14 +1019,14 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     });
   }
   function listarConversas() {
-    return q(`SELECT c.id, c.nome, c.atualizada_em, COUNT(m.id) AS total,
+    return q(`SELECT c.id, c.nome, c.atualizada_em, c.telefone, c.humano, c.pendente, COUNT(m.id) AS total,
         MIN(m.ts) AS primeira, MAX(m.ts) AS ultima, COUNT(m.demanda_id) AS demandas
       FROM conversas c LEFT JOIN mensagens m ON m.conversa_id = c.id
-      GROUP BY c.id ORDER BY c.atualizada_em DESC`).all();
+      GROUP BY c.id ORDER BY c.pendente DESC, c.atualizada_em DESC LIMIT 300`).all();
   }
   function mensagensDaConversa(conversaId, busca = '') {
     const termo = `%${String(busca).trim().slice(0, 100).replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
-    return q(`SELECT id, ts, autor, texto, demanda_id FROM mensagens
+    return q(`SELECT id, ts, autor, texto, demanda_id, direcao FROM mensagens
       WHERE conversa_id = ? AND (texto LIKE ? ESCAPE '\\' OR autor LIKE ? ESCAPE '\\')
       ORDER BY ts DESC, id DESC LIMIT 500`).all(conversaId, termo, termo);
   }
@@ -892,6 +1038,25 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       q('DELETE FROM conversas WHERE id = ?').run(conversaId);
       auditar(ator, 'whatsapp_excluido', c.nome);
     });
+  }
+
+  // Convocação automática: demanda esperando e ninguém em turno que atenda -> chama o próximo do rodízio.
+  function convocarSozinho(t) {
+    const c = cfgBruta();
+    if (c.convocacao_auto !== '1' || foraDoHorario()) return;
+    const hoje = inicioDoDia();
+    let feitas = q("SELECT COUNT(*) AS n FROM convocacoes WHERE origem = 'auto' AND criada_em >= ?").get(hoje).n;
+    const limite = Number(c.convocacao_auto_max);
+    if (feitas >= limite) return;
+    const estado = estadoAdmin();
+    const espera = Number(c.convocacao_auto_espera_min) * MIN;
+    for (const s of estado.sugestoes) {
+      if (feitas >= limite) break;
+      const maisAntiga = Math.min(...estado.demandas.filter((d) => s.demandas.includes(d.id)).map((d) => d.criada_em));
+      if (t - maisAntiga < espera) continue;
+      convocar(s.motoboy_id, 'sistema', 'auto');
+      feitas++;
+    }
   }
 
   // ------------------------------------------------ rotina (a cada 30 s)
@@ -915,6 +1080,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
         abrirAlerta(turno, 'sem_sinal', 'Aparelho sem contato: app fechado, sem internet ou desligado.', contato);
       }
     }
+    convocarSozinho(t);
     q('DELETE FROM sessoes WHERE expira_em <= ?').run(t);
     if (t - ultimaLimpeza > 6 * 60 * MIN) {
       ultimaLimpeza = t;
@@ -930,6 +1096,8 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     criarDemanda, criarDemandaExterna, definirLocais, cancelarDemanda, reatribuir, confirmarParada,
     despacharPendentes, estadoMotoboy, estadoAdmin, trilha, relatorio, rotina,
     importarWhatsapp, listarConversas, mensagensDaConversa, excluirConversa,
+    aoEvento, cotar, foraDoHorario, criarPedido, liberarDemanda, pedidoPublico, relatorioClientes,
+    interno: { q, tx, cfgBruta, auditar, agora, exigirNaoBloqueado, registrarFalha },
     termo: () => ({ versao: cfgBruta().termo_versao, texto: cfgBruta().termo_texto }),
     cidadeBase: () => cfgBruta().cidade_base,
   };

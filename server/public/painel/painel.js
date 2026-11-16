@@ -71,6 +71,7 @@ const ROTULO_ALERTA = {
   carga_pendente: 'Turno encerrado com carga',
 };
 const ROTULO_REQUISITO = { qualquer: 'Qualquer', moto: 'Só moto', bau: 'Baú', bag: 'Bag' };
+const ROTULO_ORIGEM = { site: 'Site', robo: 'WhatsApp', whatsapp: 'WhatsApp', api: 'API' };
 const chip = (texto, classe = '') => h('span', { class: `chip ${classe}` }, texto);
 const equipamento = (m) => [m.veiculo === 'bike' ? 'Bike' : 'Moto', m.tem_bau && 'baú', m.tem_bag && 'bag'].filter(Boolean).join(' · ');
 
@@ -183,10 +184,41 @@ function abrirAba(id) {
   if (id === 'config') desenharConfig();
 }
 
+// Aviso sonoro quando chega demanda, alerta ou cliente pedindo atendente.
+let somCtx = null;
+let vistos = null;
+function bipe() {
+  try {
+    somCtx = somCtx || new AudioContext();
+    const o = somCtx.createOscillator();
+    const g = somCtx.createGain();
+    o.frequency.value = 880;
+    g.gain.setValueAtTime(0.15, somCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, somCtx.currentTime + 0.5);
+    o.connect(g).connect(somCtx.destination);
+    o.start();
+    o.stop(somCtx.currentTime + 0.5);
+  } catch { /* navegador sem som liberado */ }
+}
+function notarNovidades() {
+  const agora = new Set([
+    ...estado.demandas.filter((d) => ['sem_local', 'aguardando'].includes(d.status)).map((d) => `d${d.id}`),
+    ...estado.alertas.filter((a) => a.fim == null).map((a) => `a${a.id}`),
+    ...(estado.whatsapp.pendentes ? [`w${estado.whatsapp.pendentes}`] : []),
+  ]);
+  if (vistos && [...agora].some((k) => !vistos.has(k))) bipe();
+  vistos = agora;
+  const n = estado.demandas.filter((d) => d.retida && !['entregue', 'cancelada'].includes(d.status)).length + estado.whatsapp.pendentes;
+  document.title = `${n ? `(${n}) ` : ''}Speed Despacho`;
+  const aba = els.botoesAba.find((b) => b.dataset.aba === 'whatsapp');
+  aba.textContent = estado.whatsapp.pendentes ? `WhatsApp (${estado.whatsapp.pendentes})` : 'WhatsApp';
+}
+
 async function atualizar() {
   try {
     estado = await api('GET', '/api/admin/estado');
-    els.conexao.textContent = '';
+    els.conexao.textContent = estado.whatsapp.falhas ? `WhatsApp: ${estado.whatsapp.falhas} mensagem(ns) não enviada(s)` : '';
+    notarNovidades();
   } catch (e) {
     if (e.status !== 401) els.conexao.textContent = 'Sem conexão com o servidor';
     return;
@@ -195,6 +227,7 @@ async function atualizar() {
   if (document.querySelector('dialog[open]')) return;
   if (abaAtual === 'operacao') desenhar();
   if (abaAtual === 'motoboys') desenharMotoboys();
+  if (abaAtual === 'whatsapp') els.recarregarWhats?.();
 }
 
 // --------------------------------------------------------------- operação
@@ -262,8 +295,9 @@ function desenharLateral() {
   const emTurno = estado.motoboys.filter((m) => m.turno);
   const nomes = new Map(estado.motoboys.map((m) => [m.id, m.nome]));
   const abertas = estado.demandas.filter((d) => ['atribuida', 'coletada'].includes(d.status));
-  const fila = estado.demandas.filter((d) => d.status === 'aguardando');
-  const semLocal = estado.demandas.filter((d) => d.status === 'sem_local');
+  const retidas = estado.demandas.filter((d) => d.retida && ['aguardando', 'sem_local'].includes(d.status));
+  const fila = estado.demandas.filter((d) => d.status === 'aguardando' && !d.retida);
+  const semLocal = estado.demandas.filter((d) => d.status === 'sem_local' && !d.retida);
   const fechadas = estado.demandas.filter((d) => ['entregue', 'cancelada'].includes(d.status));
   const alertasAbertos = estado.alertas.filter((a) => a.fim == null);
   const alertasHoje = estado.alertas.filter((a) => a.fim != null);
@@ -277,7 +311,9 @@ function desenharLateral() {
 
   const cartaoDemanda = (d) => h('div', { class: 'cartao' },
     h('div', { class: 'titulo' }, `#${d.id} ${d.cliente}`, chip(ROTULO_STATUS[d.status], d.status),
-      d.requisito !== 'qualquer' && chip(ROTULO_REQUISITO[d.requisito])),
+      d.requisito !== 'qualquer' && chip(ROTULO_REQUISITO[d.requisito]),
+      ROTULO_ORIGEM[d.origem] && chip(ROTULO_ORIGEM[d.origem]),
+      d.valor != null && chip(reais(d.valor), 'entregue')),
     h('div', { class: 'sub' }, `C: ${d.coleta_endereco}`),
     h('div', { class: 'sub' }, `E: ${d.entrega_endereco}`),
     d.descricao && h('div', { class: 'sub' }, d.descricao),
@@ -287,7 +323,11 @@ function desenharLateral() {
         : d.status === 'cancelada' ? `cancelada ${hora(d.cancelada_em)}`
           : d.status === 'coletada' ? `coletada ${hora(d.coletada_em)}`
             : `criada ${hora(d.criada_em)} (${ha(d.criada_em, agora)})`),
+    d.cliente_telefone && h('div', { class: 'sub' }, `Cliente: ${telefoneFmt(d.cliente_telefone)}`),
     !['entregue', 'cancelada'].includes(d.status) && h('div', { class: 'acoes' },
+      d.retida && d.status !== 'sem_local' && h('button', {
+        class: 'pequeno primario', onclick: async () => { await api('POST', `/api/admin/demandas/${d.id}/liberar`).catch((e) => { els.conexao.textContent = e.message; }); atualizar(); },
+      }, 'Aprovar e despachar'),
       d.status === 'sem_local'
         ? h('button', { class: 'pequeno primario', onclick: () => janelaDemanda(d) }, 'Marcar no mapa')
         : h('button', { class: 'pequeno', onclick: () => janelaTrocar(d) }, d.motoboy_id ? 'Trocar motoboy' : 'Escolher motoboy'),
@@ -320,8 +360,19 @@ function desenharLateral() {
     h('div', { class: 'resumo' },
       h('div', null, h('b', null, emTurno.length), h('span', null, 'em turno')),
       h('div', null, h('b', null, abertas.length), h('span', null, 'em andamento')),
-      h('div', null, h('b', null, fila.length + semLocal.length), h('span', null, 'aguardando'))),
+      h('div', null, h('b', null, fila.length + semLocal.length + retidas.length), h('span', null, 'aguardando'))),
     h('button', { class: 'primario', onclick: () => janelaDemanda() }, '+ Nova demanda'),
+
+    estado.pendencias.length > 0 && h('details', { class: 'cartao sugestao', open: !estado.motoboys.length },
+      h('summary', null, `Falta configurar (${estado.pendencias.length})`),
+      h('ul', { class: 'lista' }, estado.pendencias.map((t) => h('li', null, t))),
+      h('div', { class: 'acoes' }, h('button', { class: 'pequeno', onclick: () => abrirAba('config') }, 'Abrir Configurações'))),
+
+    estado.whatsapp.pendentes > 0 && h('div', { class: 'cartao alerta' },
+      h('div', { class: 'titulo' }, `${estado.whatsapp.pendentes} cliente(s) esperando atendente no WhatsApp`),
+      h('div', { class: 'acoes' }, h('button', { class: 'pequeno primario', onclick: () => abrirAba('whatsapp') }, 'Responder'))),
+
+    retidas.length > 0 && [h('h3', null, `Pedidos esperando aprovação (${retidas.length})`), retidas.map(cartaoDemanda)],
 
     trilhaAberta && h('div', { class: 'cartao' },
       h('div', { class: 'titulo' }, `Trajeto: ${trilhaAberta.nome}`),
@@ -505,7 +556,7 @@ async function convocar(id) {
       h('p', null, `A convocação vale até ${hora(m.convocado_ate)} de hoje. O turno de 8 h começa quando ele fizer login.`),
       h('div', { class: 'linha fim' },
         h('button', { onclick: dlg.fechar }, 'Fechar'),
-        h('a', {
+        estado.whatsapp.ligado ? h('span', { class: 'nota' }, 'O aviso já foi enviado pelo WhatsApp automático.') : h('a', {
           class: 'botao primario', href: `https://wa.me/55${m.telefone}?text=${encodeURIComponent(texto)}`,
           target: '_blank', rel: 'noopener noreferrer', onclick: () => setTimeout(dlg.fechar, 200),
         }, 'Avisar pelo WhatsApp'))]);
@@ -609,29 +660,54 @@ async function desenharWhatsapp(mensagemAviso = '') {
     class: `cartao clicavel ${c.id === conversaAberta ? 'sugestao' : ''}`,
     onclick: () => { conversaAberta = c.id; desenharWhatsapp(); },
   },
-  h('div', { class: 'titulo' }, c.nome),
+  h('div', { class: 'titulo' }, c.nome,
+    c.pendente ? chip('Esperando atendente', 'sem_sinal') : c.telefone && chip(c.humano ? 'Atendente' : 'Robô', c.humano ? 'aguardando' : 'entregue')),
   h('div', { class: 'sub' }, `${c.total} mensagens`, c.primeira ? ` · ${dataHora(c.primeira)} a ${dataHora(c.ultima)}` : ''),
   c.demandas > 0 && h('div', { class: 'sub' }, `${c.demandas} viraram demanda`)));
 
   const busca = h('input', { placeholder: 'Buscar nas mensagens (ex.: coleta, rua, nome)' });
   const mensagens = h('div', null);
+  const conversa = conversas.find((c) => c.id === conversaAberta);
+  const resposta = h('input', { maxlength: 2000, placeholder: 'Responder ao cliente pelo WhatsApp' });
+  const avisoResposta = h('div', { class: 'erro' });
+  const mandarResposta = async () => {
+    avisoResposta.textContent = '';
+    try {
+      await api('POST', `/api/admin/whatsapp/${conversaAberta}/responder`, { texto: resposta.value });
+      resposta.value = '';
+      await atualizar();
+      desenharWhatsapp();
+    } catch (e) { avisoResposta.textContent = e.message; }
+  };
+  resposta.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') mandarResposta(); });
+  const aoVivo = conversa?.telefone && h('div', { class: 'cartao' },
+    h('div', { class: 'linha' }, h('div', { class: 'cresce' }, resposta), h('button', { class: 'primario', onclick: mandarResposta }, 'Enviar')),
+    h('div', { class: 'linha' },
+      h('span', { class: 'nota cresce' }, conversa.humano
+        ? 'Atendente no comando: o robô não responde nesta conversa.'
+        : 'O robô está respondendo. Ao enviar uma mensagem, você assume a conversa.'),
+      h('button', {
+        class: 'pequeno',
+        onclick: async () => { await api('POST', `/api/admin/whatsapp/${conversaAberta}/modo`, { humano: !conversa.humano }).catch(() => {}); await atualizar(); desenharWhatsapp(); },
+      }, conversa.humano ? 'Devolver ao robô' : 'Assumir conversa')),
+    avisoResposta);
   const carregar = async () => {
-    if (!conversaAberta) { trocar(mensagens, h('div', { class: 'vazio' }, 'Nenhuma conversa importada ainda.')); return; }
-    const conversa = conversas.find((c) => c.id === conversaAberta);
+    if (!conversaAberta) { trocar(mensagens, h('div', { class: 'vazio' }, 'Nenhuma conversa ainda.')); return; }
     try {
       const r = await api('GET', `/api/admin/whatsapp/${conversaAberta}?q=${encodeURIComponent(busca.value)}`);
       trocar(mensagens,
         r.mensagens.length === 0 && h('div', { class: 'vazio' }, 'Nenhuma mensagem encontrada.'),
-        r.mensagens.map((m) => h('div', { class: 'cartao' },
+        r.mensagens.map((m) => h('div', { class: `cartao ${m.direcao === 'saida' ? 'saida' : ''}` },
           h('div', { class: 'titulo' }, m.autor || 'Aviso do WhatsApp', h('span', { class: 'nota' }, dataHora(m.ts)),
             m.demanda_id && chip(`Demanda #${m.demanda_id}`, 'entregue')),
           h('div', { class: 'sub texto-msg' }, m.texto),
-          m.autor && !m.demanda_id && h('div', { class: 'acoes' }, h('button', {
+          m.autor && !m.demanda_id && m.direcao !== 'saida' && h('div', { class: 'acoes' }, h('button', {
             class: 'pequeno primario',
             onclick: () => janelaDemanda(null, { cliente: conversa?.nome || m.autor, descricao: m.texto, mensagem_id: m.id }),
           }, 'Criar demanda')))));
     } catch (e) { trocar(mensagens, h('div', { class: 'erro' }, e.message)); }
   };
+  els.recarregarWhats = () => { if (!busca.value) carregar(); };
   let espera = null;
   busca.addEventListener('input', () => { clearTimeout(espera); espera = setTimeout(carregar, 300); });
 
@@ -639,7 +715,11 @@ async function desenharWhatsapp(mensagemAviso = '') {
     h('div', { class: 'linha' }, h('h2', { class: 'cresce' }, 'Conversas do WhatsApp'),
       h('button', { class: 'primario', onclick: () => entrada.click() }, 'Importar conversa')),
     entrada,
-    h('p', { class: 'nota' }, 'No celular: abra a conversa → ⋮ Mais → Exportar conversa → Sem mídia (no iPhone: toque no nome do contato → Exportar conversa). Mande o arquivo para você e importe aqui (.txt ou .zip). Importar de novo a mesma conversa só acrescenta as mensagens novas.'),
+    h('p', { class: 'nota' }, estado?.whatsapp.ligado
+      ? 'WhatsApp automático ligado: as conversas aparecem aqui ao vivo e o robô atende sozinho. Você pode assumir qualquer conversa.'
+      : 'WhatsApp automático desligado (ligue em Configurações para o robô atender sozinho). Enquanto isso, dá para importar conversas exportadas.'),
+    h('details', null, h('summary', null, 'Como importar uma conversa antiga'),
+      h('p', { class: 'nota' }, 'No celular: abra a conversa → ⋮ Mais → Exportar conversa → Sem mídia (no iPhone: toque no nome do contato → Exportar conversa). Mande o arquivo para você e importe aqui (.txt ou .zip). Importar de novo a mesma conversa só acrescenta as mensagens novas.')),
     aviso,
     h('div', { class: 'grade-whats' },
       h('div', null, h('h3', null, `Conversas (${conversas.length})`), lista),
@@ -650,7 +730,7 @@ async function desenharWhatsapp(mensagemAviso = '') {
             onclick: () => confirmar('Excluir conversa', 'Apagar esta conversa e as mensagens importadas? As demandas já criadas continuam.', 'Excluir',
               async () => { await api('DELETE', `/api/admin/whatsapp/${conversaAberta}`); conversaAberta = null; }),
           }, 'Excluir conversa')),
-        busca, mensagens)));
+        aoVivo, busca, mensagens)));
   carregar();
 }
 
@@ -665,7 +745,7 @@ function desenharRelatorio() {
     const inicio = new Date(`${de.value}T00:00:00`).getTime();
     const fim = new Date(`${ate.value}T00:00:00`).getTime() + 24 * 3600 * 1000;
     try {
-      const { linhas } = await api('GET', `/api/admin/relatorio?de=${inicio}&ate=${fim}`);
+      const { linhas, clientes } = await api('GET', `/api/admin/relatorio?de=${inicio}&ate=${fim}`);
       const colunas = [['nome', 'Motoboy'], ['diarias', 'Diárias'], ['horas', 'Horas'], ['entregas', 'Entregas'], ['km', 'Km'], ['min_parado', 'Min. parado em alerta'], ['alertas', 'Alertas'], ['valor', 'A pagar']];
       const total = linhas.reduce((s, l) => s + l.valor, 0);
       const baixar = () => {
@@ -680,7 +760,15 @@ function desenharRelatorio() {
           h('tbody', null, linhas.map((l) => h('tr', null, colunas.map(([k]) =>
             h('td', { class: k === 'nome' ? '' : 'num' }, k === 'valor' ? reais(l.valor) : l[k]))))),
           h('tfoot', null, h('tr', null, h('td', { colspan: 7 }, 'Total'), h('td', { class: 'num' }, reais(total))))),
-        h('div', { class: 'linha fim' }, h('button', { onclick: baixar }, 'Baixar planilha (CSV)'))]);
+        h('div', { class: 'linha fim' }, h('button', { onclick: baixar }, 'Baixar planilha (CSV)'))],
+      h('h3', null, 'Entregas por cliente (a cobrar)'),
+      clientes.length === 0 ? h('div', { class: 'vazio' }, 'Nenhuma entrega concluída no período.')
+        : h('table', null,
+          h('thead', null, h('tr', null, h('th', null, 'Cliente'), h('th', null, 'WhatsApp'), h('th', { class: 'num' }, 'Entregas'), h('th', { class: 'num' }, 'Km'), h('th', { class: 'num' }, 'Valor'))),
+          h('tbody', null, clientes.map((c) => h('tr', null,
+            h('td', null, c.cliente), h('td', null, c.telefone ? telefoneFmt(c.telefone) : '—'),
+            h('td', { class: 'num' }, c.entregas), h('td', { class: 'num' }, c.km), h('td', { class: 'num' }, reais(c.valor))))),
+          h('tfoot', null, h('tr', null, h('td', { colspan: 4 }, 'Total'), h('td', { class: 'num' }, reais(clientes.reduce((s, c) => s + c.valor, 0)))))));
     } catch (e) { trocar(saida, h('div', { class: 'erro' }, e.message)); }
   };
   trocar(els.pagina, 
@@ -702,6 +790,17 @@ async function desenharConfig() {
     campos[chave] = h('input', { type: 'number', step: passo, value: c[chave] });
     return h('div', null, h('label', null, rotulo), campos[chave]);
   };
+  const texto = (chave, rotulo, attrs = {}) => {
+    campos[chave] = h('input', { value: c[chave] ?? '', ...attrs });
+    return h('div', null, h('label', null, rotulo), campos[chave]);
+  };
+  const opcao = (chave, rotulo, opcoes = [['1', 'Sim'], ['0', 'Não']]) => {
+    campos[chave] = h('select', null, opcoes.map(([v, r]) => h('option', { value: v, selected: c[chave] === v }, r)));
+    return h('div', null, h('label', null, rotulo), campos[chave]);
+  };
+  const base = c.url_publica || location.origin;
+  const webhook = `${base}/api/whatsapp/webhook?s=${c.whats_segredo}`;
+  const avisoTeste = h('div', { class: 'nota' });
   campos.cidade_base = h('input', { maxlength: 120, value: c.cidade_base, placeholder: 'Ex.: Campinas, SP' });
   campos.termo_texto = h('textarea', { maxlength: 8000, value: c.termo_texto });
   const aviso = h('div', { class: 'erro' });
@@ -713,6 +812,7 @@ async function desenharConfig() {
         await api('PUT', '/api/admin/config', Object.fromEntries(Object.entries(campos).map(([k, el]) => [k, el.value])));
         aviso.textContent = 'Salvo.';
         enquadrado = false;
+        atualizar();
       } catch (e) { aviso.textContent = e.message; }
     },
   }, 'Salvar configurações');
@@ -744,6 +844,50 @@ async function desenharConfig() {
       class: 'pequeno',
       onclick: () => { const p = mapa.getCenter(); campos.mapa_lat.value = p.lat.toFixed(4); campos.mapa_lon.value = p.lng.toFixed(4); },
     }, 'Usar o centro atual do mapa da Operação')),
+    h('h3', null, 'Preço da entrega (o cliente vê no site e no WhatsApp)'),
+    h('div', { class: 'grade3' },
+      num('preco_base', 'Valor base (R$)', 0.01), num('preco_km_incluso', 'Km já incluídos no valor base', 0.5),
+      num('preco_km', 'Valor por km a mais (R$)', 0.01), num('preco_minimo', 'Valor mínimo (R$)', 0.01)),
+    h('div', { class: 'nota' }, 'Tudo zero = o cliente vê "valor a combinar". Distância = linha reta × 1,35.'),
+
+    h('h3', null, 'Pedidos pelo site'),
+    h('div', { class: 'grade3' },
+      texto('empresa_nome', 'Nome que aparece para o cliente', { maxlength: 60 }),
+      opcao('pedidos_site', 'Aceitar pedidos pelo site'),
+      opcao('site_confirmacao', 'Antes de despachar um pedido do site', [
+        ['painel', 'Eu aprovo no painel'], ['whatsapp', 'Cliente confirma no WhatsApp (automático)'], ['nenhuma', 'Despacha direto (sem conferir)']]),
+      texto('atendimento_inicio', 'Atende a partir de (vazio = sempre)', { type: 'time' }),
+      texto('atendimento_fim', 'Atende até', { type: 'time' }),
+      opcao('rastreio_cliente', 'Cliente vê o motoboy no mapa')),
+    h('div', { class: 'nota' }, 'Link para divulgar aos clientes:'),
+    h('div', { class: 'codigo' }, `${base}/pedir/`),
+    h('div', { class: 'nota' }, '"Cliente vê o motoboy no mapa": antes de ligar, inclua isso no termo do motoboy (abaixo).'),
+
+    h('h3', null, 'WhatsApp automático (robô de pedidos, avisos ao cliente e convocação)'),
+    h('div', { class: 'grade3' },
+      opcao('whats_provedor', 'Conexão', [['', 'Desligado'], ['evolution', 'Evolution API (número comum, QR code)'], ['meta', 'WhatsApp Cloud API (oficial da Meta)'], ['webhook', 'Outro (n8n, Make)']]),
+      texto('whats_url', 'Endereço do servidor de WhatsApp', { maxlength: 300, placeholder: 'https://evolution.seudominio.com' }),
+      texto('whats_instancia', 'Instância (Evolution) ou ID do número (Meta)', { maxlength: 120 }),
+      texto('whats_token', c.whats_token_definido ? 'Chave de acesso (já salva; vazio mantém)' : 'Chave de acesso (API key / token)', { type: 'password', autocomplete: 'off', value: '' }),
+      texto('admin_telefone', 'WhatsApp do responsável (recebe avisos)', { inputmode: 'tel', placeholder: '(11) 99999-0000' }),
+      texto('url_publica', 'Endereço deste sistema (para os links)', { maxlength: 200, placeholder: location.origin }),
+      opcao('robo_ativo', 'Robô atende e monta o pedido sozinho'),
+      opcao('avisos_cliente', 'Avisar o cliente a cada etapa'),
+      opcao('convocacao_auto', 'Convocar motoboy sozinho quando faltar gente'),
+      num('convocacao_auto_max', 'Máx. de convocações automáticas por dia'),
+      num('convocacao_auto_espera_min', 'Demanda esperando há (min) para convocar')),
+    h('div', { class: 'nota' }, 'No provedor de WhatsApp, cadastre este endereço como webhook de mensagens recebidas (na Meta, o "token de verificação" é o trecho depois de s=):'),
+    h('div', { class: 'codigo' }, webhook),
+    h('div', { class: 'nota' }, 'Cada convocação automática gera uma diária: o limite por dia protege seu caixa. Salve antes de testar.'),
+    h('div', { class: 'linha' },
+      h('button', {
+        onclick: async () => {
+          avisoTeste.textContent = 'Enviando…';
+          try { await api('POST', '/api/admin/whatsapp-teste'); avisoTeste.textContent = 'Mensagem de teste enviada para o WhatsApp do responsável.'; } catch (e) { avisoTeste.textContent = e.message; }
+        },
+      }, 'Enviar mensagem de teste'), avisoTeste),
+    estado?.whatsapp.ultimo_erro && h('div', { class: 'erro' }, `Último erro de envio: ${estado.whatsapp.ultimo_erro}`),
+
     h('h3', null, `Termo aceito pelo motoboy a cada login (versão ${c.termo_versao})`),
     campos.termo_texto,
     h('div', { class: 'nota' }, 'Modelo inicial: peça para seu advogado ou contador revisar antes de usar.'),
