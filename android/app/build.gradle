@@ -1,0 +1,64 @@
+plugins {
+    id 'com.android.application'
+}
+
+// Endereço do servidor embutido no app (ex.: https://despacho.suaempresa.com.br).
+// Vazio = o app pergunta o endereço na primeira abertura.
+def servidor = (project.findProperty('SPEED_SERVIDOR') ?: System.getenv('SPEED_SERVIDOR') ?: '').toString().trim()
+while (servidor.endsWith('/')) servidor = servidor.substring(0, servidor.length() - 1)
+if (!(servidor ==~ '(https://[A-Za-z0-9.:/_-]+)?')) {
+    throw new GradleException('SPEED_SERVIDOR inválido: use https://endereco-do-servidor')
+}
+
+// Assinatura fixa (opcional): sem ela o APK sai com a chave de teste da máquina que compilou,
+// e trocar de máquina exige desinstalar o app antes de atualizar.
+def arquivoChave = System.getenv('SPEED_KEYSTORE')
+
+android {
+    namespace 'br.com.speedboy.motoboy'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'br.com.speedboy.motoboy'
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName '1.0'
+        buildConfigField 'String', 'SERVIDOR', "\"${servidor}\""
+    }
+
+    signingConfigs {
+        if (arquivoChave) {
+            fixa {
+                storeFile file(arquivoChave)
+                storePassword System.getenv('SPEED_KEYSTORE_SENHA')
+                keyAlias System.getenv('SPEED_KEY_ALIAS') ?: 'speed'
+                keyPassword System.getenv('SPEED_KEYSTORE_SENHA')
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            if (arquivoChave) signingConfig signingConfigs.fixa
+        }
+        release {
+            minifyEnabled false
+            signingConfig arquivoChave ? signingConfigs.fixa : signingConfigs.debug
+        }
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
+    }
+}

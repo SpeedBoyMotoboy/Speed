@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Tema" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@color/marca</item>
+        <item name="android:navigationBarColor">@color/marca</item>
+        <item name="android:windowBackground">@color/marca</item>
+        <item name="android:colorAccent">@color/destaque</item>
+    </style>
+</resources>

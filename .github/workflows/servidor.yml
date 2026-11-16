@@ -1,0 +1,27 @@
+name: Servidor (testes)
+
+on:
+  push:
+    paths:
+      - 'server/**'
+      - '.github/workflows/servidor.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  testes:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - run: npm test
+        env:
+          TZ: America/Sao_Paulo
