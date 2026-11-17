@@ -367,7 +367,7 @@ test('site: pedido fica retido até o admin aprovar', async () => {
   assert.equal(demandas()[0].retida, 1);
   assert.deepEqual(s.estadoAdmin().sugestoes, []);
   await a.despacharSaida();
-  assert.ok(enviadas.some((m) => /chegou pelo site e espera sua aprovação/.test(m.texto)));
+  assert.ok(enviadas.some((m) => /chegou pelo site e espera sua aprovação[\s\S]*📦 Coleta: [\s\S]*🏁 Entrega: /.test(m.texto)), 'aviso leva coleta e entrega');
 
   const publico = s.pedidoPublico(r.codigo);
   assert.equal(publico.retida, true);

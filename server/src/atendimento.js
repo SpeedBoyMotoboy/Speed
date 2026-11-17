@@ -711,9 +711,18 @@ export function criarAtendimento({
       }
     }
     if (modo === 'painel') {
-      avisarAdmin(analise && !analise.aprovado
+      // Dados do pedido junto do aviso: quem recebe (ex.: n8n) pode conferir sem entrar no painel.
+      const detalhes = [
+        `📞 ${telefone}`,
+        `📦 Coleta: ${d.coleta_endereco || '-'}`,
+        `🏁 Entrega: ${d.entrega_endereco || '-'}`,
+        d.descricao ? `📝 ${d.descricao}` : '',
+        d.km != null ? `📏 ${String(d.km).replace('.', ',')} km` : '',
+        `💰 ${d.valor != null ? reais(d.valor) : 'valor a combinar'}`,
+      ].filter(Boolean).join('\n');
+      avisarAdmin((analise && !analise.aprovado
         ? `🔎 A IA pediu conferência do pedido #${d.id} de ${d.cliente}: ${analise.motivos.join('; ') || 'sem detalhe'}. Aprove ou cancele no painel.`
-        : `🆕 Pedido #${d.id} de ${d.cliente} chegou pelo site e espera sua aprovação no painel.`);
+        : `🆕 Pedido #${d.id} de ${d.cliente} chegou pelo site e espera sua aprovação no painel.`) + `\n${detalhes}`);
     }
 
     if (modo === 'whatsapp') {
