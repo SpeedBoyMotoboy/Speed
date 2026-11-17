@@ -1,8 +1,10 @@
 // WhatsApp automático: entende o que o provedor manda (webhook) e envia mensagens.
-// Provedores: 'evolution' (Evolution API), 'meta' (WhatsApp Cloud API oficial) e
-// 'webhook' (genérico: n8n, Make ou qualquer robô que fale JSON simples).
+// Provedores: 'meta' (WhatsApp Cloud API oficial) e 'webhook' (genérico: n8n, Make ou
+// qualquer robô que fale JSON simples; o n8n da SpeedBoy envia pela API oficial da Meta).
+// Conexão não oficial (WhatsApp Web / QR code, como Evolution API ou Baileys) foi REMOVIDA de
+// propósito: a Meta pode banir o número. Não adicionar de volta.
 
-export const PROVEDORES = ['', 'evolution', 'meta', 'webhook'];
+export const PROVEDORES = ['', 'meta', 'webhook'];
 const MIDIAS = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'application/pdf'];
 const MIDIA_MAX = 7 * 1024 * 1024; // caracteres em base64 (cerca de 5 MB de arquivo)
 
@@ -18,16 +20,8 @@ export function normalizarTelefone(bruto) {
 // Para onde responder: dígitos com DDI. Aceita o que veio do provedor ou um telefone guardado.
 export function destinoDe(bruto) {
   const texto = String(bruto ?? '');
-  if (texto.includes('@') && !texto.endsWith('@s.whatsapp.net')) return texto; // id interno (@lid)
   const d = texto.split('@')[0].split(':')[0].replace(/\D/g, '');
   return d.length <= 11 ? `55${d}` : d;
-}
-
-function textoEvolution(m) {
-  if (!m || typeof m !== 'object') return '';
-  return m.conversation || m.extendedTextMessage?.text || m.imageMessage?.caption || m.videoMessage?.caption
-    || m.documentMessage?.caption || m.buttonsResponseMessage?.selectedDisplayText
-    || m.listResponseMessage?.title || '';
 }
 
 // Devolve a lista de mensagens recebidas: { telefone, destino, nome, texto, lat, lon }.
@@ -54,22 +48,7 @@ export function interpretar(provedor, corpo) {
     });
   };
 
-  if (provedor === 'evolution') {
-    if (corpo?.event && !/^messages[._]upsert$/i.test(String(corpo.event))) return lista;
-    const itens = Array.isArray(corpo?.data) ? corpo.data : [corpo?.data?.messages ?? corpo?.data].flat();
-    for (const item of itens) {
-      const chave = item?.key;
-      if (!chave || chave.fromMe) continue;
-      const jid = String(chave.remoteJid || '');
-      if (jid.endsWith('@g.us') || jid.endsWith('@broadcast') || jid.endsWith('@newsletter')) continue;
-      const numero = jid.endsWith('@lid') ? (chave.senderPn || chave.remoteJidAlt || item.senderPn || '') : jid;
-      const loc = item.message?.locationMessage || item.message?.liveLocationMessage;
-      const arquivo = item.message?.imageMessage || item.message?.documentMessage;
-      juntar(numero, item.pushName, textoEvolution(item.message),
-        loc ? { lat: loc.degreesLatitude, lon: loc.degreesLongitude } : {},
-        arquivo ? midiaDe(arquivo.mimetype, item.message?.base64 ?? item.base64) : null);
-    }
-  } else if (provedor === 'meta') {
+  if (provedor === 'meta') {
     for (const entrada of corpo?.entry || []) {
       for (const mudanca of entrada?.changes || []) {
         const v = mudanca?.value || {};
@@ -96,12 +75,7 @@ export async function enviar(cfg, destino, texto, buscar = fetch) {
   let url;
   let cabecalhos = { 'Content-Type': 'application/json' };
   let corpo;
-  if (cfg.whats_provedor === 'evolution') {
-    if (!base || !cfg.whats_instancia) throw new Error('Falta o endereço ou a instância da Evolution API.');
-    url = `${base}/message/sendText/${encodeURIComponent(cfg.whats_instancia)}`;
-    cabecalhos.apikey = token;
-    corpo = { number: destino, text: texto };
-  } else if (cfg.whats_provedor === 'meta') {
+  if (cfg.whats_provedor === 'meta') {
     if (!cfg.whats_instancia) throw new Error('Falta o ID do número (Phone Number ID).');
     url = `${base || 'https://graph.facebook.com/v21.0'}/${encodeURIComponent(cfg.whats_instancia)}/messages`;
     cabecalhos.Authorization = `Bearer ${token}`;

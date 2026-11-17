@@ -58,7 +58,7 @@ Terceiros que recebem dados, e só quando o recurso está ligado:
 | OpenRouteService | Coordenadas de coleta e entrega | Só se a chave de rota for preenchida |
 | Anthropic (IA) | Endereços e descrição do pedido, **sem nome nem telefone** | Só com a conferência por IA ligada |
 | Mercado Pago | Valor, e-mail e código do pedido | Só se o Pix automático for escolhido |
-| Provedor de WhatsApp (Evolution ou Meta) | Telefone e mensagens | Só com o WhatsApp automático ligado |
+| Provedor de WhatsApp (Meta oficial ou n8n) | Telefone e mensagens | Só com o WhatsApp automático ligado |
 
 Não há cookies de rastreio nem analytics. O único cookie é o de login do painel do administrador.
 O cliente só vê o motoboy no mapa se o Luan ligar essa opção (está desligada; o termo do motoboy precisa prever).
@@ -92,7 +92,7 @@ Content-Type: application/json
 - O cliente recebe aviso automático: motoboy a caminho, coletado, entregue, cancelado.
 - Comandos do responsável (só do número cadastrado): `pago 12` libera o pedido, `cancelar 12` cancela.
 - Aba *IA* do painel: quem atende envia fotos, prints, comprovantes, PDFs ou conversas exportadas; a IA devolve os pedidos prontos para virar demanda e a leitura do comprovante. O arquivo não fica guardado.
-- Provedores aceitos: Evolution API, WhatsApp Cloud API (Meta) ou webhook genérico (n8n/Make). Detalhes em `deploy/evolution.md` e no README.
+- Provedores aceitos: WhatsApp Cloud API (Meta) ou webhook genérico (n8n/Make), só oficiais. Detalhes e no README.
 
 ## 6. Regras que valem para todos
 

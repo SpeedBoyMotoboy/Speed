@@ -50,7 +50,7 @@ Sistema interno da SpeedBoy para: convocar motoboys, rastrear localização no t
 
 **Cliente fixo:** fatura mensal, percentual próprio da tabela; pedido pelo site só sai após confirmar pelo WhatsApp dele ou aprovação no painel.
 
-**WhatsApp automático (não ligado ainda):** robô de **menu fixo** (não é conversa por IA): pedir motoboy, acompanhar, atendente. Avisos automáticos ao cliente, convocação do motoboy, alertas ao responsável. Atendente responde pela aba WhatsApp. Provedores: Evolution API, Meta Cloud API ou webhook genérico (n8n/Make). Guia: `deploy/evolution.md` (não testado na VPS).
+**WhatsApp automático (não ligado ainda):** robô de **menu fixo** (não é conversa por IA): pedir motoboy, acompanhar, atendente. Avisos automáticos ao cliente, convocação do motoboy, alertas ao responsável. Atendente responde pela aba WhatsApp. Provedores: só oficiais, Meta Cloud API ou webhook genérico (n8n/Make). (não testado na VPS).
 
 **IA (Claude, modelo padrão `claude-opus-5-5`; opções Sonnet 5.5 e Haiku 5.5):** precisa de chave da API (console.anthropic.com → Billing com crédito → API Keys). Sem chave fica desligada e os pedidos seguem normais.
 - Confere cada pedido (site e WhatsApp): identifica o tipo de serviço pela descrição (cliente vê o preço corrigido antes de pagar), segura pedido duvidoso para aprovação, escreve resumo. Recebe só endereços e descrição, nunca nome/telefone.
@@ -95,7 +95,7 @@ Ver log: `docker logs --tail 100 despacho-speed-1`. O banco antigo é atualizado
 
 **Feito e verificado:** todo o código acima, 54 testes, fluxo completo no navegador (pedido → Pix → confirmação → oferta → aceite), instalação de produção simulada a partir de cópia limpa do GitHub, chamada real do SDK contra API simulada.
 
-**Não verificado:** se a VPS já foi atualizada (o chat não alcança); IA com chave real; Pix lido no app de um banco real; Evolution API na VPS.
+**Não verificado:** se a VPS já foi atualizada (o chat não alcança); IA com chave real; Pix lido no app de um banco real.
 
 **Último assunto:** Luan disse "A IA não foi implementada". Verificado: está implementada e no GitHub; provavelmente aparece desligada (sem chave) ou a VPS não foi atualizada. Perguntado se ele queria a IA **conduzindo a conversa do robô no WhatsApp** (hoje é menu fixo). **Sem resposta ainda.**
 
@@ -104,7 +104,7 @@ Ver log: `docker logs --tail 100 despacho-speed-1`. O banco antigo é atualizado
 1. Atualizar a VPS (seção 6) e confirmar que aparece a aba **IA**.
 2. Colar a chave da IA e clicar em "Testar a IA".
 3. Configurações: chave Pix (tipo, chave, nome, cidade), WhatsApp do comprovante, "Antes de despachar" = "Cliente paga no meu Pix e manda o comprovante", preços, valor de cada tipo de serviço, cidade base `Espírito Santo`, centro do mapa `-20.3358`, `-40.2969`, horário (seg a sex 7h–22h, coletas até 18h), diária.
-4. Ligar o WhatsApp: `bash /opt/speed-src/deploy/whatsapp-instalar.sh` na VPS (sobe a Evolution, liga ao painel, mostra o código para conectar o celular; não testado na VPS real). Site: botão para `https://despacho.srv2150999.hstgr.cloud/pedir/` (equipe do site).
+4. Ligar o WhatsApp: só conexão oficial (Meta direto ou n8n). Evolution foi removida (risco de banimento do número).
 5. Cadastrar motoboys (diária ou avulso). Gerar APK (variável `SPEED_SERVIDOR` no GitHub).
 6. Revisar o termo do motoboy com advogado/contador (não cobre o avulso; risco de vínculo).
 7. Fazer um Pix de valor baixo lendo o QR no app do banco antes de divulgar.

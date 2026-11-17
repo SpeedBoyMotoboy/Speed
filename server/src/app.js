@@ -108,7 +108,7 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
     return { ok: true };
   });
 
-  // WhatsApp automático: o provedor (Evolution, Meta ou n8n) chama aqui a cada mensagem recebida.
+  // WhatsApp automático: o provedor (Meta oficial ou n8n) chama aqui a cada mensagem recebida.
   rota('GET', '/api/whatsapp/webhook', 'publico', ({ url }) => {
     // Verificação exigida pela Meta ao cadastrar o webhook.
     if (!atendimento.segredoConfere(url.searchParams.get('hub.verify_token') ?? url.searchParams.get('s'))) {

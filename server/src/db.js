@@ -229,7 +229,8 @@ export const CONFIG_PADRAO = {
   rastreio_cliente: '0',
   atendimento_inicio: '',
   atendimento_fim: '',
-  // WhatsApp automático: '' (desligado), 'evolution', 'meta' ou 'webhook' (n8n/Make).
+  // WhatsApp automático: '' (desligado), 'meta' (API oficial) ou 'webhook' (n8n/Make).
+  // Conexão não oficial (Evolution/QR code) não é aceita: risco de banimento do número.
   whats_provedor: '',
   whats_url: '',
   whats_instancia: '',
@@ -312,6 +313,8 @@ export function abrirBanco(arquivo) {
   migrar(db);
   const inserir = db.prepare('INSERT OR IGNORE INTO config (chave, valor) VALUES (?, ?)');
   for (const [chave, valor] of Object.entries(CONFIG_PADRAO)) inserir.run(chave, valor);
+  // Banco antigo com provedor não oficial (ex.: 'evolution'): desliga o WhatsApp automático.
+  db.prepare("UPDATE config SET valor = '' WHERE chave = 'whats_provedor' AND valor NOT IN ('', 'meta', 'webhook')").run();
   if (db.prepare('SELECT COUNT(*) AS n FROM servicos').get().n === 0) {
     const novo = db.prepare('INSERT INTO servicos (nome, ordem) VALUES (?, ?)');
     SERVICOS_PADRAO.forEach((nome, i) => novo.run(nome, i));

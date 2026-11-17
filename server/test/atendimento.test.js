@@ -92,15 +92,9 @@ test('telefones: normaliza DDI, nono dígito e ids do WhatsApp', () => {
   assert.equal(destinoDe('553188887777@s.whatsapp.net'), '553188887777');
 });
 
-test('webhooks: entende Evolution, Meta e ignora grupo e mensagem própria', () => {
-  const evo = (key, message, extra = {}) => ({ event: 'messages.upsert', data: { key, pushName: 'Carla', message, ...extra } });
-  assert.deepEqual(interpretar('evolution', evo({ remoteJid: '5511977770001@s.whatsapp.net', fromMe: false }, { conversation: 'oi' })),
-    [{ telefone: '11977770001', destino: '5511977770001', nome: 'Carla', texto: 'oi', lat: null, lon: null }]);
-  assert.equal(interpretar('evolution', evo({ remoteJid: '5511977770001@s.whatsapp.net', fromMe: true }, { conversation: 'oi' })).length, 0);
-  assert.equal(interpretar('evolution', evo({ remoteJid: '12345@g.us', fromMe: false }, { conversation: 'oi' })).length, 0);
-  assert.equal(interpretar('evolution', { event: 'connection.update', data: {} }).length, 0);
-  const local = interpretar('evolution', evo({ remoteJid: '5511977770001@s.whatsapp.net' }, { locationMessage: { degreesLatitude: -23.5, degreesLongitude: -46.6 } }));
-  assert.equal(local[0].lat, -23.5);
+test('webhooks: entende Meta e ignora conexão não oficial (Evolution/QR code)', () => {
+  const evo = { event: 'messages.upsert', data: { key: { remoteJid: '5511977770001@s.whatsapp.net', fromMe: false }, pushName: 'Carla', message: { conversation: 'oi' } } };
+  assert.equal(interpretar('evolution', evo).length, 0, 'Evolution não é mais aceita');
   const meta = interpretar('meta', { entry: [{ changes: [{ value: {
     contacts: [{ wa_id: '5511977770001', profile: { name: 'Carla' } }],
     messages: [{ from: '5511977770001', type: 'text', text: { body: 'quero um motoboy' } }],
@@ -111,13 +105,11 @@ test('webhooks: entende Evolution, Meta e ignora grupo e mensagem própria', () 
 test('envio: monta a chamada certa para cada provedor', async () => {
   const chamadas = [];
   const buscar = async (url, opcoes) => { chamadas.push({ url, ...opcoes, body: JSON.parse(opcoes.body) }); return { ok: true }; };
-  await enviar({ whats_provedor: 'evolution', whats_url: 'http://evo:8080/', whats_instancia: 'speed', whats_token: 'k' }, '5511977770001', 'oi', buscar);
-  assert.equal(chamadas[0].url, 'http://evo:8080/message/sendText/speed');
-  assert.equal(chamadas[0].headers.apikey, 'k');
-  assert.deepEqual(chamadas[0].body, { number: '5511977770001', text: 'oi' });
+  await assert.rejects(enviar({ whats_provedor: 'evolution', whats_url: 'http://evo:8080/', whats_instancia: 'speed', whats_token: 'k' }, '5511977770001', 'oi', buscar), /desligado/);
+  assert.equal(chamadas.length, 0, 'nada sai por conexão não oficial');
   await enviar({ whats_provedor: 'meta', whats_url: '', whats_instancia: '999', whats_token: 't' }, '5511977770001', 'oi', buscar);
-  assert.match(chamadas[1].url, /graph\.facebook\.com\/v[\d.]+\/999\/messages$/);
-  assert.equal(chamadas[1].body.text.body, 'oi');
+  assert.match(chamadas[0].url, /graph\.facebook\.com\/v[\d.]+\/999\/messages$/);
+  assert.equal(chamadas[0].body.text.body, 'oi');
   await assert.rejects(enviar({ whats_provedor: 'webhook', whats_url: 'http://x' }, '55', 'oi', async () => ({ ok: false, status: 500, text: async () => 'caiu' })), /500/);
 });
 
@@ -879,4 +871,22 @@ test('IA: análise de arquivos monta imagem, PDF e texto na chamada e devolve o 
   assert.match(corpo.system, /não invente|não complete endereço de memória/i);
   assert.deepEqual([r.resumo, r.alertas, r.comprovante, r.pedidos[0].servico_id, r.pedidos[0].requisito], ['Resumo.', ['Olhar isso'], null, null, 'qualquer']);
   await assert.rejects(ia.analisar({ ia_chave: '' }, { arquivos: [], contexto: {}, pergunta: '' }), /chave da IA/);
+});
+
+test('WhatsApp: só conexão oficial; banco antigo com Evolution é desligado', () => {
+  const pasta = fs.mkdtempSync(path.join(os.tmpdir(), 'speed-evo-'));
+  const arquivo = path.join(pasta, 'speed.db');
+  try {
+    const db = abrirBanco(arquivo);
+    db.prepare("UPDATE config SET valor = 'evolution' WHERE chave = 'whats_provedor'").run();
+    db.close();
+    const db2 = abrirBanco(arquivo);
+    assert.equal(db2.prepare("SELECT valor FROM config WHERE chave = 'whats_provedor'").get().valor, '');
+    const s = criarServico({ db: db2 });
+    assert.throws(() => s.salvarConfig({ whats_provedor: 'evolution' }, 'teste'), { codigo: 'config_invalida' });
+    s.salvarConfig({ whats_provedor: 'webhook' }, 'teste');
+    db2.close();
+  } finally {
+    fs.rmSync(pasta, { recursive: true, force: true });
+  }
 });

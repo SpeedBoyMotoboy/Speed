@@ -156,8 +156,9 @@ em Configurações para a busca acertar mais.
 
 Em *Configurações → WhatsApp automático* escolha a conexão, salve e cadastre no provedor o endereço de webhook que o painel mostra.
 
-- **Evolution API** (número comum, lê QR code): endereço do servidor, nome da instância e API key. No webhook da instância, marque o evento `MESSAGES_UPSERT`. Veja `deploy/evolution.md`.
+**Regra de segurança do WhatsApp:** só conexão oficial da Meta (WhatsApp Cloud API), direto ou pelo n8n. Conexão por WhatsApp Web / QR code (Evolution API, Baileys, WPPConnect e parecidos) foi removida do sistema: a Meta pode banir o número. O sistema recusa essa opção e desliga um banco antigo que a tenha.
+
 - **WhatsApp Cloud API (Meta)**: ID do número e token. O "token de verificação" é o segredo do endereço. Limite da Meta: mensagem para quem não escreveu nas últimas 24 h exige modelo aprovado (convocação e avisos podem falhar).
-- **Outro (n8n, Make)**: o sistema envia `POST {"telefone","texto"}` para o endereço informado e recebe `POST {"telefone","nome","texto","lat","lon"}` no webhook.
+- **n8n / Make** (o n8n envia pela API oficial): o sistema envia `POST {"telefone","texto"}` para o endereço informado e recebe `POST {"telefone","nome","texto","lat","lon"}` no webhook.
 
 A fila de envio tenta de novo sozinha (6 tentativas, espera crescente). Falhas aparecem no topo do painel.

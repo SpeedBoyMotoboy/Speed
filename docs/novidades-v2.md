@@ -18,9 +18,8 @@ Complementa o documento de contexto. Branch: `claude/new-session-83gqyr`.
 |---|---|
 | `server/src/atendimento.js` | Site, robô, avisos, fila de envio |
 | `server/src/robo.js` | Conversa do robô (função pura) |
-| `server/src/mensageiro.js` | Evolution API, Meta Cloud API e webhook genérico |
+| `server/src/mensageiro.js` | Meta Cloud API e webhook genérico (Evolution removida em 17/11/2026: risco de banimento) |
 | `server/public/pedir/`, `acompanhar/`, `site/` | Páginas públicas |
-| `deploy/evolution.md` | Guia para subir a Evolution API na VPS |
 
 Rotas novas: `GET /api/publico/info`, `POST /api/publico/cotar`, `POST /api/publico/pedidos`, `GET /api/publico/pedido?c=`,
 `GET|POST /api/whatsapp/webhook?s=`, `POST /api/admin/demandas/:id/liberar`, `POST /api/admin/whatsapp/:id/responder`,
@@ -44,7 +43,7 @@ cd /opt/speed-src && git fetch origin claude/new-session-83gqyr && git checkout 
 1. Cidade base: `Espírito Santo` (atende 5 cidades; uma cidade só erraria as outras). Centro do mapa: `-20.3358`, `-40.2969`.
 2. Preço da entrega e valor da diária.
 3. Horário: 07:00 às 18:00 (coletas até 18h).
-4. WhatsApp automático: ver `deploy/evolution.md`. Sem isso o robô e os avisos ficam desligados; o site de pedidos funciona com aprovação no painel.
+4. WhatsApp automático: só conexão oficial (Meta direto ou n8n); ver README. Sem isso o robô e os avisos ficam desligados; o site de pedidos funciona com aprovação no painel.
 5. "Cliente vê o motoboy no mapa": só ligar depois de incluir isso no termo do motoboy.
 
 ## Limites
@@ -156,7 +155,7 @@ Nova aba **IA** no painel.
 
 **Comprovante pelo WhatsApp ao vivo:** quando o cliente manda a foto do comprovante, a IA lê e manda a leitura
 ao responsável (valor confere ou não, recebedor, alertas). Quem libera continua sendo o responsável (`pago 12`).
-Isso depende de o provedor entregar o arquivo junto com a mensagem: na Evolution API, ligar "Webhook Base64"
+Isso depende de o provedor entregar o arquivo junto com a mensagem: no webhook genérico (n8n), mandar `midia_tipo` e `midia_base64` junto.
 na configuração do webhook; no webhook genérico, mandar `midia_tipo` e `midia_base64`. Na API da Meta ainda não lê a foto.
 
 O que a IA diz sobre um comprovante é a leitura de uma imagem. Ela não vê a conta: confira no banco.

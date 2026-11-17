@@ -20,7 +20,6 @@ Descreve o que o sistema é e faz, com todos os endereços e onde fica cada chav
 | Aviso de pagamento do Mercado Pago | https://despacho.srv2150999.hstgr.cloud/api/pagamento/mp?s=SEGREDO |
 | Repositório | https://github.com/SpeedBoyMotoboy/Speed |
 | PR juntado (atendimento, Pix, IA) | https://github.com/SpeedBoyMotoboy/Speed/pull/1 |
-| Gerenciador da Evolution (se instalada pelo script) | https://evolution.srv2150999.hstgr.cloud/manager |
 | Site da empresa | https://www.speedboy.com.br |
 | WhatsApp da empresa | https://wa.me/5527999165959 |
 | Chave da IA | https://console.anthropic.com (API Keys, Billing) |
@@ -38,12 +37,11 @@ Abaixo, onde cada uma está e como ver ou trocar.
 | Senha do painel (usuário `admin`) | Entrar no painel | Gerada no primeiro início. Ver: `docker logs despacho-speed-1 2>&1 \| grep -A2 -i admin`. Trocar em Configurações → Senha do painel |
 | Chave de API de entrada (`X-Api-Key`) | Outro sistema criar pedidos | Painel → Configurações → Entrada automática → **Gerar nova chave**. Aparece uma vez só; gerar outra cancela a anterior |
 | Segredo do webhook (`s=`) | Proteger o webhook do WhatsApp e do Mercado Pago | Painel → Configurações → WhatsApp automático: aparece no endereço do webhook. Criado sozinho ao abrir Configurações pela primeira vez |
-| Chave do provedor de WhatsApp | O sistema enviar mensagens | Evolution: `/docker/evolution/.env` na VPS (`EVO_API_KEY`), se instalada pelo script. Meta: token do app na Meta. Colada no painel (campo de senha; não volta para a tela) |
+| Chave do provedor de WhatsApp | O sistema enviar mensagens | Meta: token do app na Meta (só conexão oficial). Colada no painel (campo de senha; não volta para a tela) |
 | Chave da IA (`sk-ant-...`) | Conferir pedidos, ler fotos e conversas | console.anthropic.com → API Keys → Create Key. Colada no painel |
 | Access Token do Mercado Pago | Pix automático (opcional) | Credenciais de produção do Mercado Pago. Colado no painel |
 | Chave do OpenRouteService | Distância pelas ruas (opcional) | openrouteservice.org. Colada no painel |
 | Chave Pix da empresa | Pix copia e cola | CNPJ 46.178.859/0001-96 (ou a chave que você escolher). Digitada no painel |
-| Senha do banco da Evolution | Interna da Evolution | `/docker/evolution/.env` (`EVO_DB_SENHA`) |
 | Chave de assinatura do APK | Atualizar o app sem desinstalar | GitHub → Settings → Secrets: `SPEED_KEYSTORE`, `SPEED_KEYSTORE_SENHA`, `SPEED_KEY_ALIAS` (se criadas) |
 | PIN de cada motoboy | Login do motoboy | Definido no cadastro; não aparece depois (só trocar) |
 
@@ -64,7 +62,6 @@ docker exec despacho-speed-1 node --disable-warning=ExperimentalWarning -e 'cons
 | Compose | `/docker/despacho/docker-compose.yml` (imagem `speed-despacho:latest`, contêiner `despacho-speed-1`, porta interna 3000) |
 | Banco | volume Docker `despacho_dados` → `/dados/speed.db` (SQLite). **Nunca apagar** |
 | Variáveis | `TRUST_PROXY=1`, `TZ=America/Sao_Paulo` |
-| Evolution (opcional) | `/docker/evolution` (Evolution v2.3.7 + Postgres + Redis), criada por `deploy/whatsapp-instalar.sh` |
 
 Comandos:
 
@@ -74,7 +71,6 @@ Comandos:
 | Atualizar | `cd /opt/speed-src && git fetch origin claude/new-session-83gqyr && git checkout claude/new-session-83gqyr && git pull && docker build -t speed-despacho:latest . && cd /docker/despacho && docker compose up -d` |
 | Log | `docker logs --tail 100 despacho-speed-1` |
 | Reiniciar | `cd /docker/despacho && docker compose restart` |
-| Instalar WhatsApp (Evolution) | `bash /opt/speed-src/deploy/whatsapp-instalar.sh` |
 | Atualizar (script, com cópia do banco) | `bash /opt/speed-src/deploy/atualizar.sh` |
 
 **Publicação automática (GitHub → VPS).** A cada mudança juntada na branch principal (`claude/motoboy-tracking-app-t4fcoj`), o GitHub roda os testes e, se passarem, manda a VPS rodar `deploy/atualizar.sh`: cópia do banco em `/root/speed-backups` (30 últimas), baixa a versão, compila e troca o contêiner. Se a compilação falhar, o sistema no ar continua como estava. Dá para disparar à mão em GitHub → Actions → **Publicar na VPS** → Run workflow.
@@ -106,7 +102,7 @@ Comandos:
 | `server/src/ia.js` | Chamadas à IA (Claude) |
 | `server/src/pix.js` | Pix copia e cola (BR Code) |
 | `server/src/mercadopago.js` | Pix automático |
-| `server/src/mensageiro.js` | Provedores de WhatsApp (Evolution, Meta, genérico) |
+| `server/src/mensageiro.js` | Provedores de WhatsApp (só oficiais: Meta e genérico via n8n) |
 | `server/src/whatsapp.js` | Leitura de conversa exportada (.txt/.zip) |
 | `server/src/geo.js` | Distância e busca de endereço (OpenStreetMap; OpenRouteService opcional) |
 | `server/src/db.js` | Tabelas, configurações padrão, atualização do banco antigo |
@@ -114,8 +110,6 @@ Comandos:
 | `server/public/pedir/`, `acompanhar/`, `site/` | Páginas do cliente |
 | `server/public/app/` | Tela do motoboy |
 | `android/` | App Android (Java): WebView + rastreio com tela apagada |
-| `deploy/whatsapp-instalar.sh` | Instala a Evolution e liga ao sistema |
-| `deploy/evolution.md` | Passo a passo manual da Evolution |
 
 ## 5. O que o sistema faz
 
@@ -154,7 +148,7 @@ Comandos:
 - Opções em "Antes de despachar um pedido do site": Pix próprio com comprovante; Mercado Pago; aprovação no painel; confirmação pelo WhatsApp; direto.
 
 ### 5.5 WhatsApp
-- Provedores: Evolution API, WhatsApp Cloud API (Meta) ou genérico (n8n/Make).
+- Provedores: WhatsApp Cloud API (Meta) ou genérico (n8n/Make). **Regra de segurança do WhatsApp:** só conexão oficial da Meta (WhatsApp Cloud API), direto ou pelo n8n. Conexão por WhatsApp Web / QR code (Evolution API, Baileys, WPPConnect e parecidos) foi removida do sistema: a Meta pode banir o número. O sistema recusa essa opção e desliga um banco antigo que a tenha.
 - Robô de menu fixo: 1 pedir motoboy, 2 acompanhar, 3 atendente. Fluxo: coleta (texto ou localização) → confirma no mapa → entrega → descrição → (tipo de serviço) → resumo com preço → confirma → Pix. Lembra o último endereço de coleta do cliente.
 - Atendente assume pela aba WhatsApp; cliente volta ao robô com "menu".
 - Avisos ao cliente: motoboy a caminho (com link), coletado, entregue, cancelado, pagamento confirmado.
@@ -273,7 +267,7 @@ Não existe hoje: consulta por chave do estado da operação (motoboys, fila, al
 ## 10. Situação em 17/11/2026
 
 - **Pronto e testado:** tudo da seção 5 (54 testes, fluxo completo no navegador, instalação de produção simulada, chamada à IA testada contra API simulada).
-- **Não verificado:** se a VPS já está na versão nova; IA com chave real; Pix lido no app de um banco; script da Evolution na VPS real.
+- **Não verificado:** se a VPS já está na versão nova; IA com chave real; Pix lido no app de um banco.
 - **Falta preencher no painel:** preços, tipos de serviço, diária, cidade base (`Espírito Santo`), centro do mapa (`-20.3358`, `-40.2969`), horário, chave Pix, WhatsApp do responsável e da empresa, chave da IA, conexão do WhatsApp.
 - **Falta fazer:** cadastrar motoboys (diária/avulso); gerar o APK (variável `SPEED_SERVIDOR` = `https://despacho.srv2150999.hstgr.cloud` no GitHub); revisar o termo do motoboy com advogado ou contador (não cobre o avulso).
-- **Limites:** sem app de iPhone; robô do WhatsApp é de menu (a IA confere, não conversa); Evolution não é oficial do WhatsApp.
+- **Limites:** sem app de iPhone; robô do WhatsApp é de menu (a IA confere, não conversa).
