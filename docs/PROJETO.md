@@ -37,7 +37,8 @@ Abaixo, onde cada uma está e como ver ou trocar.
 | Senha do painel (usuário `admin`) | Entrar no painel | Gerada no primeiro início. Ver: `docker logs despacho-speed-1 2>&1 \| grep -A2 -i admin`. Trocar em Configurações → Senha do painel |
 | Chave de API de entrada (`X-Api-Key`) | Outro sistema criar pedidos | Painel → Configurações → Entrada automática → **Gerar nova chave**. Aparece uma vez só; gerar outra cancela a anterior |
 | Segredo do webhook (`s=`) | Proteger o webhook do WhatsApp e do Mercado Pago | Painel → Configurações → WhatsApp automático: aparece no endereço do webhook. Criado sozinho ao abrir Configurações pela primeira vez |
-| Chave do provedor de WhatsApp | O sistema enviar mensagens | Meta: token do app na Meta (só conexão oficial). Colada no painel (campo de senha; não volta para a tela) |
+| Token da WhatsApp Cloud API | O sistema enviar mensagens | Token permanente de usuário do sistema (Meta Business) ou o que o parceiro oficial fornecer. Colado no painel (campo de senha; não volta para a tela) |
+| App Secret da Meta | Conferir a assinatura de cada aviso da Meta | Painel de apps da Meta → Configurações do app → Básico. Colado no painel |
 | Chave da IA (`sk-ant-...`) | Conferir pedidos, ler fotos e conversas | console.anthropic.com → API Keys → Create Key. Colada no painel |
 | Access Token do Mercado Pago | Pix automático (opcional) | Credenciais de produção do Mercado Pago. Colado no painel |
 | Chave do OpenRouteService | Distância pelas ruas (opcional) | openrouteservice.org. Colada no painel |
@@ -102,7 +103,7 @@ Comandos:
 | `server/src/ia.js` | Chamadas à IA (Claude) |
 | `server/src/pix.js` | Pix copia e cola (BR Code) |
 | `server/src/mercadopago.js` | Pix automático |
-| `server/src/mensageiro.js` | Provedores de WhatsApp (só oficiais: Meta e genérico via n8n) |
+| `server/src/mensageiro.js` | WhatsApp: Cloud API da Meta (com coexistência e assinatura) e genérico |
 | `server/src/whatsapp.js` | Leitura de conversa exportada (.txt/.zip) |
 | `server/src/geo.js` | Distância e busca de endereço (OpenStreetMap; OpenRouteService opcional) |
 | `server/src/db.js` | Tabelas, configurações padrão, atualização do banco antigo |
@@ -110,6 +111,7 @@ Comandos:
 | `server/public/pedir/`, `acompanhar/`, `site/` | Páginas do cliente |
 | `server/public/app/` | Tela do motoboy |
 | `android/` | App Android (Java): WebView + rastreio com tela apagada |
+| `deploy/atualizar.sh`, `deploy/preparar-atualizacao-automatica.sh` | Atualização da VPS (manual e automática) |
 
 ## 5. O que o sistema faz
 
@@ -148,7 +150,9 @@ Comandos:
 - Opções em "Antes de despachar um pedido do site": Pix próprio com comprovante; Mercado Pago; aprovação no painel; confirmação pelo WhatsApp; direto.
 
 ### 5.5 WhatsApp
-- Provedores: WhatsApp Cloud API (Meta) ou genérico (n8n/Make). **Regra de segurança do WhatsApp:** só conexão oficial da Meta (WhatsApp Cloud API), direto ou pelo n8n. Conexão por WhatsApp Web / QR code (Evolution API, Baileys, WPPConnect e parecidos) foi removida do sistema: a Meta pode banir o número. O sistema recusa essa opção e desliga um banco antigo que a tenha.
+- Provedores: WhatsApp Cloud API da Meta em coexistência (mesmo número no app WhatsApp Business e na API) ou genérico (n8n/Make) ligado a provedor oficial. **Conexão por QR code do WhatsApp Web (Evolution e afins) foi removida: risco de banimento.**
+- Coexistência: resposta dada pelo app do celular chega como eco (`smb_message_echoes`), fica registrada e o robô se cala naquele contato por 12 h (`robo_pausa_horas`). Com App Secret salvo, todo aviso exige a assinatura da Meta.
+- Fora da janela de 24 h a Meta só aceita modelo aprovado; o sistema ainda não envia modelos, então avisos e convocações para quem não escreveu recentemente falham (aparecem no painel).
 - Robô de menu fixo: 1 pedir motoboy, 2 acompanhar, 3 atendente. Fluxo: coleta (texto ou localização) → confirma no mapa → entrega → descrição → (tipo de serviço) → resumo com preço → confirma → Pix. Lembra o último endereço de coleta do cliente.
 - Atendente assume pela aba WhatsApp; cliente volta ao robô com "menu".
 - Avisos ao cliente: motoboy a caminho (com link), coletado, entregue, cancelado, pagamento confirmado.
@@ -267,7 +271,7 @@ Não existe hoje: consulta por chave do estado da operação (motoboys, fila, al
 ## 10. Situação em 17/11/2026
 
 - **Pronto e testado:** tudo da seção 5 (54 testes, fluxo completo no navegador, instalação de produção simulada, chamada à IA testada contra API simulada).
-- **Não verificado:** se a VPS já está na versão nova; IA com chave real; Pix lido no app de um banco.
+- **Não verificado:** se a VPS já está na versão nova; IA com chave real; Pix lido no app de um banco; WhatsApp Cloud API com conta real da Meta.
 - **Falta preencher no painel:** preços, tipos de serviço, diária, cidade base (`Espírito Santo`), centro do mapa (`-20.3358`, `-40.2969`), horário, chave Pix, WhatsApp do responsável e da empresa, chave da IA, conexão do WhatsApp.
 - **Falta fazer:** cadastrar motoboys (diária/avulso); gerar o APK (variável `SPEED_SERVIDOR` = `https://despacho.srv2150999.hstgr.cloud` no GitHub); revisar o termo do motoboy com advogado ou contador (não cobre o avulso).
-- **Limites:** sem app de iPhone; robô do WhatsApp é de menu (a IA confere, não conversa).
+- **Limites:** sem app de iPhone; robô do WhatsApp é de menu (a IA confere, não conversa); envio de modelo aprovado (fora da janela de 24 h) não implementado.

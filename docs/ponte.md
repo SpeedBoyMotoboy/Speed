@@ -1,3 +1,5 @@
+> **DESATUALIZADO.** O documento atual é `docs/PROJETO.md`. A conexão do WhatsApp por Evolution/QR code citada aqui foi REMOVIDA (risco de banimento); só vale a Cloud API oficial da Meta em coexistência.
+
 # Speed Despacho: ficha para as outras IAs e pessoas da equipe
 
 Este arquivo é o ponto de contato do projeto **Speed Despacho** (repositório `SpeedBoyMotoboy/Speed`).

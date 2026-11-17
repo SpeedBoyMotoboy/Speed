@@ -1,3 +1,5 @@
+> **DESATUALIZADO.** O documento atual é `docs/PROJETO.md`. A conexão do WhatsApp por Evolution/QR code citada aqui foi REMOVIDA (risco de banimento); só vale a Cloud API oficial da Meta em coexistência.
+
 # Speed Despacho: contexto completo para continuar em outro chat
 
 > Colar ou anexar este arquivo num chat novo. Escrito em 17/11/2026. Substitui o documento de contexto anterior (16/11).

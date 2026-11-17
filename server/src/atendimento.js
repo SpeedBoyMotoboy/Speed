@@ -3,7 +3,7 @@
 import crypto from 'node:crypto';
 import { Erro } from './servico.js';
 import { conversar, reais } from './robo.js';
-import { interpretar, enviar as enviarPadrao, normalizarTelefone, destinoDe } from './mensageiro.js';
+import { interpretar, enviar as enviarPadrao, normalizarTelefone, destinoDe, assinaturaMetaConfere } from './mensageiro.js';
 import { coordValida, kmPelasRuas } from './geo.js';
 import * as mercadoPago from './mercadopago.js';
 import { brCode } from './pix.js';
@@ -110,13 +110,15 @@ export function criarAtendimento({
                            ORDER BY id LIMIT 20`).all(TENTATIVAS_MAX, agora());
       for (const m of pendentes) {
         try {
-          await enviar(cfgBruta(), m.destino, m.texto);
-          q('UPDATE saida SET enviada_em = ?, erro = NULL WHERE id = ?').run(agora(), m.id);
+          // O id devolvido pela Meta serve para reconhecer o eco desta mesma mensagem, se vier.
+          const id = await enviar(cfgBruta(), m.destino, m.texto);
+          q('UPDATE saida SET enviada_em = ?, erro = NULL, msg_id = ? WHERE id = ?').run(agora(), id || null, m.id);
           n++;
         } catch (e) {
+          // Erro definitivo (ex.: fora da janela de 24 h): não adianta tentar de novo.
           const espera = 30_000 * 2 ** m.tentativas;
-          q('UPDATE saida SET tentativas = tentativas + 1, erro = ?, proxima_em = ? WHERE id = ?')
-            .run(String(e.message || e).slice(0, 300), agora() + espera, m.id);
+          q('UPDATE saida SET tentativas = ?, erro = ?, proxima_em = ? WHERE id = ?')
+            .run(e.definitivo ? TENTATIVAS_MAX : m.tentativas + 1, String(e.message || e).slice(0, 300), agora() + espera, m.id);
         }
       }
     } finally {
@@ -454,7 +456,18 @@ export function criarAtendimento({
     };
   }
 
+  // Coexistência: a empresa respondeu pelo app WhatsApp Business. Fica registrado e o robô se cala
+  // nessa conversa por algumas horas, para não responder em cima de quem está atendendo.
+  function ecoDoApp(msg) {
+    if (msg.id && q('SELECT 1 FROM saida WHERE msg_id = ?').get(msg.id)) return; // é do próprio sistema
+    const c = conversaDe(msg.telefone, '', msg.destino);
+    anotar(c, 'Empresa (app)', msg.texto || '(mensagem enviada pelo app)', 'saida');
+    const ate = agora() + Number(cfgBruta().robo_pausa_horas) * 60 * MIN;
+    q("UPDATE conversas SET pausa_ate = ?, pendente = 0, etapa = '', dados = '{}' WHERE id = ?").run(ate, c.id);
+  }
+
   async function tratar(msg) {
+    if (msg.eco) { ecoDoApp(msg); return; }
     const c = conversaDe(msg.telefone, msg.nome, msg.destino);
     const local = msg.lat != null ? `📍 Localização: ${msg.lat.toFixed(5)}, ${msg.lon.toFixed(5)}` : '';
     anotar(c, msg.nome || msg.telefone, [msg.texto, local, msg.midia && '(enviou foto ou arquivo)'].filter(Boolean).join('\n') || '(mídia sem texto)', 'entrada');
@@ -478,6 +491,8 @@ export function criarAtendimento({
     }
     // Motoboy respondendo à convocação: só fica registrado.
     if (q('SELECT id FROM motoboys WHERE telefone = ? AND ativo = 1').get(msg.telefone)) return;
+    // Alguém da empresa está atendendo esse contato pelo app: só registra, o robô não fala.
+    if (c.pausa_ate && c.pausa_ate > agora()) return;
     // Cliente com Pix pendente que manda foto/arquivo ou diz que pagou: é o comprovante.
     const aPagar = q(`SELECT * FROM demandas WHERE cliente_telefone = ? AND pagamento = 'pendente'
                       AND status IN ('sem_local','aguardando') ORDER BY id DESC`).get(msg.telefone);
@@ -543,6 +558,13 @@ export function criarAtendimento({
       return tarefa;
     });
     return Promise.all(tarefas).then(() => despacharSaida()).then(() => mensagens.length);
+  }
+  // Aviso que chega no webhook: com App Secret da Meta configurado vale a assinatura da Meta;
+  // sem ele, vale o segredo do endereço (?s=).
+  function webhookAutorizado(segredo, corpoBruto, assinatura) {
+    const c = cfgBruta();
+    if (c.whats_provedor === 'meta' && c.whats_app_secret) return assinaturaMetaConfere(c.whats_app_secret, corpoBruto, assinatura);
+    return segredoConfere(segredo);
   }
   function segredoConfere(valor) {
     const certo = cfgBruta().whats_segredo;
@@ -743,7 +765,7 @@ export function criarAtendimento({
   }
   function modoConversa(id, humano) {
     const c = conversaViva(id);
-    q("UPDATE conversas SET humano = ?, pendente = 0, etapa = '', dados = '{}' WHERE id = ?").run(humano ? 1 : 0, c.id);
+    q("UPDATE conversas SET humano = ?, pendente = 0, etapa = '', dados = '{}', pausa_ate = NULL WHERE id = ?").run(humano ? 1 : 0, c.id);
   }
   async function testar() {
     const c = cfgBruta();
@@ -776,7 +798,7 @@ export function criarAtendimento({
   }
 
   return {
-    definirOrigem, receber, segredoConfere, despacharSaida, rotina,
+    definirOrigem, receber, segredoConfere, webhookAutorizado, despacharSaida, rotina,
     infoPublica, cotarPublico, pedidoSite, pedidoVivo, webhookPagamento, expirarPagamentos,
     resumo, responder, modoConversa, testar, testarIA, analisarArquivos, analisarConversa, listarAnalises,
   };

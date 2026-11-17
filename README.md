@@ -154,11 +154,14 @@ em Configurações para a busca acertar mais.
 
 ### Ligar o WhatsApp
 
+Só conexão oficial. **Nunca** ligar o número por QR code do WhatsApp Web (Evolution, Baileys, whatsapp-web.js, Whapi): a Meta pode banir o número. Esse caminho foi removido do sistema.
+
 Em *Configurações → WhatsApp automático* escolha a conexão, salve e cadastre no provedor o endereço de webhook que o painel mostra.
 
-**Regra de segurança do WhatsApp:** só conexão oficial da Meta (WhatsApp Cloud API), direto ou pelo n8n. Conexão por WhatsApp Web / QR code (Evolution API, Baileys, WPPConnect e parecidos) foi removida do sistema: a Meta pode banir o número. O sistema recusa essa opção e desliga um banco antigo que a tenha.
-
-- **WhatsApp Cloud API (Meta)**: ID do número e token. O "token de verificação" é o segredo do endereço. Limite da Meta: mensagem para quem não escreveu nas últimas 24 h exige modelo aprovado (convocação e avisos podem falhar).
-- **n8n / Make** (o n8n envia pela API oficial): o sistema envia `POST {"telefone","texto"}` para o endereço informado e recebe `POST {"telefone","nome","texto","lat","lon"}` no webhook.
+- **WhatsApp Cloud API (Meta), em coexistência**: o mesmo número continua no app WhatsApp Business do celular e a API funciona junto. Campos: ID do número (Phone Number ID), token de acesso permanente e App Secret. No webhook da Meta: URL do painel, "token de verificação" = segredo do endereço, campos `messages` e `smb_message_echoes`.
+  - Resposta enviada pelo app do celular chega como eco (`smb_message_echoes`): fica registrada na conversa e o robô se cala naquele contato por 12 h (configurável). Eco de mensagem enviada pelo próprio sistema é reconhecido pelo id e ignorado.
+  - Com o App Secret salvo, todo aviso precisa da assinatura `X-Hub-Signature-256` da Meta.
+  - Fora da janela de 24 h a Meta só aceita modelo aprovado: esse erro não é repetido na fila e aparece no painel.
+- **Outro (n8n, Make)**, ligado a provedor OFICIAL: o sistema envia `POST {"telefone","texto"}` para o endereço informado e recebe `POST {"telefone","nome","texto","lat","lon"}` no webhook.
 
 A fila de envio tenta de novo sozinha (6 tentativas, espera crescente). Falhas aparecem no topo do painel.

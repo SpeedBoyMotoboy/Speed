@@ -59,8 +59,10 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
       partes.push(parte);
     }
     if (!tamanho) return {};
+    // Corpo original guardado: a assinatura da Meta é calculada sobre ele, não sobre o JSON relido.
+    req.corpoBruto = Buffer.concat(partes);
     try {
-      const corpo = JSON.parse(Buffer.concat(partes).toString('utf8'));
+      const corpo = JSON.parse(req.corpoBruto.toString('utf8'));
       if (corpo === null || typeof corpo !== 'object' || Array.isArray(corpo)) throw new Error('formato');
       return corpo;
     } catch {
@@ -108,7 +110,7 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
     return { ok: true };
   });
 
-  // WhatsApp automático: o provedor (Meta oficial ou n8n) chama aqui a cada mensagem recebida.
+  // WhatsApp automático: o provedor oficial (Meta, ou n8n/Make ligado a ele) chama aqui a cada mensagem recebida.
   rota('GET', '/api/whatsapp/webhook', 'publico', ({ url }) => {
     // Verificação exigida pela Meta ao cadastrar o webhook.
     if (!atendimento.segredoConfere(url.searchParams.get('hub.verify_token') ?? url.searchParams.get('s'))) {
@@ -117,8 +119,8 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
     return { [TEXTO]: url.searchParams.get('hub.challenge') || 'ok' };
   });
   rota('POST', '/api/whatsapp/webhook', 'publico', ({ url, corpo, req }) => {
-    if (!atendimento.segredoConfere(url.searchParams.get('s') ?? req.headers['x-speed-segredo'])) {
-      throw new Erro(403, 'segredo_invalido', 'Segredo inválido.');
+    if (!atendimento.webhookAutorizado(url.searchParams.get('s') ?? req.headers['x-speed-segredo'], req.corpoBruto, req.headers['x-hub-signature-256'])) {
+      throw new Erro(403, 'segredo_invalido', 'Segredo ou assinatura inválidos.');
     }
     // Responde na hora; a conversa (que pode consultar o mapa) segue em segundo plano.
     atendimento.receber(corpo).catch((e) => console.error('[whatsapp]', e));
