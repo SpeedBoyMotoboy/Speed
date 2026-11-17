@@ -52,3 +52,5 @@ label.marcar input { width: 24px; height: 24px; flex: none; margin-top: 1px; }
 .etiqueta.oferta { background: var(--destaque); color: #111318; }
 .ganho { font-size: 22px; font-weight: 800; margin: 8px 0 4px; color: var(--ok); }
 .cartao.oferta .botoes { display: grid; grid-template-columns: 2fr 1fr; gap: 8px; margin-top: 12px; }
+.ver-termo { margin-top: 8px; font-size: 13.5px; }
+.ver-termo summary { cursor: pointer; color: var(--suave, #555); text-decoration: underline; }

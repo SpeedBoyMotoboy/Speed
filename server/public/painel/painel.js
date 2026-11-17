@@ -188,7 +188,7 @@ function telaPrincipal() {
       h('button', { onclick: async () => { await api('POST', '/api/admin/logout').catch(() => {}); telaLogin(); } }, 'Sair')),
     els.operacao, els.pagina);
 
-  mapa = L.map(els.mapa, { zoomControl: true }).setView([-23.5505, -46.6333], 12);
+  mapa = L.map(els.mapa, { zoomControl: true }).setView([-20.3358, -40.2969], 12); // Vila Velha/ES até o estado chegar
   camadaBase().addTo(mapa);
   camadas = { trilha: L.layerGroup().addTo(mapa), demandas: L.layerGroup().addTo(mapa), motoboys: L.layerGroup().addTo(mapa) };
   enquadrado = false;
@@ -1137,6 +1137,8 @@ async function desenharConfig() {
 
   trocar(els.pagina, 
     h('h2', null, 'Configurações'),
+    h('div', { class: 'linha fim barra-salvar' }, aviso, salvar),
+    h('p', { class: 'nota' }, 'Toque em um título para abrir. "Salvar configurações" grava tudo de uma vez.'),
     h('h3', null, 'Turno e pagamento'),
     h('div', { class: 'grade3' },
       num('horas_turno', 'Duração do turno (horas)', 0.5), num('almoco_min', 'Almoço (minutos)'),
@@ -1268,7 +1270,6 @@ async function desenharConfig() {
     h('h3', null, `Termo aceito pelo motoboy a cada login (versão ${c.termo_versao})`),
     campos.termo_texto,
     h('div', { class: 'nota' }, 'Modelo inicial: peça para seu advogado ou contador revisar antes de usar.'),
-    h('div', { class: 'linha fim' }, aviso, salvar),
 
     h('h3', null, 'Entrada automática de demandas (app de clientes, Make, WhatsApp)'),
     h('p', { class: 'nota' }, c.api_chave_definida ? 'Já existe uma chave ativa. Gerar outra cancela a anterior.' : 'Nenhuma chave gerada ainda.'),
@@ -1296,6 +1297,19 @@ async function desenharConfig() {
         },
       }, 'Trocar senha'))),
     avisoSenha);
+
+  // Cada seção (h3) vira uma gaveta fechada: a página fica curta e abre só o que interessa.
+  let atualGaveta = null;
+  for (const no of [...els.pagina.children]) {
+    if (no.tagName === 'H3') {
+      const titulo = no.textContent;
+      const chave = `cfg:${titulo.replace(/\(.*$/, '').trim()}`;
+      atualGaveta = gaveta(chave, false, { class: 'cartao gaveta-config' }, h('summary', null, titulo));
+      no.replaceWith(atualGaveta);
+    } else if (atualGaveta) {
+      atualGaveta.append(no);
+    }
+  }
 }
 
 // ----------------------------------------------------------------- início

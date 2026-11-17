@@ -124,3 +124,6 @@ details.cartao summary { font-weight: 600; color: var(--texto); padding: 0; }
 .cartao.focada { border-color: #ff5400; box-shadow: 0 0 0 2px rgba(255,84,0,.25); }
 .escolha-motoboy { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--borda); }
 .linha-motoboy { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 4px 0; font-size: 12.5px; }
+.gaveta-config > summary { font-weight: 600; cursor: pointer; padding: 4px 0; }
+.gaveta-config[open] > summary { margin-bottom: 10px; }
+.barra-salvar { position: sticky; top: 0; z-index: 5; background: var(--fundo, #f4f5f7); padding: 8px 0; }

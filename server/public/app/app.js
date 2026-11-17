@@ -122,7 +122,7 @@ async function telaLogin(mensagem = '') {
 
   const telefone = h('input', { inputmode: 'tel', autocomplete: 'username', placeholder: '(11) 99999-0000', value: localStorage.getItem('speed_telefone') || '' });
   const pin = h('input', { type: 'password', inputmode: 'numeric', maxlength: 6, autocomplete: 'current-password', placeholder: '6 números' });
-  const aceito = h('input', { type: 'checkbox' });
+  const aceito = h('input', { type: 'checkbox', checked: true });
   const erro = h('div', { class: 'erro', role: 'alert' }, mensagem);
   const entrar = h('button', { class: 'primario grande', type: 'submit' }, 'Iniciar turno');
   const pendencias = h('div', { class: 'cartao' });
@@ -147,7 +147,7 @@ async function telaLogin(mensagem = '') {
     onsubmit: async (ev) => {
       ev.preventDefault();
       erro.textContent = '';
-      if (!aceito.checked) { erro.textContent = 'Marque que leu e aceita o termo.'; return; }
+      if (!aceito.checked) { erro.textContent = 'Marque "Aceito os termos".'; return; }
       entrar.disabled = true;
       try {
         if (!nativo) await pedirLocalizacaoWeb();
@@ -171,9 +171,8 @@ async function telaLogin(mensagem = '') {
   },
   h('label', null, 'Telefone com DDD'), telefone,
   h('label', null, 'Senha'), pin,
-  h('div', { class: 'termo', tabindex: 0 }, termo.texto),
-  h('label', { class: 'marcar' }, aceito,
-    'Li e aceito o termo. Sei que minha localização será acompanhada enquanto o turno estiver ativo e que fico disponível para a Speed nesse período.'),
+  h('label', { class: 'marcar' }, aceito, 'Aceito os termos'),
+  h('details', { class: 'ver-termo' }, h('summary', null, 'Ver termos'), h('div', { class: 'termo', tabindex: 0 }, termo.texto)),
   erro, h('div', { class: 'botoes' }, entrar));
 
   trocar(raiz, 
