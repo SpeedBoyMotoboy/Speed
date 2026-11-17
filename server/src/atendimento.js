@@ -666,7 +666,10 @@ export function criarAtendimento({
     const nome = txt(dados?.nome, 80);
     const telefone = normalizarTelefone(dados?.telefone);
     if (nome.length < 2) throw new Erro(422, 'nome_invalido', 'Informe seu nome.');
-    if (!telefone) throw new Erro(422, 'telefone_invalido', 'Informe seu WhatsApp com DDD.');
+    // Sem telefone só quando o site avisa que o cliente segue para o WhatsApp da empresa:
+    // o número chega pela conversa e é gravado depois (definirContato).
+    const semTelefone = !telefone && dados?.contato_whatsapp === true && txt(dados?.telefone, 30) === '';
+    if (!telefone && !semTelefone) throw new Erro(422, 'telefone_invalido', 'Informe seu WhatsApp com DDD.');
     const recusa = motivoRecusa(telefone);
     if (recusa) throw new Erro(409, 'recusado', recusa.replace(/\s*😴/, ''));
     limitar(`pedir:${ip}`, 8, 60 * MIN);
@@ -675,10 +678,10 @@ export function criarAtendimento({
     const entrega = lerPontoPublico(dados?.entrega);
     await acharNoMapa(coleta);
     await acharNoMapa(entrega);
-    if (!coleta.contato) coleta.contato = `${nome} ${telefone}`;
+    if (!coleta.contato) coleta.contato = `${nome} ${telefone}`.trim();
     const km = await distancia(coleta, entrega);
     const previa = servico.cotar(coleta, entrega, { km, servicoId: dados?.servico_id, telefone });
-    const fixo = clienteFixo(telefone);
+    const fixo = telefone ? clienteFixo(telefone) : null;
     const email = txt(dados?.email, 120).toLowerCase();
     // Cliente fixo não paga na hora, mas precisa provar que é ele (qualquer um pode digitar o telefone dele).
     let modo = fixo ? (ligado() ? 'whatsapp' : 'painel') : modoConfirmacao();
@@ -699,7 +702,7 @@ export function criarAtendimento({
       cliente: fixo?.nome || nome, telefone, descricao: dados?.descricao, requisito: dados?.requisito ?? 'qualquer',
       urgente: true, servico_id: dados?.servico_id, km, email, coleta, entrega,
     }, 'site', { retida: modo !== 'nenhuma', pagamento: fixo ? 'faturado' : '', ia: analise });
-    lembrarCliente(telefone, nome, coleta, email);
+    if (telefone) lembrarCliente(telefone, nome, coleta, email);
 
     let pix = null;
     if (modo === 'pagamento') {
@@ -713,7 +716,7 @@ export function criarAtendimento({
     if (modo === 'painel') {
       // Dados do pedido junto do aviso: quem recebe (ex.: n8n) pode conferir sem entrar no painel.
       const detalhes = [
-        `📞 ${telefone}`,
+        telefone ? `📞 ${telefone}` : '📞 chega pelo WhatsApp (cliente envia a mensagem do pedido)',
         `📦 Coleta: ${d.coleta_endereco || '-'}`,
         `🏁 Entrega: ${d.entrega_endereco || '-'}`,
         d.descricao ? `📝 ${d.descricao}` : '',

@@ -138,6 +138,37 @@ let camadas = null;
 let trilhaAberta = null; // { turnoId, nome }
 let enquadrado = false;
 const els = {};
+// Gavetas (<details>) abertas pelo usuário continuam abertas quando a tela se atualiza.
+const gavetas = new Map();
+function gaveta(chave, abertaPadrao, atributos, ...filhos) {
+  return h('details', {
+    ...atributos,
+    open: gavetas.has(chave) ? gavetas.get(chave) : abertaPadrao,
+    ontoggle: (ev) => gavetas.set(chave, ev.currentTarget.open),
+  }, ...filhos);
+}
+let demandaFocada = null; // id da demanda destacada no mapa
+let escolhendoPara = null; // id da demanda com a lista de motoboys aberta
+function kmEntre(a, b) {
+  const r = Math.PI / 180;
+  const x = Math.sin(((b[0] - a[0]) * r) / 2) ** 2 + Math.cos(a[0] * r) * Math.cos(b[0] * r) * Math.sin(((b[1] - a[1]) * r) / 2) ** 2;
+  return 12742 * Math.asin(Math.sqrt(x));
+}
+async function designar(demanda, motoboyId) {
+  try {
+    await api('POST', `/api/admin/demandas/${demanda.id}/atribuir`, { motoboy_id: motoboyId || null });
+    escolhendoPara = null;
+    mapa.closePopup();
+  } catch (e) { els.conexao.textContent = e.message; }
+  atualizar();
+}
+function focarDemanda(d) {
+  demandaFocada = demandaFocada === d.id ? null : d.id;
+  desenharMapa();
+  if (demandaFocada == null || d.coleta_lat == null) return;
+  const pts = [[d.coleta_lat, d.coleta_lon], [d.entrega_lat, d.entrega_lon]].filter((p) => p[0] != null);
+  mapa.fitBounds(pts, { padding: [60, 60], maxZoom: 16 });
+}
 
 function pararAtualizacao() { clearInterval(temporizador); temporizador = null; }
 
@@ -234,7 +265,8 @@ async function atualizar() {
 // --------------------------------------------------------------- operação
 function desenhar() {
   if (!estado) return;
-  desenharMapa();
+  // Com um balão aberto no mapa (ex.: designar motoboy), não redesenha o mapa para não fechar o balão.
+  if (!(mapa._popup && mapa.hasLayer(mapa._popup))) desenharMapa();
   desenharLateral();
 }
 
@@ -256,19 +288,22 @@ function desenharMapa() {
 
   for (const d of estado.demandas) {
     if (!['aguardando', 'atribuida', 'coletada'].includes(d.status) || d.coleta_lat == null) continue;
+    const focada = d.id === demandaFocada;
+    if (demandaFocada != null && !focada) continue; // com uma demanda em foco, só ela aparece
     const coleta = [d.coleta_lat, d.coleta_lon];
     const entrega = [d.entrega_lat, d.entrega_lon];
+    const umPonto = kmEntre(coleta, entrega) < 0.05;
     const info = () => h('div', null,
       h('b', null, `#${d.id} ${d.cliente}`), h('br'),
       `Coleta: ${d.coleta_endereco}`, h('br'), `Entrega: ${d.entrega_endereco}`, h('br'),
       d.motoboy_id ? `Motoboy: ${nomes.get(d.motoboy_id) || '—'}` : 'Aguardando motoboy');
-    if (d.status !== 'coletada') {
+    if (d.status !== 'coletada' && !umPonto) {
       L.marker(coleta, { icon: dimensionar(icone(`ponto ${d.status === 'aguardando' ? 'espera' : 'coleta'}`, 'C', 22), 22) })
         .bindPopup(info).addTo(camadas.demandas);
       limites.push(coleta);
     }
-    L.marker(entrega, { icon: dimensionar(icone('ponto entrega', 'E', 22), 22) }).bindPopup(info).addTo(camadas.demandas);
-    L.polyline([coleta, entrega], { color: '#7c3aed', weight: 2, dashArray: '5 6', opacity: 0.7 }).addTo(camadas.demandas);
+    L.marker(entrega, { icon: dimensionar(icone('ponto entrega', umPonto ? '●' : 'E', focada ? 28 : 22), focada ? 28 : 22) }).bindPopup(info).addTo(camadas.demandas);
+    if (!umPonto) L.polyline([coleta, entrega], { color: focada ? '#ff5400' : '#7c3aed', weight: focada ? 4 : 2, dashArray: '5 6', opacity: focada ? 0.95 : 0.7 }).addTo(camadas.demandas);
     limites.push(entrega);
   }
 
@@ -277,9 +312,21 @@ function desenharMapa() {
     if (!t || t.lat == null) continue;
     const classe = `pino ${t.status}${alertados.has(m.id) ? ' alertado' : ''}`;
     L.marker([t.lat, t.lon], { icon: dimensionar(icone(classe, iniciais(m.nome), 34), 34), zIndexOffset: 500 })
-      .bindPopup(() => h('div', null,
-        h('b', null, m.nome), h('br'), `${ROTULO_STATUS[t.status]} · ${t.pendentes} parada(s)`, h('br'),
-        `Último sinal ${ha(t.ult_contato ?? t.inicio, estado.agora)}`))
+      .bindPopup(() => {
+        // Demandas ainda sem motoboy, da mais perto para a mais longe dele.
+        const livres = estado.demandas
+          .filter((d) => ['aguardando'].includes(d.status) && d.coleta_lat != null)
+          .map((d) => ({ d, km: kmEntre([t.lat, t.lon], [d.coleta_lat, d.coleta_lon]) }))
+          .sort((a, b) => a.km - b.km).slice(0, 6);
+        return h('div', null,
+          h('b', null, m.nome), h('br'), `${ROTULO_STATUS[t.status]} · ${t.pendentes} parada(s)`, h('br'),
+          `Último sinal ${ha(t.ult_contato ?? t.inicio, estado.agora)}`,
+          livres.length ? [h('div', { style: 'margin-top:6px;font-weight:600' }, 'Designar para:'),
+            livres.map(({ d, km }) => h('div', { style: 'margin-top:4px' },
+              h('button', { class: 'pequeno primario', onclick: () => designar(d, m.id) }, `#${d.id}`),
+              ` ${d.cliente} · ${km.toFixed(1)} km`, d.retida ? ' (aprova junto)' : ''))]
+            : h('div', { class: 'sub', style: 'margin-top:6px' }, 'Nenhuma demanda esperando motoboy.'));
+      })
       .addTo(camadas.motoboys);
     limites.push([t.lat, t.lon]);
   }
@@ -310,7 +357,27 @@ function desenharLateral() {
         : a.fim === a.inicio ? `Às ${hora(a.inicio)}` : `${hora(a.inicio)} a ${hora(a.fim)} (${duracao(a.fim - a.inicio)})`),
     a.detalhe && h('div', { class: 'sub' }, a.detalhe));
 
-  const cartaoDemanda = (d) => h('div', { class: 'cartao' },
+  const listaMotoboys = (d) => {
+    const ref = d.coleta_lat != null ? [d.coleta_lat, d.coleta_lon] : null;
+    const lista = emTurno.filter((m) => m.turno)
+      .map((m) => ({ m, km: ref && m.turno.lat != null ? kmEntre(ref, [m.turno.lat, m.turno.lon]) : null }))
+      .sort((a, b) => (a.km ?? 1e9) - (b.km ?? 1e9));
+    return h('div', { class: 'escolha-motoboy' },
+      d.status === 'coletada' && h('div', { class: 'sub' }, 'Atenção: a carga já foi coletada. O novo motoboy precisa pegar com o anterior.'),
+      lista.length ? lista.map(({ m, km }) => h('div', { class: 'linha-motoboy' },
+        h('span', null, h('b', null, m.nome), ` · ${equipamento(m)} · ${m.turno.pendentes} parada(s)${km != null ? ` · ${km.toFixed(1)} km da coleta` : ''}`),
+        h('button', { class: 'pequeno primario', onclick: () => designar(d, m.id) }, m.id === d.motoboy_id ? 'Manter' : 'Designar')))
+        : h('div', { class: 'vazio' }, 'Ninguém em turno agora. Convoque na aba Motoboys.'),
+      h('div', { class: 'acoes' },
+        h('button', { class: 'pequeno', onclick: () => designar(d, null) }, 'Automático'),
+        h('button', { class: 'pequeno', onclick: () => { escolhendoPara = null; desenharLateral(); } }, 'Fechar')));
+  };
+
+  const cartaoDemanda = (d) => h('div', {
+    class: `cartao clicavel${d.id === demandaFocada ? ' focada' : ''}`,
+    title: 'Clique para ver no mapa',
+    onclick: (ev) => { if (!ev.target.closest('button, a, select, input, details')) focarDemanda(d); },
+  },
     h('div', { class: 'titulo' }, `#${d.id} ${d.cliente}`, chip(ROTULO_STATUS[d.status], d.status),
       d.requisito !== 'qualquer' && chip(ROTULO_REQUISITO[d.requisito]),
       d.urgente ? chip('Urgente', 'sem_sinal') : null,
@@ -352,12 +419,13 @@ function desenharLateral() {
       }, 'Aprovar'),
       d.status === 'sem_local'
         ? h('button', { class: 'pequeno primario', onclick: () => janelaDemanda(d) }, 'Marcar no mapa')
-        : h('button', { class: 'pequeno', onclick: () => janelaTrocar(d) }, d.motoboy_id ? 'Trocar motoboy' : 'Escolher motoboy'),
+        : h('button', { class: 'pequeno', onclick: () => { escolhendoPara = escolhendoPara === d.id ? null : d.id; desenharLateral(); } }, d.motoboy_id ? 'Trocar motoboy' : 'Escolher motoboy'),
       h('button', {
         class: 'pequeno perigo',
         onclick: () => confirmar('Cancelar demanda', `Cancelar a demanda #${d.id} de ${d.cliente}?`, 'Cancelar demanda',
           () => api('POST', `/api/admin/demandas/${d.id}/cancelar`)),
-      }, 'Cancelar')));
+      }, 'Cancelar')),
+    escolhendoPara === d.id && !['entregue', 'cancelada'].includes(d.status) && listaMotoboys(d));
 
   const cartaoMotoboy = (m) => {
     const t = m.turno;
@@ -386,7 +454,7 @@ function desenharLateral() {
       h('div', null, h('b', null, fila.length + semLocal.length + retidas.length), h('span', null, 'aguardando'))),
     h('button', { class: 'primario', onclick: () => janelaDemanda() }, '+ Nova demanda'),
 
-    estado.pendencias.length > 0 && h('details', { class: 'cartao sugestao', open: !estado.motoboys.length },
+    estado.pendencias.length > 0 && gaveta('pendencias', !estado.motoboys.length, { class: 'cartao sugestao' },
       h('summary', null, `Falta configurar (${estado.pendencias.length})`),
       h('ul', { class: 'lista' }, estado.pendencias.map((t) => h('li', null, t))),
       h('div', { class: 'acoes' }, h('button', { class: 'pequeno', onclick: () => abrirAba('config') }, 'Abrir Configurações'))),
@@ -412,14 +480,14 @@ function desenharLateral() {
 
     h('h3', null, `Alertas abertos (${alertasAbertos.length})`),
     alertasAbertos.length ? alertasAbertos.map(cartaoAlerta) : h('div', { class: 'vazio' }, 'Nenhum alerta agora.'),
-    alertasHoje.length > 0 && h('details', null, h('summary', null, `Alertas encerrados hoje (${alertasHoje.length})`), alertasHoje.map(cartaoAlerta)),
+    alertasHoje.length > 0 && gaveta('alertas_hoje', false, null, h('summary', null, `Alertas encerrados hoje (${alertasHoje.length})`), alertasHoje.map(cartaoAlerta)),
 
     semLocal.length > 0 && [h('h3', null, 'Sem local no mapa'), semLocal.map(cartaoDemanda)],
     h('h3', null, `Aguardando motoboy (${fila.length})`),
     fila.length ? fila.map(cartaoDemanda) : h('div', { class: 'vazio' }, 'Nada na fila.'),
     h('h3', null, `Em andamento (${abertas.length})`),
     abertas.length ? abertas.map(cartaoDemanda) : h('div', { class: 'vazio' }, 'Nenhuma entrega em andamento.'),
-    fechadas.length > 0 && h('details', null, h('summary', null, `Finalizadas hoje (${fechadas.length})`), fechadas.map(cartaoDemanda)),
+    fechadas.length > 0 && gaveta('finalizadas', false, null, h('summary', null, `Finalizadas hoje (${fechadas.length})`), fechadas.map(cartaoDemanda)),
 
     h('h3', null, `Motoboys em turno (${emTurno.length})`),
     emTurno.length ? emTurno.map(cartaoMotoboy) : h('div', { class: 'vazio' }, 'Ninguém em turno. Convoque na aba Motoboys.'));

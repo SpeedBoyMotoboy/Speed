@@ -1023,3 +1023,14 @@ test('pedido do site fechado no WhatsApp: grava valor, recalcula repasse e liber
   assert.equal(s.fecharPedido(d.id, 50, 'api').liberada, false, 'não fecha duas vezes');
   assert.throws(() => s.fecharPedido(9999, 10, 'api'), { codigo: 'nao_encontrado' });
 });
+
+test('pedido do site sem telefone: contato chega depois pelo WhatsApp', async () => {
+  const { s, a, demandas } = montar();
+  const base = { nome: 'Carla', descricao: 'envelope', coleta: { endereco: 'Rua A, 10, Centro', lat: -23.55, lon: -46.63 }, entrega: { endereco: 'Rua B, 20, Centro', lat: -23.56, lon: -46.64 } };
+  await assert.rejects(a.pedidoSite(base, 'ip'), { codigo: 'telefone_invalido' });
+  const r = await a.pedidoSite({ ...base, contato_whatsapp: true }, 'ip');
+  assert.equal(demandas().find((d) => d.id === r.id).cliente_telefone, '');
+  assert.deepEqual(s.definirContato(r.id, '5527999990000', 'api'), { definido: true, igual: true });
+  assert.equal(demandas().find((d) => d.id === r.id).cliente_telefone, '27999990000');
+  assert.equal(s.definirContato(r.id, '5527988880000', 'api').definido, false, 'não troca contato já definido');
+});

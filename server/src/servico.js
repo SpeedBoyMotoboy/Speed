@@ -718,6 +718,19 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     });
     return true;
   }
+  // Pedido do site sem telefone: o número chega quando o cliente manda a mensagem no WhatsApp.
+  // Só preenche se estiver vazio (não troca o contato de um pedido que já tem dono).
+  function definirContato(id, telefoneBruto, ator) {
+    const d = q('SELECT * FROM demandas WHERE id = ?').get(id);
+    if (!d) throw new Erro(404, 'nao_encontrado', 'Demanda não encontrada.');
+    const telefone = normalizarTelefone(telefoneBruto);
+    if (!telefone) throw new Erro(422, 'telefone_invalido', 'Telefone inválido.');
+    if (d.cliente_telefone) return { definido: false, igual: d.cliente_telefone === telefone };
+    if (d.origem !== 'site' || ['entregue', 'cancelada'].includes(d.status)) return { definido: false, igual: false };
+    q('UPDATE demandas SET cliente_telefone = ? WHERE id = ?').run(telefone, id);
+    auditar(ator, 'demanda_contato', `#${id}`);
+    return { definido: true, igual: true };
+  }
   // Pedido do site fechado por fora (ex.: cliente aceitou o valor no WhatsApp): grava o valor
   // combinado, recalcula o repasse e solta para o motoboy. Só pedido retido e ainda aberto.
   function fecharPedido(id, valorCombinado, ator) {
@@ -1360,7 +1373,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     criarDemanda, criarDemandaExterna, definirLocais, cancelarDemanda, reatribuir, confirmarParada,
     despacharPendentes, estadoMotoboy, estadoAdmin, trilha, relatorio, rotina,
     importarWhatsapp, listarConversas, mensagensDaConversa, excluirConversa,
-    aoEvento, cotar, foraDoHorario, criarPedido, liberarDemanda, fecharPedido, pedidoPublico, relatorioClientes, relatorioEntregas,
+    aoEvento, cotar, foraDoHorario, criarPedido, liberarDemanda, fecharPedido, definirContato, pedidoPublico, relatorioClientes, relatorioEntregas,
     listarServicos, salvarServico, listarClientes, salvarCliente, registrarPix, marcarPago,
     responderOferta, encerrarPeloMotoboy, modoPagamento,
     interno: { q, tx, cfgBruta, auditar, agora, exigirNaoBloqueado, registrarFalha },
