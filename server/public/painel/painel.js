@@ -165,6 +165,7 @@ async function designar(demanda, motoboyId) {
 function focarDemanda(d) {
   demandaFocada = demandaFocada === d.id ? null : d.id;
   desenharMapa();
+  desenharLateral();
   if (demandaFocada == null || d.coleta_lat == null) return;
   const pts = [[d.coleta_lat, d.coleta_lon], [d.entrega_lat, d.entrega_lon]].filter((p) => p[0] != null);
   mapa.fitBounds(pts, { padding: [60, 60], maxZoom: 16 });
