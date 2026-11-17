@@ -334,7 +334,10 @@ function desenharMapa() {
 
   if (!enquadrado) {
     enquadrado = true;
-    if (limites.length) mapa.fitBounds(limites, { padding: [40, 40], maxZoom: 15 });
+    // Ponto localizado errado (ex.: endereço sem cidade achado em outro estado) não arrasta o mapa para longe.
+    const centro = [estado.mapa.lat, estado.mapa.lon];
+    const perto = limites.filter((p) => kmEntre(centro, p) < 150);
+    if (perto.length) mapa.fitBounds(perto, { padding: [40, 40], maxZoom: 15 });
     else mapa.setView([estado.mapa.lat, estado.mapa.lon], 12);
   }
 }
