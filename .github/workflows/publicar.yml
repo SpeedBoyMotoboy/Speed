@@ -1,0 +1,67 @@
+name: Publicar na VPS
+
+# A cada mudança juntada na branch principal: roda os testes e, se passarem, atualiza a VPS.
+# Também dá para rodar à mão em Actions → Publicar na VPS → Run workflow.
+on:
+  push:
+    branches:
+      - claude/motoboy-tracking-app-t4fcoj
+    paths:
+      - 'server/**'
+      - 'Dockerfile'
+      - 'deploy/atualizar.sh'
+      - '.github/workflows/publicar.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publicar-vps
+  cancel-in-progress: false
+
+jobs:
+  testes:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - run: npm test
+        env:
+          TZ: America/Sao_Paulo
+
+  publicar:
+    needs: testes
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_PORTA: ${{ secrets.VPS_PORTA }}
+      VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+      VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+    steps:
+      - name: Conferir os segredos
+        id: segredos
+        run: |
+          if [ -z "$VPS_HOST" ] || [ -z "$VPS_SSH_KEY" ] || [ -z "$VPS_KNOWN_HOSTS" ]; then
+            echo "::warning::Publicação automática ainda não configurada (faltam VPS_HOST, VPS_KNOWN_HOSTS ou VPS_SSH_KEY). Veja deploy/preparar-atualizacao-automatica.sh."
+            echo "pronto=0" >> "$GITHUB_OUTPUT"
+          else
+            echo "pronto=1" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Atualizar a VPS
+        if: steps.segredos.outputs.pronto == '1'
+        run: |
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/chave
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          # A chave só roda deploy/atualizar.sh na VPS (comando fixo no authorized_keys).
+          ssh -i ~/.ssh/chave -p "${VPS_PORTA:-22}" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=20 -o ServerAliveInterval=30 "root@$VPS_HOST" true

@@ -75,6 +75,15 @@ Comandos:
 | Log | `docker logs --tail 100 despacho-speed-1` |
 | Reiniciar | `cd /docker/despacho && docker compose restart` |
 | Instalar WhatsApp (Evolution) | `bash /opt/speed-src/deploy/whatsapp-instalar.sh` |
+| Atualizar (script, com cópia do banco) | `bash /opt/speed-src/deploy/atualizar.sh` |
+
+**Publicação automática (GitHub → VPS).** A cada mudança juntada na branch principal (`claude/motoboy-tracking-app-t4fcoj`), o GitHub roda os testes e, se passarem, manda a VPS rodar `deploy/atualizar.sh`: cópia do banco em `/root/speed-backups` (30 últimas), baixa a versão, compila e troca o contêiner. Se a compilação falhar, o sistema no ar continua como estava. Dá para disparar à mão em GitHub → Actions → **Publicar na VPS** → Run workflow.
+
+- Preparar (uma vez, na VPS): `bash /opt/speed-src/deploy/preparar-atualizacao-automatica.sh`. Cria a chave `/root/.ssh/speed-github`, que só consegue rodar a atualização, e mostra os valores a cadastrar.
+- Segredos no GitHub (Settings → Secrets and variables → Actions): `VPS_HOST`, `VPS_PORTA`, `VPS_KNOWN_HOSTS`, `VPS_SSH_KEY`.
+- Sem os segredos, o GitHub só roda os testes e avisa que falta configurar.
+- Desligar: apagar a linha `speed-github-publicar` de `/root/.ssh/authorized_keys`.
+- A pasta `/opt/speed-src` passa a ficar idêntica à branch principal (mudança feita à mão nela é desfeita).
 
 ## 4. Código
 
