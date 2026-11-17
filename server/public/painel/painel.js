@@ -694,7 +694,9 @@ async function desenharWhatsapp(mensagemAviso = '') {
     onclick: () => { conversaAberta = c.id; desenharWhatsapp(); },
   },
   h('div', { class: 'titulo' }, c.nome,
-    c.pendente ? chip('Esperando atendente', 'sem_sinal') : c.telefone && chip(c.humano ? 'Atendente' : 'Robô', c.humano ? 'aguardando' : 'entregue')),
+    c.pendente ? chip('Esperando atendente', 'sem_sinal')
+      : c.pausa_ate > Date.now() ? chip('Atendendo pelo app', 'aguardando')
+        : c.telefone && chip(c.humano ? 'Atendente' : 'Robô', c.humano ? 'aguardando' : 'entregue')),
   h('div', { class: 'sub' }, `${c.total} mensagens`, c.primeira ? ` · ${dataHora(c.primeira)} a ${dataHora(c.ultima)}` : ''),
   c.demandas > 0 && h('div', { class: 'sub' }, `${c.demandas} viraram demanda`)));
 
@@ -876,9 +878,16 @@ async function desenharIa(mensagem = '') {
 
   trocar(els.pagina,
     h('h2', null, 'Analisar com IA'),
-    h('p', { class: 'nota' }, estado?.ia.ligada
-      ? 'Envie fotos (print de conversa, pedido anotado, comprovante de Pix), PDF ou conversa exportada do WhatsApp (.txt ou .zip). A IA lê, lista os pedidos prontos para virar demanda e confere comprovantes. O arquivo não fica guardado: só o resultado.'
-      : 'A IA está desligada. Cole a chave em Configurações → Conferência dos pedidos por IA para usar esta tela.'),
+    h('p', { class: 'nota' }, 'Envie fotos (print de conversa, pedido anotado, comprovante de Pix), PDF ou conversa exportada do WhatsApp (.txt ou .zip). A IA lê, lista os pedidos prontos para virar demanda e confere comprovantes. O arquivo não fica guardado: só o resultado.'),
+    !estado?.ia.ligada && h('div', { class: 'cartao alerta' },
+      h('div', { class: 'titulo' }, 'A IA está instalada, mas desligada: falta a chave'),
+      h('ol', { class: 'lista' },
+        h('li', null, 'Entre em console.anthropic.com com sua conta.'),
+        h('li', null, 'Em Billing, coloque crédito (é pago por uso, separado da assinatura do Claude).'),
+        h('li', null, 'Em API Keys, clique em Create Key e copie a chave (começa com sk-ant-; aparece uma vez só).'),
+        h('li', null, 'Em Configurações → Conferência dos pedidos por IA: cole a chave, salve e clique em "Testar a IA".')),
+      h('div', { class: 'acoes' }, h('button', { class: 'pequeno primario', onclick: () => abrirAba('config') }, 'Abrir Configurações'))),
+    estado?.ia.erro && h('div', { class: 'cartao alerta' }, h('div', { class: 'titulo' }, 'Último erro da IA'), h('div', { class: 'sub' }, estado.ia.erro)),
     h('div', { class: 'cartao' },
       entrada,
       h('div', { class: 'linha' }, h('button', { onclick: () => entrada.click() }, 'Escolher arquivos (até 6)'), escolhidos),
@@ -1158,11 +1167,16 @@ async function desenharConfig() {
     h('div', { class: 'nota' }, '"Cliente vê o motoboy no mapa": antes de ligar, inclua isso no termo do motoboy (abaixo).'),
 
     h('h3', null, 'WhatsApp automático (robô de pedidos, avisos ao cliente e convocação)'),
+    h('div', { class: 'cartao alerta' },
+      h('div', { class: 'titulo' }, 'Só conexão oficial da Meta'),
+      h('div', { class: 'sub' }, 'Nunca ligue o número por QR code do WhatsApp Web (Evolution, Baileys, whatsapp-web.js, Whapi e afins): a Meta pode banir o número. Use a WhatsApp Cloud API em coexistência: o mesmo número continua no app WhatsApp Business do celular e a API funciona junto.')),
     h('div', { class: 'grade3' },
-      opcao('whats_provedor', 'Conexão', [['', 'Desligado'], ['evolution', 'Evolution API (número comum, QR code)'], ['meta', 'WhatsApp Cloud API (oficial da Meta)'], ['webhook', 'Outro (n8n, Make)']]),
-      texto('whats_url', 'Endereço do servidor de WhatsApp', { maxlength: 300, placeholder: 'https://evolution.seudominio.com' }),
-      texto('whats_instancia', 'Instância (Evolution) ou ID do número (Meta)', { maxlength: 120 }),
-      texto('whats_token', c.whats_token_definido ? 'Chave de acesso (já salva; vazio mantém)' : 'Chave de acesso (API key / token)', { type: 'password', autocomplete: 'off', value: '' }),
+      opcao('whats_provedor', 'Conexão', [['', 'Desligado'], ['meta', 'WhatsApp Cloud API oficial da Meta (coexistência)'], ['webhook', 'Outro (n8n, Make) ligado a provedor OFICIAL']]),
+      texto('whats_url', 'Endereço da API (vazio = Meta direto)', { maxlength: 300, placeholder: 'https://graph.facebook.com/v21.0' }),
+      texto('whats_instancia', 'ID do número (Phone Number ID)', { maxlength: 120 }),
+      texto('whats_token', c.whats_token_definido ? 'Token de acesso (já salvo; vazio mantém)' : 'Token de acesso permanente', { type: 'password', autocomplete: 'off', value: '' }),
+      texto('whats_app_secret', c.whats_app_secret_definido ? 'App Secret (já salvo; vazio mantém)' : 'App Secret (confere a assinatura da Meta)', { type: 'password', autocomplete: 'off', value: '' }),
+      num('robo_pausa_horas', 'Robô fica calado após resposta pelo app (horas)'),
       texto('admin_telefone', 'WhatsApp do responsável (recebe avisos)', { inputmode: 'tel', placeholder: '(11) 99999-0000' }),
       texto('url_publica', 'Endereço deste sistema (para os links)', { maxlength: 200, placeholder: location.origin }),
       opcao('robo_ativo', 'Robô atende e monta o pedido sozinho'),
@@ -1170,7 +1184,7 @@ async function desenharConfig() {
       opcao('convocacao_auto', 'Convocar motoboy sozinho quando faltar gente'),
       num('convocacao_auto_max', 'Máx. de convocações automáticas por dia'),
       num('convocacao_auto_espera_min', 'Demanda esperando há (min) para convocar')),
-    h('div', { class: 'nota' }, 'No provedor de WhatsApp, cadastre este endereço como webhook de mensagens recebidas (na Meta, o "token de verificação" é o trecho depois de s=):'),
+    h('div', { class: 'nota' }, 'Na Meta: cadastre este endereço como URL de retorno do webhook; o "token de verificação" é o trecho depois de s=. Assine os campos messages e smb_message_echoes (este último é o que avisa quando alguém responde pelo app do celular; aí o robô se cala naquela conversa). Fora da janela de 24 h a Meta só aceita modelo aprovado: avisos e convocações para quem não escreveu recentemente podem não chegar.'),
     h('div', { class: 'codigo' }, webhook),
     h('div', { class: 'nota' }, 'Cada convocação automática gera uma diária: o limite por dia protege seu caixa. Salve antes de testar.'),
     h('div', { class: 'linha' },

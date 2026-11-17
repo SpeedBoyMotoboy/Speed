@@ -229,12 +229,14 @@ export const CONFIG_PADRAO = {
   rastreio_cliente: '0',
   atendimento_inicio: '',
   atendimento_fim: '',
-  // WhatsApp automático: '' (desligado), 'evolution', 'meta' ou 'webhook' (n8n/Make).
+  // WhatsApp automático: '' (desligado), 'meta' (Cloud API oficial) ou 'webhook' (n8n/Make ligado a provedor oficial).
   whats_provedor: '',
   whats_url: '',
   whats_instancia: '',
   whats_token: '',
   whats_segredo: '',
+  whats_app_secret: '', // App Secret da Meta: confere a assinatura de cada aviso
+  robo_pausa_horas: '12', // coexistência: o robô fica calado na conversa que a empresa respondeu pelo app
   robo_ativo: '1',
   avisos_cliente: '1',
   admin_telefone: '',
@@ -286,7 +288,9 @@ const COLUNAS_NOVAS = {
   conversas: {
     telefone: 'TEXT', destino: 'TEXT', etapa: "TEXT NOT NULL DEFAULT ''", dados: "TEXT NOT NULL DEFAULT '{}'",
     humano: 'INTEGER NOT NULL DEFAULT 0', pendente: 'INTEGER NOT NULL DEFAULT 0', etapa_em: 'INTEGER',
+    pausa_ate: 'INTEGER',
   },
+  saida: { msg_id: 'TEXT' },
   mensagens: { direcao: "TEXT NOT NULL DEFAULT ''" },
 };
 
@@ -301,7 +305,10 @@ function migrar(db) {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_demandas_codigo ON demandas(codigo) WHERE codigo IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_demandas_telefone ON demandas(cliente_telefone, criada_em);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_conversas_telefone ON conversas(telefone) WHERE telefone IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_saida_msg ON saida(msg_id) WHERE msg_id IS NOT NULL;
   `);
+  // Conexão pelo WhatsApp Web (Evolution) foi removida: quem estava nela fica desligado.
+  db.exec("UPDATE config SET valor = '' WHERE chave = 'whats_provedor' AND valor = 'evolution'");
 }
 
 export function abrirBanco(arquivo) {

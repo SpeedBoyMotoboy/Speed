@@ -8,7 +8,8 @@ import { abrirBanco } from '../src/db.js';
 import { criarServico } from '../src/servico.js';
 import { criarAtendimento } from '../src/atendimento.js';
 import { criarApp } from '../src/app.js';
-import { interpretar, normalizarTelefone, destinoDe, enviar } from '../src/mensageiro.js';
+import crypto from 'node:crypto';
+import { interpretar, normalizarTelefone, destinoDe, enviar, assinaturaMetaConfere } from '../src/mensageiro.js';
 import { brCode, crc16, normalizarChave } from '../src/pix.js';
 import { criarIA } from '../src/ia.js';
 
@@ -89,36 +90,154 @@ test('telefones: normaliza DDI, nono dígito e ids do WhatsApp', () => {
   assert.equal(normalizarTelefone('1133334444'), '1133334444', 'fixo fica como está');
   assert.equal(normalizarTelefone('123'), '');
   assert.equal(destinoDe('11977770001'), '5511977770001');
-  assert.equal(destinoDe('553188887777@s.whatsapp.net'), '553188887777');
 });
 
-test('webhooks: entende Evolution, Meta e ignora grupo e mensagem própria', () => {
-  const evo = (key, message, extra = {}) => ({ event: 'messages.upsert', data: { key, pushName: 'Carla', message, ...extra } });
-  assert.deepEqual(interpretar('evolution', evo({ remoteJid: '5511977770001@s.whatsapp.net', fromMe: false }, { conversation: 'oi' })),
-    [{ telefone: '11977770001', destino: '5511977770001', nome: 'Carla', texto: 'oi', lat: null, lon: null }]);
-  assert.equal(interpretar('evolution', evo({ remoteJid: '5511977770001@s.whatsapp.net', fromMe: true }, { conversation: 'oi' })).length, 0);
-  assert.equal(interpretar('evolution', evo({ remoteJid: '12345@g.us', fromMe: false }, { conversation: 'oi' })).length, 0);
-  assert.equal(interpretar('evolution', { event: 'connection.update', data: {} }).length, 0);
-  const local = interpretar('evolution', evo({ remoteJid: '5511977770001@s.whatsapp.net' }, { locationMessage: { degreesLatitude: -23.5, degreesLongitude: -46.6 } }));
-  assert.equal(local[0].lat, -23.5);
-  const meta = interpretar('meta', { entry: [{ changes: [{ value: {
+test('webhooks: Meta (mensagens e ecos do app) e genérico; Evolution não existe mais', () => {
+  const meta = (field, value) => ({ object: 'whatsapp_business_account', entry: [{ changes: [{ field, value }] }] });
+  const r = interpretar('meta', meta('messages', {
     contacts: [{ wa_id: '5511977770001', profile: { name: 'Carla' } }],
-    messages: [{ from: '5511977770001', type: 'text', text: { body: 'quero um motoboy' } }],
-  } }] }] });
-  assert.deepEqual(meta.map((m) => [m.telefone, m.nome, m.texto]), [['11977770001', 'Carla', 'quero um motoboy']]);
+    messages: [
+      { from: '5511977770001', id: 'wamid.A', type: 'text', text: { body: 'quero um motoboy' } },
+      { from: '5511977770001', id: 'wamid.B', type: 'location', location: { latitude: -20.33, longitude: -40.29 } },
+      { from: '5511977770001', id: 'wamid.C', type: 'reaction', reaction: { emoji: '👍' } },
+    ],
+  }));
+  assert.deepEqual(r.map((m) => [m.telefone, m.nome, m.texto, m.lat]), [['11977770001', 'Carla', 'quero um motoboy', null], ['11977770001', 'Carla', '', -20.33]]);
+  assert.equal(interpretar('meta', meta('messages', { statuses: [{ id: 'wamid.X', status: 'delivered' }] })).length, 0, 'status de entrega não vira mensagem');
+  assert.equal(interpretar('meta', meta('smb_app_state_sync', { state_sync: [] })).length, 0);
+  assert.equal(interpretar('meta', meta('history', { history: [] })).length, 0);
+  // Coexistência: o que a empresa manda pelo app chega como eco (from = empresa, to = cliente).
+  const eco = interpretar('meta', meta('smb_message_echoes', {
+    messaging_product: 'whatsapp', metadata: { display_phone_number: '5527999165959', phone_number_id: '123' },
+    message_echoes: [
+      { from: '5527999165959', to: '5511977770001', id: 'wamid.E1', timestamp: '1700255121', type: 'text', text: { body: 'Oi Carla, já vou ver' } },
+      { from: '5527999165959', to: '5511977770001', id: 'wamid.E2', timestamp: '1700255122', type: 'image', image: { id: '99' } },
+    ],
+  }));
+  assert.deepEqual(eco.map((m) => [m.eco, m.id, m.telefone, m.destino, m.texto]), [
+    [true, 'wamid.E1', '11977770001', '5511977770001', 'Oi Carla, já vou ver'],
+    [true, 'wamid.E2', '11977770001', '5511977770001', '(image enviada pelo app)'],
+  ]);
+  assert.equal(interpretar('meta', { object: 'page', entry: [] }).length, 0);
+  assert.equal(interpretar('evolution', { event: 'messages.upsert', data: { key: { remoteJid: '5511977770001@s.whatsapp.net' }, message: { conversation: 'oi' } } }).length, 0);
+  assert.deepEqual(interpretar('webhook', { telefone: '5511977770001', nome: 'Carla', texto: 'oi' }).map((m) => m.texto), ['oi']);
 });
 
-test('envio: monta a chamada certa para cada provedor', async () => {
+test('assinatura da Meta: HMAC-SHA256 do corpo original com o App Secret', () => {
+  const corpo = Buffer.from('{"object":"whatsapp_business_account","entry":[]}');
+  const certa = `sha256=${crypto.createHmac('sha256', 'segredo-do-app').update(corpo).digest('hex')}`;
+  assert.equal(assinaturaMetaConfere('segredo-do-app', corpo, certa), true);
+  assert.equal(assinaturaMetaConfere('outro', corpo, certa), false);
+  assert.equal(assinaturaMetaConfere('segredo-do-app', Buffer.from('{"object":"x"}'), certa), false, 'corpo alterado');
+  assert.equal(assinaturaMetaConfere('segredo-do-app', corpo, ''), false);
+  assert.equal(assinaturaMetaConfere('', corpo, certa), false);
+});
+
+test('envio: Meta devolve o id; fora da janela de 24 h é erro definitivo; Evolution não envia', async () => {
   const chamadas = [];
-  const buscar = async (url, opcoes) => { chamadas.push({ url, ...opcoes, body: JSON.parse(opcoes.body) }); return { ok: true }; };
-  await enviar({ whats_provedor: 'evolution', whats_url: 'http://evo:8080/', whats_instancia: 'speed', whats_token: 'k' }, '5511977770001', 'oi', buscar);
-  assert.equal(chamadas[0].url, 'http://evo:8080/message/sendText/speed');
-  assert.equal(chamadas[0].headers.apikey, 'k');
-  assert.deepEqual(chamadas[0].body, { number: '5511977770001', text: 'oi' });
-  await enviar({ whats_provedor: 'meta', whats_url: '', whats_instancia: '999', whats_token: 't' }, '5511977770001', 'oi', buscar);
-  assert.match(chamadas[1].url, /graph\.facebook\.com\/v[\d.]+\/999\/messages$/);
-  assert.equal(chamadas[1].body.text.body, 'oi');
-  await assert.rejects(enviar({ whats_provedor: 'webhook', whats_url: 'http://x' }, '55', 'oi', async () => ({ ok: false, status: 500, text: async () => 'caiu' })), /500/);
+  const ok = async (url, opcoes) => { chamadas.push({ url, ...opcoes, body: JSON.parse(opcoes.body) }); return { ok: true, text: async () => '{"messages":[{"id":"wamid.OK"}]}' }; };
+  assert.equal(await enviar({ whats_provedor: 'meta', whats_url: '', whats_instancia: '999', whats_token: 't' }, '5511977770001', 'oi', ok), 'wamid.OK');
+  assert.match(chamadas[0].url, /graph\.facebook\.com\/v[\d.]+\/999\/messages$/);
+  assert.equal(chamadas[0].headers.Authorization, 'Bearer t');
+  assert.deepEqual([chamadas[0].body.to, chamadas[0].body.type, chamadas[0].body.text.body], ['5511977770001', 'text', 'oi']);
+  const janela = async () => ({ ok: false, status: 400, text: async () => '{"error":{"code":131047,"message":"Re-engagement message"}}' });
+  await assert.rejects(enviar({ whats_provedor: 'meta', whats_instancia: '9', whats_token: 't' }, '55', 'oi', janela), (e) => e.definitivo === true && /24 h/.test(e.message));
+  await assert.rejects(enviar({ whats_provedor: 'meta', whats_instancia: '9', whats_token: '' }, '55', 'oi', ok), /token/);
+  await assert.rejects(enviar({ whats_provedor: 'webhook', whats_url: 'http://x' }, '55', 'oi', async () => ({ ok: false, status: 500, text: async () => 'caiu' })), (e) => /500/.test(e.message) && !e.definitivo);
+  await assert.rejects(enviar({ whats_provedor: 'evolution', whats_url: 'http://evo' }, '55', 'oi', ok), /desligado/);
+});
+
+test('coexistência: resposta pelo app cala o robô naquele contato; eco do próprio sistema é ignorado', async () => {
+  const relogio = { t: Date.parse('2026-03-10T09:00:00-03:00') };
+  const s = criarServico({ db: abrirBanco(':memory:'), agora: () => relogio.t });
+  const enviadas = [];
+  let n = 0;
+  const a = criarAtendimento({ servico: s, enviar: async (c, destino, texto) => { enviadas.push({ destino, texto }); return `wamid.S${++n}`; } });
+  s.salvarConfig({ whats_provedor: 'meta', whats_instancia: '123', whats_token: 'token', admin_telefone: '11988880000', robo_pausa_horas: 2 }, 'teste');
+  const meta = (field, value) => ({ object: 'whatsapp_business_account', entry: [{ changes: [{ field, value }] }] });
+  const doCliente = (texto) => a.receber(meta('messages', { contacts: [{ wa_id: '5511977770001', profile: { name: 'Carla' } }], messages: [{ from: '5511977770001', type: 'text', text: { body: texto } }] }));
+  const doApp = (id, texto) => a.receber(meta('smb_message_echoes', { message_echoes: [{ from: '5527999165959', to: '5511977770001', id, type: 'text', text: { body: texto } }] }));
+
+  await doCliente('oi');
+  assert.match(enviadas.at(-1).texto, /Pedir um motoboy/, 'sem ninguém no app, o robô atende');
+  // O eco da resposta que o próprio robô mandou (mesmo id) não pausa nada.
+  await doApp('wamid.S1', 'texto do robô');
+  const conversa = () => s.listarConversas()[0];
+  assert.equal(conversa().pausa_ate, null);
+
+  // Luan responde pelo celular: fica registrado e o robô se cala.
+  enviadas.length = 0;
+  await doApp('wamid.APP1', 'Oi Carla, aqui é o Luan');
+  assert.equal(enviadas.length, 0, 'eco nunca gera resposta');
+  assert.equal(conversa().pausa_ate, relogio.t + 2 * 3_600_000);
+  const msgs = s.mensagensDaConversa(conversa().id);
+  assert.deepEqual([msgs[0].autor, msgs[0].texto, msgs[0].direcao], ['Empresa (app)', 'Oi Carla, aqui é o Luan', 'saida']);
+  await doCliente('1');
+  await doCliente('menu');
+  assert.equal(enviadas.length, 0, 'enquanto o Luan atende pelo app, o robô não responde nem a "menu"');
+  assert.equal(conversa().pendente, 0, 'não vira pendência no painel: ele já está atendendo');
+
+  // Passou o tempo da pausa: o robô volta.
+  relogio.t += 2 * 3_600_000 + 1;
+  await doCliente('oi');
+  assert.match(enviadas.at(-1).texto, /Pedir um motoboy/);
+
+  // "Devolver ao robô" no painel também tira a pausa na hora.
+  await doApp('wamid.APP2', 'Mais alguma coisa?');
+  a.modoConversa(conversa().id, false);
+  enviadas.length = 0;
+  await doCliente('oi');
+  assert.equal(enviadas.length, 1);
+});
+
+test('fila: erro definitivo da Meta (janela de 24 h) não é repetido', async () => {
+  const relogio = { t: Date.parse('2026-03-10T09:00:00-03:00') };
+  const s = criarServico({ db: abrirBanco(':memory:'), agora: () => relogio.t });
+  let chamadas = 0;
+  const a = criarAtendimento({ servico: s, enviar: async () => { chamadas++; throw Object.assign(new Error('Fora da janela de 24 h'), { definitivo: true }); } });
+  s.salvarConfig({ whats_provedor: 'meta', whats_instancia: '1', whats_token: 't', admin_telefone: '11988880000' }, 'teste');
+  s.convocar(s.criarMotoboy({ nome: 'Ana', telefone: '11999990001', pin: '123456', veiculo: 'moto' }, 'teste'), 'teste');
+  await a.despacharSaida();
+  relogio.t += 60 * 60_000;
+  await a.despacharSaida();
+  assert.equal(chamadas, 1);
+  assert.match(a.resumo().whatsapp.ultimo_erro, /24 h/);
+});
+
+test('HTTP: com App Secret, o webhook só aceita aviso assinado pela Meta', async (t) => {
+  const servico = criarServico({ db: abrirBanco(':memory:') });
+  const enviadas = [];
+  const atendimento = criarAtendimento({ servico, enviar: async (c, d, texto) => { enviadas.push(texto); return 'wamid.1'; } });
+  const app = criarApp({ servico, atendimento, geocodificar: null });
+  await new Promise((ok) => app.listen(0, '127.0.0.1', ok));
+  t.after(() => app.close());
+  servico.salvarConfig({ whats_provedor: 'meta', whats_instancia: '1', whats_token: 't', whats_app_secret: 'segredo-do-app' }, 'teste');
+  assert.equal(servico.lerConfig().whats_app_secret, undefined, 'App Secret nunca volta para o navegador');
+  assert.equal(servico.lerConfig().whats_app_secret_definido, true);
+  const base = `http://127.0.0.1:${app.address().port}/api/whatsapp/webhook`;
+  const corpo = JSON.stringify({ object: 'whatsapp_business_account', entry: [{ changes: [{ field: 'messages', value: { messages: [{ from: '5511977770001', type: 'text', text: { body: 'oi' } }] } }] }] });
+  const assinar = (texto) => `sha256=${crypto.createHmac('sha256', 'segredo-do-app').update(texto).digest('hex')}`;
+  const segredo = servico.lerConfig().whats_segredo;
+  const post = (headers) => fetch(`${base}?s=${segredo}`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: corpo });
+  assert.equal((await post({})).status, 403, 'segredo do endereço sozinho não basta com App Secret salvo');
+  assert.equal((await post({ 'X-Hub-Signature-256': assinar(corpo + ' ') })).status, 403);
+  assert.equal((await post({ 'X-Hub-Signature-256': assinar(corpo) })).status, 200);
+  for (let i = 0; i < 50 && !enviadas.length; i++) await new Promise((ok) => setTimeout(ok, 10));
+  assert.match(enviadas[0], /Pedir um motoboy/);
+  const verificacao = await fetch(`${base}?hub.mode=subscribe&hub.verify_token=${segredo}&hub.challenge=777`);
+  assert.equal(await verificacao.text(), '777');
+});
+
+test('banco: quem estava ligado na Evolution fica desligado ao atualizar', () => {
+  const arquivo = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'speed-')), 'speed.db');
+  const db = abrirBanco(arquivo);
+  db.prepare("UPDATE config SET valor = 'evolution' WHERE chave = 'whats_provedor'").run();
+  db.close();
+  const db2 = abrirBanco(arquivo);
+  assert.equal(db2.prepare("SELECT valor FROM config WHERE chave = 'whats_provedor'").get().valor, '');
+  const s2 = criarServico({ db: db2 });
+  assert.throws(() => s2.salvarConfig({ whats_provedor: 'evolution' }, 'teste'), { codigo: 'config_invalida' });
+  db2.close();
 });
 
 test('robô: conversa completa vira pedido, despacha e avisa cliente a cada etapa', async () => {
