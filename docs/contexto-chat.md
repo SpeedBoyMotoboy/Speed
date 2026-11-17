@@ -104,7 +104,7 @@ Ver log: `docker logs --tail 100 despacho-speed-1`. O banco antigo é atualizado
 1. Atualizar a VPS (seção 6) e confirmar que aparece a aba **IA**.
 2. Colar a chave da IA e clicar em "Testar a IA".
 3. Configurações: chave Pix (tipo, chave, nome, cidade), WhatsApp do comprovante, "Antes de despachar" = "Cliente paga no meu Pix e manda o comprovante", preços, valor de cada tipo de serviço, cidade base `Espírito Santo`, centro do mapa `-20.3358`, `-40.2969`, horário (seg a sex 7h–22h, coletas até 18h), diária.
-4. Ligar o WhatsApp automático (escolher Evolution ou Meta).
+4. Ligar o WhatsApp: `bash /opt/speed-src/deploy/whatsapp-instalar.sh` na VPS (sobe a Evolution, liga ao painel, mostra o código para conectar o celular; não testado na VPS real). Site: botão para `https://despacho.srv2150999.hstgr.cloud/pedir/` (equipe do site).
 5. Cadastrar motoboys (diária ou avulso). Gerar APK (variável `SPEED_SERVIDOR` no GitHub).
 6. Revisar o termo do motoboy com advogado/contador (não cobre o avulso; risco de vínculo).
 7. Fazer um Pix de valor baixo lendo o QR no app do banco antes de divulgar.

@@ -1,5 +1,13 @@
 # WhatsApp com Evolution API na mesma VPS
 
+**Jeito fácil (recomendado):** depois de atualizar o Speed Despacho, rode no Console web da VPS:
+
+```bash
+bash /opt/speed-src/deploy/whatsapp-instalar.sh
+```
+
+O script sobe a Evolution (versão fixa v2.3.7), cria a conexão `speed` já apontando para o sistema, grava a chave no painel sozinho e mostra o código para conectar o celular. Pergunta antes de ligar o robô. O passo a passo manual abaixo fica como referência.
+
 Guia de partida. **Não foi testado nesta VPS**: confira as variáveis na documentação oficial
 (https://doc.evolution-api.com) antes de subir, porque mudam entre versões.
 
