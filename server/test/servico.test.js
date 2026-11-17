@@ -37,6 +37,7 @@ test('login só com convocação, termo aceito e senha certa', () => {
   const { s, novoMotoboy } = montar();
   const id = novoMotoboy('Ana', '11999990001');
   const dados = { telefone: '(11) 99999-0001', pin: '123456', aceito_termo: true, dispositivo: 'a', origem: 'app' };
+  s.salvarConfig({ convocacao_obrigatoria: '1' }, 'teste');
   assert.throws(() => s.loginMotoboy(dados, 'ip'), { codigo: 'sem_convocacao' });
   s.convocar(id, 'teste');
   assert.throws(() => s.loginMotoboy({ ...dados, aceito_termo: false }, 'ip'), { codigo: 'termo_obrigatorio' });

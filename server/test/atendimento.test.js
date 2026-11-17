@@ -1034,3 +1034,13 @@ test('pedido do site sem telefone: contato chega depois pelo WhatsApp', async ()
   assert.equal(demandas().find((d) => d.id === r.id).cliente_telefone, '27999990000');
   assert.equal(s.definirContato(r.id, '5527988880000', 'api').definido, false, 'não troca contato já definido');
 });
+
+test('diária entra sem convocação, salvo se a convocação for obrigatória', () => {
+  const s = criarServico({ db: abrirBanco(':memory:') });
+  s.criarMotoboy({ nome: 'Beto', telefone: '27999990011', pin: '123456', veiculo: 'moto' }, 'teste');
+  const r = s.loginMotoboy({ telefone: '27999990011', pin: '123456', aceito_termo: true, dispositivo: 'a' });
+  assert.ok(r.token, 'entrou sem convocação');
+  s.criarMotoboy({ nome: 'Caio', telefone: '27999990012', pin: '123456', veiculo: 'moto' }, 'teste');
+  s.salvarConfig({ convocacao_obrigatoria: '1' }, 'teste');
+  assert.throws(() => s.loginMotoboy({ telefone: '27999990012', pin: '123456', aceito_termo: true, dispositivo: 'b' }), { codigo: 'sem_convocacao' });
+});

@@ -45,7 +45,7 @@ const CFG_TXT = {
 const SIM_NAO = ['0', '1'];
 const CFG_OPC = {
   pedidos_site: SIM_NAO, rastreio_cliente: SIM_NAO, robo_ativo: SIM_NAO, avisos_cliente: SIM_NAO,
-  convocacao_auto: SIM_NAO, site_confirmacao: ['painel', 'whatsapp', 'pagamento', 'pix', 'nenhuma'], whats_provedor: PROVEDORES,
+  convocacao_auto: SIM_NAO, convocacao_obrigatoria: SIM_NAO, site_confirmacao: ['painel', 'whatsapp', 'pagamento', 'pix', 'nenhuma'], whats_provedor: PROVEDORES,
   ia_ativa: SIM_NAO, ia_modelo: MODELOS_IA, pix_tipo: TIPOS_CHAVE,
 };
 const CFG_HORA = ['atendimento_inicio', 'atendimento_fim'];
@@ -455,10 +455,10 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
           q('UPDATE turnos SET dispositivo = ?, origem = ? WHERE id = ?').run(disp, fonte, turno.id);
         }
       } else {
-        // Avulso entra quando quiser; diária só no dia em que for convocado.
+        // Avulso entra quando quiser; diária só no dia em que for convocado, se a convocação for obrigatória.
         const avulso = m.tipo === 'avulso';
         const conv = avulso ? null : convocacaoValida(m.id);
-        if (!avulso && !conv) {
+        if (!avulso && !conv && cfgBruta().convocacao_obrigatoria === '1') {
           throw new Erro(403, 'sem_convocacao', 'Você não foi convocado hoje. Aguarde o chamado da Speed.');
         }
         const t = agora();

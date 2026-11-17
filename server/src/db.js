@@ -241,6 +241,8 @@ export const CONFIG_PADRAO = {
   avisos_cliente: '1',
   admin_telefone: '',
   convocacao_auto: '0',
+  // Diária só entra no dia em que for convocada? '0' = entra quando quiser (como o avulso, mas com turno fixo).
+  convocacao_obrigatoria: '0',
   convocacao_auto_max: '3',
   convocacao_auto_espera_min: '3',
   // Entrega urgente: prazo prometido na página, repasse ao motoboy avulso e ofertas.

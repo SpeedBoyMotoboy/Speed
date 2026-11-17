@@ -1255,6 +1255,7 @@ async function desenharConfig() {
       texto('url_publica', 'Endereço deste sistema (para os links)', { maxlength: 200, placeholder: location.origin }),
       opcao('robo_ativo', 'Robô atende e monta o pedido sozinho'),
       opcao('avisos_cliente', 'Avisar o cliente a cada etapa'),
+      opcao('convocacao_obrigatoria', 'Motoboy de diária só entra se for convocado'),
       opcao('convocacao_auto', 'Convocar motoboy sozinho quando faltar gente'),
       num('convocacao_auto_max', 'Máx. de convocações automáticas por dia'),
       num('convocacao_auto_espera_min', 'Demanda esperando há (min) para convocar')),
