@@ -137,6 +137,9 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
     return { id: d.id, status: d.status };
   });
 
+  // Pedido do site aceito pelo cliente (fechado no WhatsApp): grava o valor e libera para o motoboy.
+  rota('POST', '/api/entrada/demandas/:id/fechar', 'api', ({ p, corpo }) => servico.fecharPedido(p.id, corpo?.valor, 'api'));
+
   // -------------------------------------------------------------- motoboy
   rota('GET', '/api/motoboy/estado', 'motoboy', ({ turno }) => servico.estadoMotoboy(turno));
   rota('POST', '/api/motoboy/posicoes', 'motoboy', ({ turno, corpo }) => servico.registrarPosicoes(turno, corpo));

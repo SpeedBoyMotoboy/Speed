@@ -718,6 +718,25 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     });
     return true;
   }
+  // Pedido do site fechado por fora (ex.: cliente aceitou o valor no WhatsApp): grava o valor
+  // combinado, recalcula o repasse e solta para o motoboy. Só pedido retido e ainda aberto.
+  function fecharPedido(id, valorCombinado, ator) {
+    const d = q('SELECT * FROM demandas WHERE id = ?').get(id);
+    if (!d) throw new Erro(404, 'nao_encontrado', 'Demanda não encontrada.');
+    if (!d.retida || ['entregue', 'cancelada'].includes(d.status)) return { liberada: false, motivo: 'ja_liberada_ou_encerrada', status: d.status };
+    const valor = Number(valorCombinado);
+    if (valorCombinado != null && valorCombinado !== '') {
+      if (!Number.isFinite(valor) || valor <= 0 || valor > 100000) throw new Erro(422, 'valor_invalido', 'Valor inválido.');
+      const c = cfgBruta();
+      const serv = d.servico ? q('SELECT * FROM servicos WHERE nome = ?').get(d.servico) : null;
+      const pct = serv?.repasse_pct ?? Number(c.repasse_pct);
+      const repasse = Math.round(Math.max(Number(c.repasse_minimo), (valor * pct) / 100) * 100) / 100;
+      q('UPDATE demandas SET valor = ?, repasse = ? WHERE id = ?').run(Math.round(valor * 100) / 100, repasse, id);
+      auditar(ator, 'demanda_valor', `#${id} ${valor}`);
+    }
+    const r = liberarDemanda(id, ator);
+    return { liberada: r === true, status: q('SELECT status FROM demandas WHERE id = ?').get(id).status };
+  }
   // Pix gerado para o pedido (o código fica guardado para a página de acompanhamento mostrar).
   function registrarPix(id, { pagId, pix, qr, expira }) {
     q("UPDATE demandas SET pagamento = 'pendente', pag_id = ?, pag_pix = ?, pag_qr = ?, pag_expira = ? WHERE id = ?")
@@ -1341,7 +1360,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     criarDemanda, criarDemandaExterna, definirLocais, cancelarDemanda, reatribuir, confirmarParada,
     despacharPendentes, estadoMotoboy, estadoAdmin, trilha, relatorio, rotina,
     importarWhatsapp, listarConversas, mensagensDaConversa, excluirConversa,
-    aoEvento, cotar, foraDoHorario, criarPedido, liberarDemanda, pedidoPublico, relatorioClientes, relatorioEntregas,
+    aoEvento, cotar, foraDoHorario, criarPedido, liberarDemanda, fecharPedido, pedidoPublico, relatorioClientes, relatorioEntregas,
     listarServicos, salvarServico, listarClientes, salvarCliente, registrarPix, marcarPago,
     responderOferta, encerrarPeloMotoboy, modoPagamento,
     interno: { q, tx, cfgBruta, auditar, agora, exigirNaoBloqueado, registrarFalha },

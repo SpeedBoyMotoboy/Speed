@@ -1006,3 +1006,20 @@ test('IA: análise de arquivos monta imagem, PDF e texto na chamada e devolve o 
   assert.deepEqual([r.resumo, r.alertas, r.comprovante, r.pedidos[0].servico_id, r.pedidos[0].requisito], ['Resumo.', ['Olhar isso'], null, null, 'qualquer']);
   await assert.rejects(ia.analisar({ ia_chave: '' }, { arquivos: [], contexto: {}, pergunta: '' }), /chave da IA/);
 });
+
+test('pedido do site fechado no WhatsApp: grava valor, recalcula repasse e libera', () => {
+  const s = criarServico({ db: abrirBanco(':memory:') });
+  const d = s.criarPedido({
+    cliente: 'Loja Teste', telefone: '27999990000', descricao: 'caixa',
+    coleta: { endereco: 'Rua A, 1, Centro, Vila Velha', lat: -20.3357, lon: -40.2968 },
+    entrega: { endereco: 'Rua B, 2, Centro, Vitória', lat: -20.3186, lon: -40.3302 },
+  }, 'site', { retida: true });
+  assert.equal(d.retida, 1);
+  const r = s.fecharPedido(d.id, 40, 'api');
+  assert.equal(r.liberada, true);
+  const depois = s.estadoAdmin().demandas.find((x) => x.id === d.id);
+  assert.equal(depois.valor, 40);
+  assert.equal(depois.repasse, 24, '60% de 40');
+  assert.equal(s.fecharPedido(d.id, 50, 'api').liberada, false, 'não fecha duas vezes');
+  assert.throws(() => s.fecharPedido(9999, 10, 'api'), { codigo: 'nao_encontrado' });
+});
