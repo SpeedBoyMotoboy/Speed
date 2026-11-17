@@ -2,7 +2,7 @@
 // serviço e se há algo estranho no endereço ou na descrição. Só recebe o que precisa para isso
 // (endereços, descrição e tipos de serviço) - nunca nome ou telefone do cliente.
 import Anthropic from '@anthropic-ai/sdk';
-import { jsonSchemaOutputFormat } from '@anthropic-ai/sdk/helpers/json-schema';
+import { betaJSONSchemaOutputFormat } from '@anthropic-ai/sdk/helpers/beta/json-schema';
 
 export const MODELOS_IA = ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'];
 
@@ -104,7 +104,7 @@ export function criarIA({ criarCliente = (apiKey) => new Anthropic({ apiKey, tim
         max_tokens: maxTokens,
         system: instrucoes,
         messages: [{ role: 'user', content: conteudo }],
-        output_config: { effort: esforco, format: jsonSchemaOutputFormat(esquema) },
+        output_config: { effort: esforco, format: betaJSONSchemaOutputFormat(esquema) },
         // Se o filtro de segurança recusar por engano, a API tenta de novo em outro modelo (o Haiku não tem essa opção).
         ...(modelo === 'claude-haiku-5-5' ? {} : { betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' }),
       }, { timeout: tempoMs });
@@ -118,6 +118,7 @@ export function criarIA({ criarCliente = (apiKey) => new Anthropic({ apiKey, tim
       else if (e instanceof Anthropic.RateLimitError) ultimoErro = 'Limite de uso da IA atingido (ou sem crédito na conta).';
       else if (e instanceof Anthropic.APIConnectionError) ultimoErro = 'Não consegui falar com a IA (rede ou tempo esgotado).';
       else if (e instanceof Anthropic.APIError) ultimoErro = `A IA respondeu erro ${e.status ?? ''}: ${String(e.message).slice(0, 200)}`;
+      else if (/parse structured output/i.test(String(e.message))) ultimoErro = 'A IA respondeu fora do formato esperado. Tente de novo.';
       else ultimoErro = String(e.message || e).slice(0, 200);
       throw new Error(ultimoErro);
     }

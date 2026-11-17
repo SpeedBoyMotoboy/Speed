@@ -108,7 +108,7 @@ dialog h2 { margin-bottom: 6px; }
 .grade-whats input { margin-bottom: 8px; }
 .clicavel { cursor: pointer; }
 .cartao.saida { background: #f0fdf4; margin-left: 40px; }
-ul.lista { margin: 6px 0 0; padding-left: 18px; font-size: 13px; }
+ul.lista, ol.lista { margin: 6px 0 0; padding-left: 18px; font-size: 13px; }
 details.cartao summary { font-weight: 600; color: var(--texto); padding: 0; }
 .texto-msg { white-space: pre-wrap; color: var(--texto); font-size: 13.5px; }
 

@@ -876,9 +876,16 @@ async function desenharIa(mensagem = '') {
 
   trocar(els.pagina,
     h('h2', null, 'Analisar com IA'),
-    h('p', { class: 'nota' }, estado?.ia.ligada
-      ? 'Envie fotos (print de conversa, pedido anotado, comprovante de Pix), PDF ou conversa exportada do WhatsApp (.txt ou .zip). A IA lê, lista os pedidos prontos para virar demanda e confere comprovantes. O arquivo não fica guardado: só o resultado.'
-      : 'A IA está desligada. Cole a chave em Configurações → Conferência dos pedidos por IA para usar esta tela.'),
+    h('p', { class: 'nota' }, 'Envie fotos (print de conversa, pedido anotado, comprovante de Pix), PDF ou conversa exportada do WhatsApp (.txt ou .zip). A IA lê, lista os pedidos prontos para virar demanda e confere comprovantes. O arquivo não fica guardado: só o resultado.'),
+    !estado?.ia.ligada && h('div', { class: 'cartao alerta' },
+      h('div', { class: 'titulo' }, 'A IA está instalada, mas desligada: falta a chave'),
+      h('ol', { class: 'lista' },
+        h('li', null, 'Entre em console.anthropic.com com sua conta.'),
+        h('li', null, 'Em Billing, coloque crédito (é pago por uso, separado da assinatura do Claude).'),
+        h('li', null, 'Em API Keys, clique em Create Key e copie a chave (começa com sk-ant-; aparece uma vez só).'),
+        h('li', null, 'Em Configurações → Conferência dos pedidos por IA: cole a chave, salve e clique em "Testar a IA".')),
+      h('div', { class: 'acoes' }, h('button', { class: 'pequeno primario', onclick: () => abrirAba('config') }, 'Abrir Configurações'))),
+    estado?.ia.erro && h('div', { class: 'cartao alerta' }, h('div', { class: 'titulo' }, 'Último erro da IA'), h('div', { class: 'sub' }, estado.ia.erro)),
     h('div', { class: 'cartao' },
       entrada,
       h('div', { class: 'linha' }, h('button', { onclick: () => entrada.click() }, 'Escolher arquivos (até 6)'), escolhidos),
