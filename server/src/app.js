@@ -24,7 +24,11 @@ const CSP = [
   "frame-ancestors 'none'", "base-uri 'none'", "form-action 'self'", "object-src 'none'",
 ].join('; ');
 
-export function criarApp({ servico, atendimento, geocodificar, confiarProxy = false, cookieSeguro = false }) {
+// Sites que podem chamar as rotas públicas direto do navegador (formulário de pedido no site da empresa).
+const ORIGENS_PADRAO = 'https://www.speedboy.com.br,https://speedboy.com.br';
+
+export function criarApp({ servico, atendimento, geocodificar, confiarProxy = false, cookieSeguro = false, origensSite = ORIGENS_PADRAO }) {
+  const origens = new Set(String(origensSite || '').split(',').map((o) => o.trim().replace(/\/+$/, '')).filter(Boolean));
   const rotas = [];
   const rota = (metodo, caminho, acesso, fn, max = CORPO_MAX) => {
     const nomes = [];
@@ -277,6 +281,17 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     res.setHeader('Permissions-Policy', 'geolocation=(self), camera=(), microphone=()');
     if (cookieSeguro) res.setHeader('Strict-Transport-Security', 'max-age=31536000');
+
+    // CORS só para as rotas públicas e só para os sites cadastrados. Painel, motoboy e API seguem fechados.
+    const origem = String(req.headers.origin || '');
+    if (caminho.startsWith('/api/publico/') && origens.has(origem)) {
+      res.setHeader('Access-Control-Allow-Origin', origem);
+      res.setHeader('Vary', 'Origin');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      res.setHeader('Access-Control-Max-Age', '600');
+      if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+    }
 
     if (caminho.startsWith('/api/') || caminho === '/saude') {
       const metodoOk = rotas.filter((r) => r.re.test(caminho));

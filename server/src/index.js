@@ -33,6 +33,7 @@ const app = criarApp({
   atendimento,
   geocodificar,
   confiarProxy: process.env.TRUST_PROXY === '1',
+  ...(process.env.SITE_ORIGENS !== undefined ? { origensSite: process.env.SITE_ORIGENS } : {}),
   cookieSeguro: process.env.COOKIE_SECURE ? process.env.COOKIE_SECURE === '1' : producao,
 });
 

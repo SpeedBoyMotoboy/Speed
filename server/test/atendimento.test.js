@@ -504,6 +504,13 @@ test('HTTP: páginas públicas, webhook com segredo e segredos fora da resposta'
   assert.equal((await (await fetch(`${base}/api/publico/info`)).json()).empresa, 'SpeedBoy');
   assert.equal((await fetch(`${base}/api/publico/pedido?c=nao-existe-123`)).status, 404);
 
+  // Site da empresa chama as rotas públicas direto do navegador; outros sites e o painel não.
+  const pre = await fetch(`${base}/api/publico/pedidos`, { method: 'OPTIONS', headers: { Origin: 'https://www.speedboy.com.br', 'Access-Control-Request-Method': 'POST' } });
+  assert.equal(pre.status, 204);
+  assert.equal(pre.headers.get('access-control-allow-origin'), 'https://www.speedboy.com.br');
+  assert.equal((await fetch(`${base}/api/publico/info`, { headers: { Origin: 'https://golpe.example' } })).headers.get('access-control-allow-origin'), null);
+  assert.equal((await fetch(`${base}/api/admin/estado`, { headers: { Origin: 'https://www.speedboy.com.br' } })).headers.get('access-control-allow-origin'), null);
+
   const login = await fetch(`${base}/api/admin/login`, json({ usuario: 'admin', senha: 'senha-de-teste-123' }));
   const cookie = login.headers.get('set-cookie').split(';')[0];
   const admin = (metodo, caminho, corpo) => fetch(base + caminho, {
