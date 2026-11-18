@@ -35,7 +35,7 @@ const CFG_NUM = {
   mapa_lat: [-90, 90], mapa_lon: [-180, 180],
   preco_base: [0, 100000], preco_km_incluso: [0, 1000], preco_km: [0, 1000], preco_minimo: [0, 100000],
   convocacao_auto_max: [0, 50], convocacao_auto_espera_min: [0, 120],
-  urgente_prazo_min: [5, 600], robo_pausa_horas: [1, 168], repasse_pct: [0, 100], repasse_minimo: [0, 10000], oferta_raio_km: [0.5, 100],
+  urgente_prazo_min: [5, 600], robo_pausa_horas: [1, 168], repasse_pct: [0, 100], repasse_minimo: [0, 10000], repasse_base: [0, 10000], repasse_km: [0, 1000], oferta_raio_km: [0.5, 100],
   oferta_alerta_min: [1, 120], avulso_max_horas: [1, 24], pagamento_validade_min: [5, 1440],
 };
 const CFG_TXT = {
@@ -168,7 +168,13 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     if (fixo) valor *= fixo.preco_pct / 100;
     valor = Math.round(valor * 100) / 100;
     const pct = servico?.repasse_pct ?? Number(c.repasse_pct);
-    const repasse = Math.round(Math.max(Number(c.repasse_minimo), (valor * pct) / 100) * 100) / 100;
+    // Tabela própria do motoboy (valor base até os km incluídos + valor por km a mais), se o dono preencheu;
+    // sem ela vale o percentual do valor cobrado. O adicional do serviço segue repassado pelo percentual.
+    const repBase = Number(c.repasse_base);
+    const bruto = repBase > 0
+      ? repBase + Math.max(0, km - Number(c.preco_km_incluso)) * Number(c.repasse_km) + (adicional * pct) / 100
+      : (valor * pct) / 100;
+    const repasse = Math.round(Math.max(Number(c.repasse_minimo), bruto) * 100) / 100;
     return { km, valor, repasse, servico };
   }
 

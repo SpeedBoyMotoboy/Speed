@@ -265,6 +265,8 @@ export const CONFIG_PADRAO = {
   urgente_prazo_min: '30',
   repasse_pct: '60',
   repasse_minimo: '15',
+  repasse_base: '0',
+  repasse_km: '0',
   oferta_raio_km: '5',
   oferta_alerta_min: '5',
   avulso_max_horas: '12',
