@@ -239,6 +239,8 @@ export const CONFIG_PADRAO = {
   preco_km_incluso: '0',
   preco_km: '0',
   preco_minimo: '0',
+  // Acréscimo ao cliente quando a coleta ou a entrega cai na zona sul de Vila Velha (o motoboy não recebe).
+  preco_zona_sul: '15',
   // Pedido pelo site: 'painel' (admin aprova), 'whatsapp' (cliente confirma no WhatsApp) ou 'nenhuma'.
   pedidos_site: '1',
   site_confirmacao: 'painel',

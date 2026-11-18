@@ -657,7 +657,7 @@ export function criarAtendimento({
     const cot = servico.cotar(coleta, entrega, {
       km: await distancia(coleta, entrega), servicoId: dados?.servico_id, telefone: normalizarTelefone(dados?.telefone),
     });
-    return { coleta, entrega, km: cot.km, valor: cot.valor };
+    return { coleta, entrega, km: cot.km, valor: cot.valor, zona_sul: Boolean(cot.zona_sul) };
   }
   async function pedidoSite(dados, ip) {
     const c = cfgBruta();

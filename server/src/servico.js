@@ -33,7 +33,7 @@ const CFG_NUM = {
   bike_max_km: [0.5, 50], capacidade: [1, 20], retencao_dias: [7, 730],
   diaria_valor: [0, 100000], almoco_valor: [0, 100000], almoco_min: [10, 180],
   mapa_lat: [-90, 90], mapa_lon: [-180, 180],
-  preco_base: [0, 100000], preco_km_incluso: [0, 1000], preco_km: [0, 1000], preco_minimo: [0, 100000],
+  preco_base: [0, 100000], preco_km_incluso: [0, 1000], preco_km: [0, 1000], preco_minimo: [0, 100000], preco_zona_sul: [0, 100000],
   convocacao_auto_max: [0, 50], convocacao_auto_espera_min: [0, 120],
   urgente_prazo_min: [5, 600], robo_pausa_horas: [1, 168], repasse_pct: [0, 100], repasse_minimo: [0, 10000], repasse_base: [0, 10000], repasse_km: [0, 1000], oferta_raio_km: [0.5, 100],
   oferta_alerta_min: [1, 120], avulso_max_horas: [1, 24], pagamento_validade_min: [5, 1440],
@@ -153,6 +153,16 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
 
   // Preço: (base + km a mais, com mínimo) + adicional do tipo de serviço. Cliente fixo pode ter percentual próprio.
   // Devolve também o repasse do motoboy avulso (percentual do valor, com mínimo).
+  // Zona sul de Vila Velha (depois do posto da PRE na Rod. do Sol): pelo nome do bairro no endereço.
+  const ZONA_SUL = /\b(barra do jucu|barramares|morada da barra|terra vermelha|ulisses guimaraes|ulysses guimaraes|joao goulart|normilia da cunha|vinte e tres de maio|23 de maio|santa paula|jabaete|riviera da barra|ponta da fruta|xuri|cidade da barra|balneario ponta da fruta)\b/;
+  const semAcento = (s) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  // Usa o endere?o achado no mapa (se houver) e, em Vila Velha, tamb?m a latitude (sul de -20,405 = depois do posto da PRE).
+  const naZonaSul = (p) => {
+    if (!p) return false;
+    const texto = semAcento(p.nome || p.endereco || '');
+    if (ZONA_SUL.test(texto)) return true;
+    return /vila velha/.test(texto) && p.lat != null && Number(p.lat) < -20.405;
+  };
   function cotar(coleta, entrega, { km: kmRota = null, servicoId = null, telefone = '' } = {}) {
     const servico = servicoId ? q('SELECT * FROM servicos WHERE id = ? AND ativo = 1').get(Number(servicoId)) || null : null;
     const nada = { km: null, valor: null, repasse: null, servico };
@@ -167,6 +177,8 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     let valor = Math.max(minimo, base + Math.max(0, km - Number(c.preco_km_incluso)) * porKm) + adicional;
     const fixo = telefone ? q('SELECT preco_pct FROM clientes WHERE telefone = ? AND faturado = 1').get(telefone) : null;
     if (fixo) valor *= fixo.preco_pct / 100;
+    const zonaSul = naZonaSul(coleta) || naZonaSul(entrega);
+    if (zonaSul) valor += Number(c.preco_zona_sul || 0);
     valor = Math.round(valor * 100) / 100;
     const pct = servico?.repasse_pct ?? Number(c.repasse_pct);
     // Tabela própria do motoboy (valor base até os km incluídos + valor por km a mais), se o dono preencheu;
@@ -176,7 +188,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       ? repBase + Math.max(0, km - Number(c.preco_km_incluso)) * Number(c.repasse_km) + (adicional * pct) / 100
       : (valor * pct) / 100;
     const repasse = Math.round(Math.max(Number(c.repasse_minimo), bruto) * 100) / 100;
-    return { km, valor, repasse, servico };
+    return { km, valor, repasse, servico, zona_sul: zonaSul };
   }
 
   // ------------------------------------------- tipos de serviço e clientes fixos
@@ -727,7 +739,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     const requisito = d?.requisito ?? 'qualquer';
     if (!REQUISITOS.includes(requisito)) throw new Erro(422, 'requisito_invalido', 'Requisito inválido.');
     return {
-      cliente, requisito, descricao: txt(d?.descricao, 500),
+      cliente, requisito, descricao: txt(d?.descricao, 1200),
       telefone: normalizarTelefone(d?.cliente_telefone ?? d?.telefone),
       urgente: d?.urgente ? 1 : 0, servicoId: d?.servico_id ? Number(d.servico_id) : null,
       km: Number.isFinite(Number(d?.km)) && Number(d?.km) > 0 ? Number(d.km) : null, email: txt(d?.email, 120),

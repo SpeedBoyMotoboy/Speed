@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#001f6b">
+  <title>Entrega para lojas</title>
+  <link rel="stylesheet" href="/vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="/site/site.css">
+  <style>
+    .saida { display: flex; gap: .75rem; align-items: flex-start; justify-content: space-between; }
+    .saida .leve { width: auto; margin: 0; flex: none; }
+    .marcar { display: flex; gap: .5rem; align-items: center; margin-top: .6rem; font-weight: normal; }
+    .marcar input { width: auto; margin: 0; }
+    .aviso-sul { color: #8a5a00; font-size: .9rem; margin-top: .3rem; }
+  </style>
+</head>
+<body>
+  <div id="raiz"></div>
+  <script src="/vendor/leaflet/leaflet.js"></script>
+  <script type="module" src="loja.js"></script>
+</body>
+</html>
