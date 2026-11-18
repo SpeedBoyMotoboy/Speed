@@ -59,3 +59,6 @@ button:disabled { opacity: .55; cursor: default; }
 a.botao { width: 100%; }
 .qr { display: block; margin: 12px auto; border: 1px solid var(--borda); border-radius: 10px; background: #fff; }
 textarea { resize: vertical; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; overflow-wrap: anywhere; }
+
+label.marcar { display: flex; align-items: center; gap: 10px; font-size: 16px; color: inherit; margin-top: 14px; }
+label.marcar input { width: 22px; height: 22px; flex: none; margin: 0; }

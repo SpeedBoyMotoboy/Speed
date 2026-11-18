@@ -49,8 +49,8 @@ function telaFormulario() {
   h('label', { for: 'documento' }, 'CPF ou RG'), documento,
   h('label', { for: 'veiculo' }, 'Veículo'), veiculo,
   rotuloPlaca, placa,
-  h('label', null, bau, ' Tenho baú'),
-  h('label', null, bag, ' Tenho bag'),
+  h('label', { class: 'marcar' }, bau, ' Tenho baú'),
+  h('label', { class: 'marcar' }, bag, ' Tenho bag'),
   h('label', { for: 'tipo' }, 'Como você quer trabalhar'), tipo,
   h('label', { for: 'indicacao' }, 'Indicação'), indicacao,
   erro, enviar);

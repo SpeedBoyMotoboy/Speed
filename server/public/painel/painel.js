@@ -184,7 +184,7 @@ function telaPrincipal() {
   trocar(raiz, 
     h('div', { class: 'topo' },
       h('div', { class: 'logo' }, 'Speed ', h('span', null, 'Despacho')),
-      els.botoesAba, h('div', { class: 'espaco' }), els.conexao,
+      h('nav', { class: 'abas' }, els.botoesAba), h('div', { class: 'espaco' }), els.conexao,
       h('button', { onclick: async () => { await api('POST', '/api/admin/logout').catch(() => {}); telaLogin(); } }, 'Sair')),
     els.operacao, els.pagina);
 
@@ -1359,3 +1359,6 @@ async function desenharConfig() {
 
 // ----------------------------------------------------------------- início
 api('GET', '/api/admin/estado').then(() => telaPrincipal()).catch(() => telaLogin());
+
+// Permite instalar o painel como aplicativo no celular (ícone na tela inicial, tela cheia).
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
