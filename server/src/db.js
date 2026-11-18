@@ -274,6 +274,7 @@ export const CONFIG_PADRAO = {
   mp_token: '',
   pagamento_validade_min: '30',
   ors_chave: '',
+  google_chave: '',
   // Pix direto na conta da empresa (sem taxa de intermediário; confirmação manual pelo comprovante).
   pix_tipo: 'cnpj',
   pix_chave: '',

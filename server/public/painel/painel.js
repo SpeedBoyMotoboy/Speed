@@ -1209,6 +1209,7 @@ async function desenharConfig() {
       num('preco_km', 'Valor por km a mais (R$)', 0.01), num('preco_minimo', 'Valor mínimo (R$)', 0.01),
       num('repasse_base', 'Motoboy avulso recebe: valor base (R$)', 0.01), num('repasse_km', 'Motoboy avulso: por km a mais (R$)', 0.01),
       num('urgente_prazo_min', 'Prazo prometido na página (min)'),
+      texto('google_chave', c.google_chave_definida ? 'Chave do Google Maps (já salva; vazio mantém)' : 'Chave do Google Maps (acha endereço e loja pelo nome)', { type: 'password', autocomplete: 'off', value: '' }),
       texto('ors_chave', c.ors_chave_definida ? 'Chave de rota (já salva; vazio mantém)' : 'Chave de rota pelas ruas (opcional)', { type: 'password', autocomplete: 'off', value: '' })),
     h('div', { class: 'nota' }, 'Preço = valor base + km a mais (respeitando o mínimo) + o adicional do tipo de serviço. Sem chave de rota a distância é linha reta × 1,35; com chave gratuita do openrouteservice.org é a distância pelas ruas.'),
 

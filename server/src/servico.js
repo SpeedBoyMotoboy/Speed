@@ -49,7 +49,7 @@ const CFG_OPC = {
   ia_ativa: SIM_NAO, ia_modelo: MODELOS_IA, pix_tipo: TIPOS_CHAVE,
 };
 const CFG_HORA = ['atendimento_inicio', 'atendimento_fim'];
-const CFG_SECRETAS = ['api_chave_hash', 'whats_token', 'whats_app_secret', 'mp_token', 'ors_chave', 'ia_chave'];
+const CFG_SECRETAS = ['api_chave_hash', 'whats_token', 'whats_app_secret', 'mp_token', 'ors_chave', 'ia_chave', 'google_chave'];
 const SEM_SINAL_AVULSO = 30 * MIN;
 const VOLTA_OFERTA = 90_000; // a cada volta sem aceite o raio da oferta dobra (até 8x)
 
@@ -119,11 +119,12 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       q('UPDATE config SET valor = ? WHERE chave = ?').run(crypto.randomBytes(18).toString('base64url'), 'whats_segredo');
       cacheCfg = null;
     }
-    const { api_chave_hash, whats_token, whats_app_secret, mp_token, ors_chave, ia_chave, ...resto } = cfgBruta();
+    const { api_chave_hash, whats_token, whats_app_secret, mp_token, ors_chave, ia_chave, google_chave, ...resto } = cfgBruta();
     return {
       ...resto, api_chave_definida: api_chave_hash !== '', whats_token_definido: whats_token !== '',
       whats_app_secret_definido: whats_app_secret !== '',
       mp_token_definido: mp_token !== '', ors_chave_definida: ors_chave !== '', ia_chave_definida: ia_chave !== '',
+      google_chave_definida: (google_chave ?? '') !== '',
     };
   }
   // Fora do horário de atendimento? (vazio = atende sempre). Devolve o texto do horário ou ''.
@@ -239,7 +240,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
           const tel = normalizarTelefone(bruto);
           if (soDigitos(bruto) !== '' && !tel) throw new Erro(422, 'config_invalida', 'WhatsApp da empresa: DDD + número.');
           gravar.run(tel, chave);
-        } else if (['whats_token', 'whats_app_secret', 'mp_token', 'ors_chave', 'ia_chave'].includes(chave)) {
+        } else if (['whats_token', 'whats_app_secret', 'mp_token', 'ors_chave', 'ia_chave', 'google_chave'].includes(chave)) {
           if (txt(bruto, 600) !== '') gravar.run(txt(bruto, 600), chave); // vazio = mantém o atual
         } else if (chave === 'admin_telefone') {
           const tel = normalizarTelefone(bruto);
