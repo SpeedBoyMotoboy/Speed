@@ -99,10 +99,22 @@ export async function geocodificarGoogle(chave, consulta, limite = 5, buscar = f
   const exatos = (g?.results || []).filter((x) => !x.partial_match && !(x.types || []).some((t) => ['locality', 'administrative_area_level_1', 'administrative_area_level_2', 'country'].includes(t)));
   achados = ler(exatos, (x) => x.formatted_address);
   if (!achados.length) {
-    const p = await googleJson('https://maps.googleapis.com/maps/api/place/textsearch/json?' + new URLSearchParams({
-      query: consulta, region: 'br', language: 'pt-BR', location: '-20.30,-40.30', radius: '90000', key: chave,
-    }), buscar);
-    achados = ler(p?.results, (x) => (x.name && !String(x.formatted_address || '').startsWith(x.name) ? `${x.name} · ${x.formatted_address}` : x.formatted_address));
+    // Places API (New): busca por texto, acha loja pelo nome.
+    try {
+      const r = await buscar('https://places.googleapis.com/v1/places:searchText', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': chave, 'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location' },
+        body: JSON.stringify({ textQuery: consulta, languageCode: 'pt-BR', regionCode: 'BR', pageSize: Math.min(limite, 5),
+          locationBias: { circle: { center: { latitude: -20.3, longitude: -40.3 }, radius: 50000 } } }),
+        signal: AbortSignal.timeout(7000),
+      });
+      const j = await r.json();
+      if (!r.ok) console.error('[google places]', r.status, String(j?.error?.message || '').slice(0, 160));
+      achados = (j.places || []).map((x) => {
+        const nome = x.displayName?.text || ''; const end = x.formattedAddress || '';
+        return { nome: nome && !end.startsWith(nome) ? `${nome} · ${end}` : end, lat: Number(x.location?.latitude), lon: Number(x.location?.longitude) };
+      }).filter((x) => coordValida(x.lat, x.lon) && x.lat > ES.sul && x.lat < ES.norte && x.lon > ES.oeste && x.lon < ES.leste).slice(0, limite);
+    } catch (e) { console.error('[google places]', e.message); }
   }
   if (!achados.length) achados = ler(g?.results, (x) => x.formatted_address);
   if (achados.length) {
