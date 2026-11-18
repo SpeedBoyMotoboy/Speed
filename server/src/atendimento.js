@@ -645,6 +645,33 @@ export function criarAtendimento({
     const ok = lat != null && lon != null && coordValida(lat, lon);
     return { endereco: txt(p?.endereco, 200), contato: txt(p?.contato, 120), lat: ok ? lat : null, lon: ok ? lon : null };
   }
+  // Sugestões de endereço enquanto o cliente digita (Places API New, com a chave do painel).
+  async function sugerirPublico(texto, ip) {
+    const q = txt(texto, 120);
+    if (q.length < 4) return { sugestoes: [] };
+    limitar(`sugerir:${ip}`, 120, 15 * MIN);
+    const c = cfgBruta();
+    if (!c.google_chave) return { sugestoes: [] };
+    try {
+      const r = await fetch('https://places.googleapis.com/v1/places:autocomplete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': c.google_chave },
+        body: JSON.stringify({
+          input: q, languageCode: 'pt-BR', includedRegionCodes: ['br'],
+          locationBias: { circle: { center: { latitude: Number(c.mapa_lat) || -20.3358, longitude: Number(c.mapa_lon) || -40.2969 }, radius: 40000 } },
+        }),
+        signal: AbortSignal.timeout(6000),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { console.error('[google autocomplete]', r.status, String(j?.error?.message || '').slice(0, 160)); return { sugestoes: [] }; }
+      const sugestoes = (j.suggestions || []).map((s) => s.placePrediction?.text?.text).filter(Boolean).slice(0, 5)
+        .map((s) => s.replace(/, Brasil$/, ''));
+      return { sugestoes };
+    } catch (e) {
+      console.error('[google autocomplete]', e.message);
+      return { sugestoes: [] };
+    }
+  }
   async function cotarPublico(dados, ip) {
     if (cfgBruta().pedidos_site !== '1') throw new Erro(403, 'desligado', 'Pedidos pelo site estão desligados.');
     limitar(`cotar:${ip}`, 30, 15 * MIN);
@@ -812,7 +839,7 @@ export function criarAtendimento({
   return {
     avisarDono: (texto) => { try { avisarAdmin(texto); } catch { /* aviso é cortesia */ } },
     definirOrigem, receber, segredoConfere, webhookAutorizado, despacharSaida, rotina,
-    infoPublica, cotarPublico, pedidoSite, pedidoVivo, webhookPagamento, expirarPagamentos,
+    infoPublica, sugerirPublico, cotarPublico, pedidoSite, pedidoVivo, webhookPagamento, expirarPagamentos,
     resumo, responder, modoConversa, testar, testarIA, analisarArquivos, analisarConversa, listarAnalises,
   };
 }

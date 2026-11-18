@@ -104,6 +104,7 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
 
   // Site de pedidos e página de acompanhamento (sem login).
   rota('GET', '/api/publico/info', 'publico', () => atendimento.infoPublica());
+  rota('GET', '/api/publico/sugerir', 'publico', ({ url, ip }) => atendimento.sugerirPublico(url.searchParams.get('q'), ip));
   rota('POST', '/api/publico/cotar', 'publico', ({ corpo, ip }) => atendimento.cotarPublico(corpo, ip));
   rota('POST', '/api/publico/pedidos', 'publico', ({ corpo, ip }) => atendimento.pedidoSite(corpo, ip));
   // Cadastro de motoboy pela página pública: fica pendente até o dono responder no painel.
