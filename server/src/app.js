@@ -106,6 +106,12 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
   rota('GET', '/api/publico/info', 'publico', () => atendimento.infoPublica());
   rota('POST', '/api/publico/cotar', 'publico', ({ corpo, ip }) => atendimento.cotarPublico(corpo, ip));
   rota('POST', '/api/publico/pedidos', 'publico', ({ corpo, ip }) => atendimento.pedidoSite(corpo, ip));
+  // Cadastro de motoboy pela página pública: fica pendente até o dono responder no painel.
+  rota('POST', '/api/publico/cadastro', 'publico', ({ corpo, ip }) => {
+    const r = servico.candidatar(corpo, ip);
+    if (r.novo) atendimento.avisarDono(`🛵 Novo cadastro de motoboy: ${r.nome} (${r.tipo === 'diaria' ? 'fixo' : 'avulso'}). Abra o painel, aba Motoboys, para aceitar ou recusar.`);
+    return { ok: true };
+  });
   rota('GET', '/api/publico/pedido', 'publico', ({ url }) => atendimento.pedidoVivo(url.searchParams.get('c')));
   // Aviso de pagamento do Mercado Pago. O corpo só diz "olhe o pagamento X": o sistema confere direto no banco.
   rota('POST', '/api/pagamento/mp', 'publico', ({ url, corpo }) => {
@@ -210,6 +216,7 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
     servico.atualizarMotoboy(p.id, corpo, ator(admin));
     return { ok: true };
   });
+  rota('POST', '/api/admin/candidatos/:id/decidir', 'admin', ({ admin, corpo, p }) => servico.decidirCandidato(p.id, corpo.aceitar === true, ator(admin)));
   rota('POST', '/api/admin/motoboys/:id/convocar', 'admin', ({ admin, p }) => servico.convocar(p.id, ator(admin)));
   rota('POST', '/api/admin/motoboys/:id/desconvocar', 'admin', ({ admin, p }) => {
     servico.cancelarConvocacao(p.id, ator(admin));
@@ -322,7 +329,7 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
 
     if (req.method !== 'GET' && req.method !== 'HEAD') throw new Erro(405, 'metodo', 'Método não permitido.');
     if (caminho === '/') { res.writeHead(302, { Location: '/painel/' }); return res.end(); }
-    if (['/painel', '/app', '/pedir', '/acompanhar'].includes(caminho)) { res.writeHead(302, { Location: `${caminho}/${url.search}` }); return res.end(); }
+    if (['/painel', '/app', '/pedir', '/acompanhar', '/cadastro'].includes(caminho)) { res.writeHead(302, { Location: `${caminho}/${url.search}` }); return res.end(); }
     if (caminho.startsWith('/vendor/leaflet/')) {
       if (servirArquivo(res, LEAFLET, caminho.slice('/vendor/leaflet/'.length), req.method)) return undefined;
     } else if (caminho === '/vendor/qrcode/qrcode.mjs') {

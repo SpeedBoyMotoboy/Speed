@@ -174,6 +174,22 @@ CREATE TABLE IF NOT EXISTS analises (
   pergunta TEXT NOT NULL DEFAULT '',
   resultado TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS candidatos (
+  id INTEGER PRIMARY KEY,
+  nome TEXT NOT NULL,
+  telefone TEXT NOT NULL,
+  documento TEXT NOT NULL DEFAULT '',
+  placa TEXT NOT NULL DEFAULT '',
+  veiculo TEXT NOT NULL DEFAULT 'moto',
+  tem_bau INTEGER NOT NULL DEFAULT 0,
+  tem_bag INTEGER NOT NULL DEFAULT 0,
+  tipo TEXT NOT NULL DEFAULT 'avulso',
+  indicacao TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pendente',
+  motoboy_id INTEGER,
+  criado_em INTEGER NOT NULL,
+  decidido_em INTEGER
+);
 CREATE TABLE IF NOT EXISTS auditoria (
   id INTEGER PRIMARY KEY,
   ts INTEGER NOT NULL,
@@ -283,7 +299,7 @@ const COLUNAS_NOVAS = {
     pagamento: "TEXT NOT NULL DEFAULT ''", pag_id: 'TEXT', pag_pix: 'TEXT', pag_qr: 'TEXT', pag_expira: 'INTEGER',
     pago_em: 'INTEGER', fila_em: 'INTEGER', comprovante_em: 'INTEGER', ia_ok: 'INTEGER', ia_obs: 'TEXT', email: "TEXT NOT NULL DEFAULT ''", sem_aceite_avisado: 'INTEGER NOT NULL DEFAULT 0',
   },
-  motoboys: { tipo: "TEXT NOT NULL DEFAULT 'diaria'" },
+  motoboys: { tipo: "TEXT NOT NULL DEFAULT 'diaria'", pin_claro: 'TEXT', documento: "TEXT NOT NULL DEFAULT ''", placa: "TEXT NOT NULL DEFAULT ''" },
   turnos: { tipo: "TEXT NOT NULL DEFAULT 'diaria'" },
   clientes: { faturado: 'INTEGER NOT NULL DEFAULT 0', preco_pct: 'REAL NOT NULL DEFAULT 100', email: "TEXT NOT NULL DEFAULT ''" },
   convocacoes: { origem: "TEXT NOT NULL DEFAULT 'admin'" },

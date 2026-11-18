@@ -347,6 +347,8 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
         throw new Erro(422, 'pin_invalido', 'A senha do motoboy deve ter 6 números.');
       }
       m.pin_hash = hashSenha(d.pin);
+      // O dono pediu para conseguir consultar a senha do motoboy (ele esquece e pede de novo).
+      m.pin_claro = String(d.pin);
     }
     if (novo || d.veiculo !== undefined) {
       if (!['moto', 'bike'].includes(d.veiculo)) throw new Erro(422, 'veiculo_invalido', 'Veículo: moto ou bike.');
@@ -372,7 +374,59 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
                  VALUES (?,?,?,?,?,?,1,?,?)`)
       .run(m.nome, m.telefone, m.pin_hash, m.veiculo, m.tem_bau, m.tem_bag, agora(), m.tipo);
     auditar(ator, 'motoboy_criado', m.nome);
+    q('UPDATE motoboys SET pin_claro = ? WHERE id = ?').run(m.pin_claro ?? null, Number(r.lastInsertRowid));
     return Number(r.lastInsertRowid);
+  }
+
+  // ------------------------------------------- cadastro público de motoboy
+  // O motoboy preenche a página /cadastro/; fica pendente até o dono aceitar ou recusar no painel.
+  function candidatar(d, ip) {
+    exigirNaoBloqueado(`cad:${ip}`, 6);
+    registrarFalha(`cad:${ip}`);
+    const nome = txt(d?.nome, 80);
+    if (nome.length < 5 || !nome.includes(' ')) throw new Erro(422, 'nome_invalido', 'Informe nome e sobrenome.');
+    const telefone = soDigitos(d?.telefone);
+    if (telefone.length < 10 || telefone.length > 11) throw new Erro(422, 'telefone_invalido', 'WhatsApp com DDD: 10 ou 11 números.');
+    const documento = txt(d?.documento, 20);
+    if (soDigitos(documento).length < 5) throw new Erro(422, 'documento_invalido', 'Informe o CPF ou o RG.');
+    const veiculo = d?.veiculo === 'bike' ? 'bike' : 'moto';
+    const placa = txt(d?.placa, 10).toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (veiculo === 'moto' && placa.length < 7) throw new Erro(422, 'placa_invalida', 'Informe a placa da moto (7 letras e números).');
+    const tipo = d?.tipo === 'diaria' ? 'diaria' : 'avulso';
+    const indicacao = txt(d?.indicacao, 160);
+    if (q('SELECT id FROM motoboys WHERE telefone = ?').get(telefone)) {
+      throw new Erro(409, 'ja_cadastrado', 'Esse WhatsApp já tem cadastro na SpeedBoy. Fale com a gente se esqueceu a senha.');
+    }
+    const campos = [nome, documento, placa, veiculo, d?.tem_bau ? 1 : 0, d?.tem_bag ? 1 : 0, tipo, indicacao];
+    const pendente = q("SELECT id FROM candidatos WHERE telefone = ? AND status = 'pendente'").get(telefone);
+    if (pendente) {
+      q('UPDATE candidatos SET nome=?, documento=?, placa=?, veiculo=?, tem_bau=?, tem_bag=?, tipo=?, indicacao=? WHERE id=?').run(...campos, pendente.id);
+      return { ok: true, id: pendente.id, novo: false, nome, tipo };
+    }
+    const r = q(`INSERT INTO candidatos (nome, documento, placa, veiculo, tem_bau, tem_bag, tipo, indicacao, telefone, status, criado_em)
+                 VALUES (?,?,?,?,?,?,?,?,?,'pendente',?)`).run(...campos, telefone, agora());
+    auditar('publico', 'cadastro_recebido', nome);
+    return { ok: true, id: Number(r.lastInsertRowid), novo: true, nome, tipo };
+  }
+  // Senha fácil de ditar (três pares, ex.: 447712), sorteada. O bloqueio de tentativas protege contra chute.
+  const pinFacil = () => Array.from({ length: 3 }, () => String(crypto.randomInt(0, 10)).repeat(2)).join('');
+  function decidirCandidato(id, aceitar, ator) {
+    const c = q('SELECT * FROM candidatos WHERE id = ?').get(Number(id));
+    if (!c) throw new Erro(404, 'nao_encontrado', 'Cadastro não encontrado.');
+    if (c.status !== 'pendente') throw new Erro(409, 'ja_decidido', 'Esse cadastro já foi respondido.');
+    if (!aceitar) {
+      q("UPDATE candidatos SET status = 'recusado', decidido_em = ? WHERE id = ?").run(agora(), c.id);
+      auditar(ator, 'cadastro_recusado', c.nome);
+      return { ok: true, aceito: false };
+    }
+    const pin = pinFacil();
+    return tx(() => {
+      const motoboyId = criarMotoboy({ nome: c.nome, telefone: c.telefone, pin, veiculo: c.veiculo, tipo: c.tipo, tem_bau: c.tem_bau, tem_bag: c.tem_bag }, ator);
+      q('UPDATE motoboys SET documento = ?, placa = ? WHERE id = ?').run(c.documento, c.placa, motoboyId);
+      q("UPDATE candidatos SET status = 'aceito', decidido_em = ?, motoboy_id = ? WHERE id = ?").run(agora(), motoboyId, c.id);
+      auditar(ator, 'cadastro_aceito', c.nome);
+      return { ok: true, aceito: true, motoboy_id: motoboyId, nome: c.nome, telefone: c.telefone, tipo: c.tipo, pin };
+    });
   }
   function atualizarMotoboy(id, dados, ator) {
     const atual = q('SELECT * FROM motoboys WHERE id = ?').get(id);
@@ -1086,7 +1140,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
   function estadoAdmin() {
     const c = cfg();
     const hoje = inicioDoDia();
-    const motoboys = q('SELECT id, nome, telefone, veiculo, tem_bau, tem_bag, ativo, tipo FROM motoboys ORDER BY nome').all()
+    const motoboys = q('SELECT id, nome, telefone, veiculo, tem_bau, tem_bag, ativo, tipo, pin_claro, documento, placa FROM motoboys ORDER BY nome').all()
       .map((m) => {
         const turno = turnoAtivoDoMotoboy(m.id);
         const conv = turno ? null : convocacaoValida(m.id);
@@ -1115,6 +1169,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     const alertas = q(`SELECT a.*, m.nome AS motoboy FROM alertas a JOIN motoboys m ON m.id = a.motoboy_id
         WHERE a.fim IS NULL OR a.inicio >= ? ORDER BY (a.fim IS NULL) DESC, a.inicio DESC LIMIT 100`).all(hoje);
 
+    const candidatos = q("SELECT * FROM candidatos WHERE status = 'pendente' ORDER BY criado_em").all();
     return {
       agora: agora(),
       motoboys,
@@ -1122,7 +1177,8 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       alertas,
       sugestoes: sugestoes(motoboys, demandas, c),
       mapa: { lat: Number(cfgBruta().mapa_lat), lon: Number(cfgBruta().mapa_lon) },
-      pendencias: pendencias(motoboys),
+      pendencias: [...(candidatos.length ? [`${candidatos.length} cadastro(s) de motoboy aguardando sua resposta (aba Motoboys).`] : []), ...pendencias(motoboys)],
+      candidatos,
     };
   }
 
@@ -1368,7 +1424,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
   return {
     cfg, lerConfig, salvarConfig, gerarChaveApi, chaveApiValida,
     garantirAdmin, loginAdmin, autenticarAdmin, sairAdmin, trocarSenhaAdmin,
-    criarMotoboy, atualizarMotoboy, convocar, cancelarConvocacao,
+    criarMotoboy, atualizarMotoboy, candidatar, decidirCandidato, convocar, cancelarConvocacao,
     loginMotoboy, autenticarMotoboy, almoco, encerrarTurno, registrarPosicoes,
     criarDemanda, criarDemandaExterna, definirLocais, cancelarDemanda, reatribuir, confirmarParada,
     despacharPendentes, estadoMotoboy, estadoAdmin, trilha, relatorio, rotina,

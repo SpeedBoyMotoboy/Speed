@@ -810,6 +810,7 @@ export function criarAtendimento({
   }
 
   return {
+    avisarDono: (texto) => { try { avisarAdmin(texto); } catch { /* aviso é cortesia */ } },
     definirOrigem, receber, segredoConfere, webhookAutorizado, despacharSaida, rotina,
     infoPublica, cotarPublico, pedidoSite, pedidoVivo, webhookPagamento, expirarPagamentos,
     resumo, responder, modoConversa, testar, testarIA, analisarArquivos, analisarConversa, listarAnalises,

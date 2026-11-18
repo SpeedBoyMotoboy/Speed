@@ -698,6 +698,31 @@ function janelaMotoboy(m = null) {
   });
 }
 
+function mensagemAcesso(nome, telefone, pin, tipo) {
+  return `Olá, ${nome.split(' ')[0]}! Seu cadastro na SpeedBoy foi aprovado. ✅\n\n` +
+    `Para entrar, toque no link:\n${location.origin}/app/\n\n` +
+    `Telefone: ${telefoneFmt(telefone)}\nSenha: ${pin}\n\n` +
+    (tipo === 'avulso'
+      ? 'Você entra quando quiser. As entregas disponíveis aparecem no app e você aceita as que quiser fazer.'
+      : 'Você faz o turno nos dias combinados com a gente. As entregas chegam direto no app.') +
+    '\n\nDeixe a localização ligada durante o serviço. Qualquer dúvida, é só chamar aqui.';
+}
+async function decidirCadastro(c, aceitar) {
+  try {
+    const r = await api('POST', `/api/admin/candidatos/${c.id}/decidir`, { aceitar });
+    await atualizar();
+    if (!r.aceito) return;
+    const texto = mensagemAcesso(r.nome, r.telefone, r.pin, r.tipo);
+    dialogo(`${r.nome} aceito`, (dlg) => [
+      h('p', null, 'A conta já está criada no aplicativo. Mande o acesso para ele:'),
+      h('p', null, h('strong', null, `Telefone ${telefoneFmt(r.telefone)} · Senha ${r.pin}`)),
+      h('p', { class: 'nota' }, 'A senha fica guardada na lista de motoboys, coluna Senha, se ele esquecer.'),
+      h('div', { class: 'linha fim' },
+        h('button', { onclick: dlg.fechar }, 'Fechar'),
+        h('a', { class: 'botao primario', href: `https://wa.me/55${r.telefone}?text=${encodeURIComponent(texto)}`, target: '_blank', rel: 'noopener noreferrer' }, 'Enviar acesso pelo WhatsApp'))]);
+  } catch (e) { els.conexao.textContent = e.message; }
+}
+
 function desenharMotoboys() {
   if (!estado) return;
   const situacao = (m) => {
@@ -707,15 +732,31 @@ function desenharMotoboys() {
     if (m.convocado_ate) return chip('Convocado, aguardando login', 'convocado');
     return h('span', { class: 'nota' }, m.ultimo_turno ? `Último turno ${dataHora(m.ultimo_turno)}` : 'Nunca fez turno');
   };
+  const linkCadastro = `${location.origin}/cadastro/`;
+  const copiarLink = h('button', { class: 'pequeno', onclick: async () => { try { await navigator.clipboard.writeText(linkCadastro); copiarLink.textContent = 'Link copiado ✓'; } catch { /* copia manual */ } } }, 'Copiar link');
+  const pendentes = estado.candidatos || [];
   trocar(els.pagina, 
+    pendentes.length > 0 && h('div', { class: 'cartao sugestao' },
+      h('h3', null, `Cadastros aguardando sua resposta (${pendentes.length})`),
+      pendentes.map((c) => h('div', { class: 'linha' },
+        h('div', { class: 'cresce' },
+          h('div', null, h('strong', null, c.nome), ` · ${c.tipo === 'diaria' ? 'Fixo (diária)' : 'Avulso'}`),
+          h('div', { class: 'sub' }, `${telefoneFmt(c.telefone)} · Doc ${c.documento || '—'} · ${c.veiculo === 'bike' ? 'Bike' : `Moto ${c.placa || '—'}`}${c.tem_bau ? ' · baú' : ''}${c.tem_bag ? ' · bag' : ''}`),
+          c.indicacao && h('div', { class: 'sub' }, `Indicação / de onde veio: ${c.indicacao}`),
+          h('div', { class: 'nota' }, `Recebido ${dataHora(c.criado_em)}`)),
+        h('button', { class: 'pequeno primario', onclick: () => decidirCadastro(c, true) }, 'Aceitar'),
+        h('button', { class: 'pequeno', onclick: () => confirmar('Recusar cadastro', `Recusar o cadastro de ${c.nome}?`, 'Recusar', () => decidirCadastro(c, false)) }, 'Recusar')))),
+    h('div', { class: 'cartao' },
+      h('div', { class: 'linha' }, h('div', { class: 'cresce' }, h('strong', null, 'Link de cadastro para novos motoboys'), h('div', { class: 'sub' }, linkCadastro)), copiarLink),
+      h('p', { class: 'nota' }, 'Mande esse link no grupo. Quem preencher aparece aqui para você aceitar ou recusar.')),
     h('div', { class: 'linha' }, h('h2', { class: 'cresce' }, 'Motoboys'),
       h('button', { class: 'primario', onclick: () => janelaMotoboy() }, '+ Novo motoboy')),
     h('p', { class: 'nota' }, 'Diária: só faz login no dia em que for convocado e cumpre o turno. Avulso: entra e sai quando quiser, aceita as entregas perto dele e recebe o repasse de cada uma.'),
     estado.motoboys.length === 0 ? h('div', { class: 'vazio' }, 'Nenhum motoboy cadastrado ainda.')
       : h('table', null,
-        h('thead', null, h('tr', null, ['Nome', 'Telefone', 'Equipamento', 'Situação', ''].map((c) => h('th', null, c)))),
+        h('thead', null, h('tr', null, ['Nome', 'Telefone', 'Senha', 'Equipamento', 'Situação', ''].map((c) => h('th', null, c)))),
         h('tbody', null, estado.motoboys.map((m) => h('tr', null,
-          h('td', null, m.nome), h('td', null, telefoneFmt(m.telefone)), h('td', null, equipamento(m)), h('td', null, situacao(m)),
+          h('td', null, m.nome), h('td', null, telefoneFmt(m.telefone)), h('td', null, m.pin_claro || '—'), h('td', null, equipamento(m)), h('td', null, situacao(m)),
           h('td', null, h('div', { class: 'linha' },
             m.ativo && m.tipo !== 'avulso' && !m.turno && !m.convocado_ate && h('button', { class: 'pequeno primario', onclick: () => convocar(m.id) }, 'Convocar'),
             m.convocado_ate && h('button', {
