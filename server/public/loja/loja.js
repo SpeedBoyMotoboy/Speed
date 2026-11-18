@@ -57,6 +57,21 @@ function campoEndereco(id, valor, aoEscolher) {
   return { el, nos: h('div', { class: 'com-sugestao' }, el, lista) };
 }
 
+// CNPJ: confere os dígitos verificadores.
+function cnpjValido(c) {
+  if (!/^\d{14}$/.test(c) || /^(\d)\1+$/.test(c)) return false;
+  const dv = (base) => {
+    let soma = 0;
+    let peso = base.length - 7;
+    for (const d of base) { soma += Number(d) * peso--; if (peso < 2) peso = 9; }
+    const r = soma % 11;
+    return r < 2 ? 0 : 11 - r;
+  };
+  const d1 = dv(c.slice(0, 12));
+  return d1 === Number(c[12]) && dv(c.slice(0, 12) + d1) === Number(c[13]);
+}
+const fmtCnpj = (c) => c.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, '$1.$2.$3/$4-$5');
+
 const campo = (id, rotulo, attrs = {}) => {
   const el = h('input', { id, maxlength: 160, ...attrs });
   return { el, nos: [h('label', { for: id }, rotulo), el] };
@@ -70,6 +85,11 @@ function telaLoja(mensagem = '') {
   const falar = campo('falar', 'Motoboy fala com quem na loja?', { required: true, placeholder: 'Nome e telefone', value: loja?.falar || '' });
   const retirar = campo('retirar', 'Como retirar (loja, piso, balcão, onde estacionar)', { placeholder: 'Ex.: loja 12, piso L2, retirar no caixa', value: loja?.retirar || '' });
   const fixa = h('input', { id: 'fixa', type: 'checkbox', checked: loja ? loja.fixa !== false : true });
+  const querNf = h('input', { id: 'quernf', type: 'checkbox', checked: loja?.nf !== false });
+  const cnpj = campo('cnpj', 'CNPJ para a nota fiscal', { inputmode: 'numeric', maxlength: 18, placeholder: '00.000.000/0000-00', value: loja?.nf?.cnpj || '' });
+  const emailNf = campo('emailnf', 'E-mail para receber a nota (opcional)', { type: 'email', inputmode: 'email', maxlength: 120, value: loja?.nf?.email || '' });
+  const blocoNf = h('div', { hidden: !querNf.checked }, cnpj.nos, emailNf.nos);
+  querNf.addEventListener('change', () => { blocoNf.hidden = !querNf.checked; });
   const erro = h('div', { class: 'erro', role: 'alert' }, mensagem);
   const form = h('form', {
     class: 'cartao',
@@ -78,10 +98,18 @@ function telaLoja(mensagem = '') {
       if (nome.el.value.trim().length < 2) { erro.textContent = 'Informe o nome da loja.'; return; }
       if (telefone.el.value.replace(/\D/g, '').length < 10) { erro.textContent = 'Informe o WhatsApp com DDD.'; return; }
       if (saida.el.value.trim().length < 6) { erro.textContent = 'Escreva o endereço de saída com rua, número e bairro.'; return; }
+      let nf = false;
+      if (querNf.checked) {
+        const c = cnpj.el.value.replace(/\D/g, '');
+        if (!cnpjValido(c)) { erro.textContent = 'CNPJ inválido. Confira os números ou desmarque a nota fiscal.'; cnpj.el.focus(); return; }
+        const em = emailNf.el.value.trim();
+        if (em && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) { erro.textContent = 'E-mail da nota inválido.'; emailNf.el.focus(); return; }
+        nf = { cnpj: fmtCnpj(c), email: em };
+      }
       const mudou = saida.el.value.trim() !== (loja?.coleta?.endereco || '');
       loja = {
         nome: nome.el.value.trim(), telefone: telefone.el.value.trim(), fixa: fixa.checked,
-        falar: falar.el.value.trim(), retirar: retirar.el.value.trim(),
+        falar: falar.el.value.trim(), retirar: retirar.el.value.trim(), nf,
         coleta: mudou ? { endereco: saida.el.value.trim() } : loja.coleta,
       };
       gravar(loja);
@@ -92,6 +120,9 @@ function telaLoja(mensagem = '') {
   h('label', { for: 'saida' }, 'Endereço de saída (onde o motoboy busca)'), saida.nos,
   falar.nos, retirar.nos,
   h('label', { class: 'marcar', for: 'fixa' }, fixa, 'Usar sempre este endereço de saída'),
+  h('h2', { class: 'secao' }, 'Nota fiscal'),
+  h('label', { class: 'marcar', for: 'quernf' }, querNf, 'Precisa de nota fiscal das entregas'),
+  blocoNf,
   h('button', { class: 'primario', type: 'submit' }, 'Salvar e continuar'), erro);
   moldura(h('h1', null, loja ? 'Dados da loja e coleta' : 'Primeiro acesso'),
     h('p', { class: 'nota' }, 'Preencha só uma vez. Fica guardado neste aparelho.'), form);
@@ -179,7 +210,8 @@ function telaEntregas(mensagem = '') {
       h('div', null,
         h('div', { class: 'nota' }, 'Coleta'),
         h('b', null, loja.coleta?.endereco || ''),
-        loja.falar && h('div', { class: 'nota' }, `Falar com: ${loja.falar}`)),
+        loja.falar && h('div', { class: 'nota' }, `Falar com: ${loja.falar}`),
+        loja.nf && h('div', { class: 'nota' }, `Nota fiscal: CNPJ ${loja.nf.cnpj}`)),
       h('button', { type: 'button', class: 'leve', onclick: () => { cartoes.forEach((c) => c.ler()); telaLoja(); } }, 'Trocar')),
     form);
   cartoes[cartoes.length - 1].foco();
@@ -273,9 +305,10 @@ function montarPedido(i) {
     p.refer && `📍 Referência: ${p.refer}`,
     p.instr && `🏁 Entrega: ${p.instr}`,
     cotadas.length > 1 && `🧭 Parada ${i + 1} de ${cotadas.length}`,
+    loja.nf && `🧾 NOTA FISCAL: CNPJ ${loja.nf.cnpj}${loja.nf.email ? ` · ${loja.nf.email}` : ''}`,
   ].filter(Boolean);
   return {
-    nome: loja.nome, telefone: loja.telefone, requisito, site: '',
+    nome: loja.nome, telefone: loja.telefone, requisito, site: '', email: loja.nf?.email || '',
     descricao: `Loja ${loja.nome} · ${partes.join(' · ')}`.slice(0, 1200),
     coleta: { endereco: loja.coleta.endereco, lat: loja.coleta.lat, lon: loja.coleta.lon, contato: (loja.falar || `${loja.nome} ${loja.telefone}`).slice(0, 120) },
     entrega: {
@@ -310,7 +343,7 @@ if (!info.ativo) {
   moldura(h('h1', null, 'Pedidos pelo site indisponíveis'), h('p', { class: 'nota' }, 'Fale com a gente pelo WhatsApp.'));
 } else if (info.fechado) {
   moldura(h('h1', null, 'Estamos fechados agora'), h('p', { class: 'nota' }, `Nosso horário de atendimento: ${info.fechado}.`));
-} else if (!loja?.coleta?.endereco || !loja.falar) {
+} else if (!loja?.coleta?.endereco || !loja.falar || loja.nf === undefined) {
   telaLoja();
 } else {
   telaEntregas();
