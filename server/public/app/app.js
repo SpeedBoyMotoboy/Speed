@@ -70,14 +70,23 @@ function idAparelho() {
 }
 
 function avisarNovaRota() {
-  try { navigator.vibrate?.([300, 150, 300]); } catch { /* sem vibração */ }
+  // 18/11: toque chamativo — sirene de 2 tons por ~3 s (antes era um bip só) e vibração longa.
+  try { navigator.vibrate?.([500, 200, 500, 200, 500, 200, 800]); } catch { /* sem vibração */ }
   try {
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const osc = ctx.createOscillator();
-    osc.frequency.value = 880;
-    osc.connect(ctx.destination);
-    osc.start();
-    osc.stop(ctx.currentTime + 0.4);
+    const ganho = ctx.createGain();
+    ganho.gain.value = 0.9;
+    ganho.connect(ctx.destination);
+    const tons = [880, 1320, 880, 1320, 880, 1320, 880, 1320, 1760, 1760];
+    tons.forEach((f, i) => {
+      const osc = ctx.createOscillator();
+      osc.type = 'square';
+      osc.frequency.value = f;
+      osc.connect(ganho);
+      osc.start(ctx.currentTime + i * 0.3);
+      osc.stop(ctx.currentTime + i * 0.3 + 0.25);
+    });
+    setTimeout(() => { try { ctx.close(); } catch { /* já fechado */ } }, 4000);
   } catch { /* sem som */ }
 }
 
@@ -328,6 +337,30 @@ function desenharTurno() {
     h('div', { class: 'conteudo' }, partes));
 }
 
+// Informações da parada em linhas separadas: prazo em destaque, contato com botões, observações em lista.
+function blocoInfo(p) {
+  const partes = String(p.descricao || '').split(/\s+·\s+|\n+/).map((s) => s.trim()).filter(Boolean);
+  const prazo = partes.filter((s) => /^(⏰|prazo\b)/i.test(s));
+  const obs = partes.filter((s) => !prazo.includes(s));
+  const achou = String(p.contato || '').match(/(?:\+?55\s*)?\(?\d{2}\)?\s*9?\d{4}[-\s]?\d{4}/);
+  const fone = achou ? achou[0].replace(/\D/g, '') : '';
+  const f55 = fone && (fone.length > 11 ? fone : `55${fone}`);
+  const linha = (rot, val) => h('div', { class: 'info-linha' },
+    h('span', { class: 'info-rot' }, rot), h('span', { class: 'info-val' }, val));
+  return h('div', { class: 'info' },
+    ...prazo.map((s) => h('div', { class: 'prazo' }, s)),
+    linha('Cliente', p.cliente),
+    p.servico && linha('Serviço', p.servico),
+    p.repasse != null && linha('Você recebe', reais(p.repasse)),
+    p.contato && linha(p.tipo === 'coleta' ? 'Falar com' : 'Entregar a', p.contato),
+    f55 && h('div', { class: 'info-acoes' },
+      h('a', { class: 'info-botao', href: `tel:+${f55}` }, '📞 Ligar'),
+      h('a', { class: 'info-botao', href: `https://wa.me/${f55}`, target: '_blank', rel: 'noopener' }, '💬 WhatsApp')),
+    obs.length > 0 && h('div', { class: 'info-obs' },
+      h('div', { class: 'info-rot' }, 'Observações'),
+      ...obs.map((s) => h('div', { class: 'info-item' }, `• ${s}`))));
+}
+
 function cartaoParada(p) {
   const coleta = p.tipo === 'coleta';
   const area = h('div', { class: 'botoes' });
@@ -385,11 +418,7 @@ function cartaoParada(p) {
   return h('div', { class: `cartao atual ${p.tipo}` },
     h('span', { class: `etiqueta ${p.tipo}` }, coleta ? 'AGORA: COLETA' : 'AGORA: ENTREGA'),
     h('div', { class: 'endereco' }, p.endereco),
-    h('div', { class: 'detalhe' }, `Cliente: ${p.cliente}`),
-    p.servico && h('div', { class: 'detalhe' }, `Serviço: ${p.servico}`),
-    p.repasse != null && h('div', { class: 'detalhe' }, `Você recebe: ${reais(p.repasse)}`),
-    p.contato && h('div', { class: 'detalhe' }, `Contato: ${p.contato}`),
-    p.descricao && h('div', { class: 'detalhe' }, p.descricao),
+    blocoInfo(p),
     area, erro);
 }
 

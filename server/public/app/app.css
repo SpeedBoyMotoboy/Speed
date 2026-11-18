@@ -54,3 +54,14 @@ label.marcar input { width: 24px; height: 24px; flex: none; margin-top: 1px; }
 .cartao.oferta .botoes { display: grid; grid-template-columns: 2fr 1fr; gap: 8px; margin-top: 12px; }
 .ver-termo { margin-top: 8px; font-size: 13.5px; }
 .ver-termo summary { cursor: pointer; color: var(--suave, #555); text-decoration: underline; }
+
+/* 18/11: informações da parada organizadas */
+.info { margin: 8px 0 4px; display: grid; gap: 6px; }
+.prazo { background: var(--erro); color: #fff; font-weight: 800; font-size: 16.5px; border-radius: 10px; padding: 10px 12px; overflow-wrap: anywhere; }
+.info-linha { display: grid; grid-template-columns: 96px 1fr; gap: 8px; font-size: 15px; align-items: baseline; }
+.info-rot { color: var(--suave); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; font-weight: 700; }
+.info-val { color: var(--texto); font-weight: 600; overflow-wrap: anywhere; }
+.info-acoes { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.info-botao { display: block; text-align: center; text-decoration: none; font-weight: 700; color: var(--texto); border: 1px solid var(--borda); border-radius: 10px; padding: 10px; background: #f4f6f8; }
+.info-obs { border-top: 1px dashed var(--borda); padding-top: 6px; }
+.info-item { font-size: 15px; color: var(--texto); margin-top: 3px; overflow-wrap: anywhere; }
