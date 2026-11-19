@@ -1261,7 +1261,7 @@ async function desenharConfig() {
     h('h3', null, 'Conferência dos pedidos por IA'),
     h('div', { class: 'grade3' },
       opcao('ia_ativa', 'IA confere cada pedido antes de liberar'),
-      texto('ia_chave', c.ia_chave_definida ? 'Chave da API (já salva; vazio mantém)' : 'Chave da API da Anthropic (sk-ant-...)', { type: 'password', autocomplete: 'off', value: '' }),
+      texto('ia_chave', c.ia_chave_definida ? 'Chave da API (já salva; vazio mantém)' : 'Chave da API da Anthropic (sk-ant-...) ou ponte:TOKEN', { type: 'password', autocomplete: 'off', value: '' }),
       opcao('ia_modelo', 'Modelo', [['claude-opus-5-5', 'Claude Opus 5.5 (mais capaz)'], ['claude-sonnet-5-5', 'Claude Sonnet 5.5 (intermediário)'], ['claude-haiku-5-5', 'Claude Haiku 5.5 (mais barato)']])),
     h('label', null, 'Cidades atendidas'), campos.cidades_atendidas,
     h('div', { class: 'nota' }, 'A IA lê endereços e descrição (nunca nome ou telefone do cliente), identifica o tipo de serviço e segura para você conferir o que parecer errado. Se ela estiver fora do ar ou sem crédito, os pedidos seguem as regras normais. Gere a chave em console.anthropic.com → API Keys (precisa de crédito na conta). Salve antes de testar.'),
