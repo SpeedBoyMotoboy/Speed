@@ -552,6 +552,8 @@ function janelaDemanda(existente = null, previa = null) {
       Object.entries(ROTULO_REQUISITO).map(([v, r]) => h('option', { value: v, selected: (existente?.requisito ?? previa?.requisito) === v }, r)));
     const descricao = h('input', { maxlength: 500, value: existente?.descricao || previa?.descricao?.replace(/\s*\n+\s*/g, ' · ').slice(0, 500) || '', disabled: Boolean(existente), placeholder: 'O que é, observações' });
     const agendar = h('input', { type: 'datetime-local' });
+    const tamanhoSel = h('select', null, [['', 'Normal (pequeno ou médio)'], ['g', 'G — até 40 cm (cobra a mais)'], ['gg', 'GG — mais de 40 cm (cobra a mais)']]
+      .map(([v, r]) => h('option', { value: v }, r)));
     const campos = {};
     const botoesAlvo = {};
 
@@ -611,7 +613,7 @@ function janelaDemanda(existente = null, previa = null) {
           await api('PUT', `/api/admin/demandas/${existente.id}/locais`, { coleta: ponto('coleta'), entrega: ponto('entrega') });
         } else {
           await api('POST', '/api/admin/demandas', {
-            cliente: cliente.value, requisito: requisito.value, descricao: descricao.value, mensagem_id: previa?.mensagem_id, agendada_para: agendar.value || undefined,
+            cliente: cliente.value, requisito: requisito.value, descricao: descricao.value, mensagem_id: previa?.mensagem_id, agendada_para: agendar.value || undefined, tamanho: tamanhoSel.value || undefined,
             coleta: ponto('coleta'), entrega: ponto('entrega'),
           });
         }
@@ -640,6 +642,7 @@ function janelaDemanda(existente = null, previa = null) {
         h('div', null, h('label', null, 'Exige'), requisito)),
       h('label', null, 'Descrição'), descricao,
       !existente && h('label', null, 'Agendar para (vazio = agora)'), !existente && agendar,
+      !existente && h('label', null, 'Tamanho da mercadoria'), !existente && tamanhoSel,
       h('div', { class: 'grade2' }, bloco('coleta', 'Coleta'), bloco('entrega', 'Entrega')),
       h('div', { class: 'alvo' }, botoesAlvo.coleta, botoesAlvo.entrega),
       miniEl,
@@ -1240,6 +1243,11 @@ async function desenharConfig() {
       num('preco_zona_sul', 'Acréscimo zona sul de Vila Velha (R$)', 0.01),
       num('urgente_pct', 'Urgente: % a mais', 1), num('urgente_min', 'Urgente: mínimo a mais (R$)', 0.01),
       num('urgente_repasse_pct', 'Urgente: % do extra para o motoboy', 1),
+      num('tam_g_pct', 'Tamanho G (até 40 cm): % a mais', 1), num('tam_gg_pct', 'Tamanho GG (mais de 40 cm): % a mais', 1),
+      num('tam_repasse_pct', 'Tamanho: % do extra para o motoboy', 1),
+      num('longa_km1', 'Corrida longa 1: acima de (km)', 1), num('longa_preco1', 'Corrida longa 1: R$ por km inteiro', 0.01),
+      num('longa_km2', 'Corrida longa 2: acima de (km)', 1), num('longa_preco2', 'Corrida longa 2: R$ por km inteiro', 0.01),
+      num('longa_repasse_pct', 'Corrida longa: % do total para o motoboy', 1),
       num('repasse_base', 'Motoboy avulso recebe: valor base (R$)', 0.01), num('repasse_km', 'Motoboy avulso: por km a mais (R$)', 0.01),
       num('urgente_prazo_min', 'Prazo prometido na página (min)'),
       texto('google_chave', c.google_chave_definida ? 'Chave do Google Maps (já salva; vazio mantém)' : 'Chave do Google Maps (acha endereço e loja pelo nome)', { type: 'password', autocomplete: 'off', value: '' }),

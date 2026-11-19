@@ -245,6 +245,17 @@ export const CONFIG_PADRAO = {
   urgente_pct: '40',
   urgente_min: '10',
   urgente_repasse_pct: '70',
+  // Tamanho da mercadoria: % a mais para G (até 40 cm) e GG (mais de 40 cm); parte do extra que vai ao motoboy.
+  tam_g_pct: '20',
+  tam_gg_pct: '40',
+  tam_repasse_pct: '60',
+  // Corrida longa (coleta → entrega): acima de cada limite, o km inteiro paga o valor da faixa;
+  // o motoboy avulso leva um % do valor total da corrida.
+  longa_km1: '30',
+  longa_preco1: '2.8',
+  longa_km2: '50',
+  longa_preco2: '3',
+  longa_repasse_pct: '70',
   // Pedido pelo site: 'painel' (admin aprova), 'whatsapp' (cliente confirma no WhatsApp) ou 'nenhuma'.
   pedidos_site: '1',
   site_confirmacao: 'painel',
@@ -304,7 +315,7 @@ const COLUNAS_NOVAS = {
   demandas: {
     codigo: 'TEXT', cliente_telefone: "TEXT NOT NULL DEFAULT ''", valor: 'REAL', km: 'REAL',
     retida: 'INTEGER NOT NULL DEFAULT 0',
-    urgente: 'INTEGER NOT NULL DEFAULT 0', servico: "TEXT NOT NULL DEFAULT ''", repasse: 'REAL', repasse_padrao: 'REAL', bonus_urgente: 'REAL', agendada_para: 'INTEGER', reservada_por: 'INTEGER',
+    urgente: 'INTEGER NOT NULL DEFAULT 0', servico: "TEXT NOT NULL DEFAULT ''", repasse: 'REAL', repasse_padrao: 'REAL', bonus_urgente: 'REAL', tamanho: "TEXT NOT NULL DEFAULT ''", tarifa_urgente: 'INTEGER NOT NULL DEFAULT 0', agendada_para: 'INTEGER', reservada_por: 'INTEGER',
     pagamento: "TEXT NOT NULL DEFAULT ''", pag_id: 'TEXT', pag_pix: 'TEXT', pag_qr: 'TEXT', pag_expira: 'INTEGER',
     pago_em: 'INTEGER', fila_em: 'INTEGER', comprovante_em: 'INTEGER', ia_ok: 'INTEGER', ia_obs: 'TEXT', email: "TEXT NOT NULL DEFAULT ''", sem_aceite_avisado: 'INTEGER NOT NULL DEFAULT 0',
   },

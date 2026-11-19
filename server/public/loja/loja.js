@@ -21,8 +21,8 @@ const REGRAS = [
 const TAMANHOS = [
   ['pequeno', 'Pequeno — cabe na mochila', 'qualquer'],
   ['medio', 'Médio — até 20 cm', 'qualquer'],
-  ['grande', 'Grande — até 40 cm', 'bau'],
-  ['maior', 'Mais de 40 cm — a combinar', 'bau'],
+  ['grande', 'Grande (G) — até 40 cm', 'bau'],
+  ['maior', 'Gigante (GG) — mais de 40 cm', 'bau'],
 ];
 const tamanho = (id) => TAMANHOS.find((t) => t[0] === id) || TAMANHOS[0];
 
@@ -204,7 +204,7 @@ function telaEntregas(mensagem = '') {
       try {
         cotadas = [];
         for (const p of paradas) {
-          const r = await api('POST', '/api/publico/cotar', { coleta: loja.coleta, entrega: { endereco: p.endereco }, telefone: loja.telefone });
+          const r = await api('POST', '/api/publico/cotar', { coleta: loja.coleta, entrega: { endereco: p.endereco }, telefone: loja.telefone, tamanho: p.tamanho });
           if (r.coleta.lat != null && loja.coleta.lat == null) { loja.coleta = { endereco: loja.coleta.endereco, lat: r.coleta.lat, lon: r.coleta.lon }; gravar(loja); }
           cotadas.push(r);
         }
@@ -247,7 +247,7 @@ function telaConfirmar() {
         h('div', { class: 'nota' }, [c.km != null ? km(c.km) : '', tamanho(paradas[i].tamanho)[1]].filter(Boolean).join(' · ')),
         c.zona_sul && h('div', { class: 'aviso-sul' }, 'Inclui acréscimo da zona sul de Vila Velha.'),
         paradas[i].troca && h('div', { class: 'aviso-sul' }, 'Ida e volta: o valor da volta é somado na confirmação.'),
-        paradas[i].tamanho === 'maior' && h('div', { class: 'aviso-sul' }, 'Mais de 40 cm: valor confirmado na aprovação.')),
+        c.tamanho_extra > 0 && h('div', { class: 'aviso-sul' }, `Inclui acréscimo de tamanho: ${reais(c.tamanho_extra)}.`)),
       h('b', null, c.valor != null ? reais(c.valor) : '—'))));
     const soma = cotadas.reduce((s, c) => s + (c.valor || 0), 0);
     trocar(totalEl, h('span', { class: 'nota' }, cotadas.length > 1 ? `Total (${cotadas.length} entregas)` : 'Valor'), h('b', null, reais(soma)));
@@ -296,8 +296,8 @@ function telaConfirmar() {
       c.entrega.lat = pos.lat;
       c.entrega.lon = pos.lng;
       try {
-        const r = await api('POST', '/api/publico/cotar', { coleta: loja.coleta, entrega: c.entrega, telefone: loja.telefone });
-        Object.assign(c, { km: r.km, valor: r.valor, zona_sul: r.zona_sul });
+        const r = await api('POST', '/api/publico/cotar', { coleta: loja.coleta, entrega: c.entrega, telefone: loja.telefone, tamanho: paradas[i].tamanho });
+        Object.assign(c, { km: r.km, valor: r.valor, zona_sul: r.zona_sul, tamanho_extra: r.tamanho_extra });
       } catch { /* mantém */ }
       desenhar();
     });
@@ -325,7 +325,7 @@ function montarPedido(i) {
     loja.nf && `🧾 NOTA FISCAL: CNPJ ${loja.nf.cnpj}${loja.nf.email ? ` · ${loja.nf.email}` : ''}`,
   ].filter(Boolean);
   return {
-    nome: loja.nome, telefone: loja.telefone, requisito, site: '', email: loja.nf?.email || '',
+    nome: loja.nome, telefone: loja.telefone, requisito, tamanho: p.tamanho, site: '', email: loja.nf?.email || '',
     descricao: `Loja ${loja.nome} · ${partes.join(' · ')}`.slice(0, 1200),
     coleta: { endereco: loja.coleta.endereco, lat: loja.coleta.lat, lon: loja.coleta.lon, contato: (loja.falar || `${loja.nome} ${loja.telefone}`).slice(0, 120) },
     entrega: {

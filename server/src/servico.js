@@ -34,6 +34,8 @@ const CFG_NUM = {
   diaria_valor: [0, 100000], almoco_valor: [0, 100000], almoco_min: [10, 180],
   mapa_lat: [-90, 90], mapa_lon: [-180, 180],
   preco_base: [0, 100000], preco_km_incluso: [0, 1000], preco_km: [0, 1000], preco_minimo: [0, 100000], preco_zona_sul: [0, 100000], urgente_pct: [0, 500], urgente_min: [0, 10000], urgente_repasse_pct: [0, 100],
+  tam_g_pct: [0, 500], tam_gg_pct: [0, 500], tam_repasse_pct: [0, 100],
+  longa_km1: [0, 10000], longa_preco1: [0, 1000], longa_km2: [0, 10000], longa_preco2: [0, 1000], longa_repasse_pct: [0, 100],
   convocacao_auto_max: [0, 50], convocacao_auto_espera_min: [0, 120],
   urgente_prazo_min: [5, 600], robo_pausa_horas: [1, 168], repasse_pct: [0, 100], repasse_minimo: [0, 10000], repasse_base: [0, 10000], repasse_km: [0, 1000], oferta_raio_km: [0.5, 100],
   oferta_alerta_min: [1, 120], avulso_max_horas: [1, 24], pagamento_validade_min: [5, 1440],
@@ -165,8 +167,21 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
   };
   // Repasse próprio do motoboy avulso (definido no painel): base até os km incluídos + valor por km a mais.
   // Sem valor próprio, devolve null e vale o repasse padrão da demanda.
+  // Corrida longa: acima do limite, o km inteiro paga o valor da faixa. Devolve o R$/km da faixa (0 = tabela normal).
+  function precoLonga(km) {
+    const n = Number(km);
+    if (km == null || !Number.isFinite(n)) return 0;
+    const c = cfgBruta();
+    const [k1, p1, k2, p2] = [c.longa_km1, c.longa_preco1, c.longa_km2, c.longa_preco2].map(Number);
+    if (k2 > 0 && p2 > 0 && n > k2) return p2;
+    if (k1 > 0 && p1 > 0 && n > k1) return p1;
+    return 0;
+  }
+  // Tamanho da mercadoria que cobra a mais: 'g' (até 40 cm) ou 'gg' (mais de 40 cm). Pequeno e médio = ''.
+  const lerTamanho = (t) => ({ g: 'g', grande: 'g', gg: 'gg', maior: 'gg', gigante: 'gg' }[String(t ?? '').trim().toLowerCase()] || '');
   function repasseProprio(m, km) {
     if (!m || km == null || (m.repasse_base == null && m.repasse_km == null)) return null;
+    if (precoLonga(km)) return null; // corrida longa: vale o % do total (repasse padrão da demanda)
     const c = cfgBruta();
     const base = m.repasse_base ?? Number(c.repasse_base);
     const porKm = m.repasse_km ?? Number(c.repasse_km);
@@ -198,6 +213,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
   // d: demanda (id, coleta_lat/lon, entrega_lat/lon). Sem rota aberta da mesma coleta, devolve null.
   function repasseNaRota(turno, d, mb) {
     if (!turno || turno.tipo !== 'avulso' || d.coleta_lat == null || d.entrega_lat == null) return null;
+    if (precoLonga(d.km)) return null; // corrida longa não entra na conta da rota: paga o % do total
     if (!Number(cfgBruta().repasse_base) && mb?.repasse_base == null) return null; // sem tabela de repasse
     const coleta = { lat: d.coleta_lat, lon: d.coleta_lon };
     const grupo = q(`SELECT coleta_lat, coleta_lon, entrega_lat AS lat, entrega_lon AS lon FROM demandas
@@ -212,7 +228,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     const depois = custoRota(mb, kmDepois);
     return Math.round(Math.max(0, depois - antes) * 100) / 100;
   }
-  function cotar(coleta, entrega, { km: kmRota = null, servicoId = null, telefone = '', urgente = false } = {}) {
+  function cotar(coleta, entrega, { km: kmRota = null, servicoId = null, telefone = '', urgente = false, tamanho = '' } = {}) {
     const servico = servicoId ? q('SELECT * FROM servicos WHERE id = ? AND ativo = 1').get(Number(servicoId)) || null : null;
     const nada = { km: null, valor: null, repasse: null, servico };
     if (coleta?.lat == null || entrega?.lat == null) return nada;
@@ -223,25 +239,31 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     const minimo = Number(c.preco_minimo);
     const adicional = servico?.adicional || 0;
     if (!base && !porKm && !minimo && !adicional) return { ...nada, km };
-    let valor = Math.max(minimo, base + Math.max(0, km - Number(c.preco_km_incluso)) * porKm) + adicional;
+    const porKmLonga = precoLonga(km);
+    const valorKm = porKmLonga ? km * porKmLonga : Math.max(minimo, base + Math.max(0, km - Number(c.preco_km_incluso)) * porKm);
+    let valor = valorKm + adicional;
     const fixo = telefone ? q('SELECT preco_pct FROM clientes WHERE telefone = ? AND faturado = 1').get(telefone) : null;
     if (fixo) valor *= fixo.preco_pct / 100;
     const zonaSul = naZonaSul(coleta) || naZonaSul(entrega);
     // Tarifa urgente: % a mais (com mínimo), antes do acréscimo de região. Parte do extra vai ao motoboy.
     const extraUrg = urgente ? Math.round(Math.max(Number(c.urgente_min || 0), (valor * Number(c.urgente_pct || 0)) / 100) * 100) / 100 : 0;
-    const bonus = Math.round(((extraUrg * Number(c.urgente_repasse_pct || 0)) / 100) * 100) / 100;
-    valor += extraUrg;
+    // Tamanho G/GG: % a mais sobre o mesmo valor base (soma com a urgente, não acumula). Parte do extra vai ao motoboy.
+    const tam = lerTamanho(tamanho);
+    const extraTam = tam ? Math.round(((valor * Number((tam === 'gg' ? c.tam_gg_pct : c.tam_g_pct) || 0)) / 100) * 100) / 100 : 0;
+    const bonus = Math.round(((extraUrg * Number(c.urgente_repasse_pct || 0)) / 100 + (extraTam * Number(c.tam_repasse_pct || 0)) / 100) * 100) / 100;
+    valor += extraUrg + extraTam;
     if (zonaSul) valor += Number(c.preco_zona_sul || 0);
     valor = Math.round(valor * 100) / 100;
     const pct = servico?.repasse_pct ?? Number(c.repasse_pct);
     // Tabela própria do motoboy (valor base até os km incluídos + valor por km a mais), se o dono preencheu;
     // sem ela vale o percentual do valor cobrado. O adicional do serviço segue repassado pelo percentual.
     const repBase = Number(c.repasse_base);
-    const bruto = repBase > 0
+    // Corrida longa: o motoboy leva um % do valor da corrida (sem os acréscimos), no lugar da tabela.
+    const bruto = porKmLonga ? (valorKm * Number(c.longa_repasse_pct || 0)) / 100 + (adicional * pct) / 100 : repBase > 0
       ? repBase + Math.max(0, km - Number(c.preco_km_incluso)) * Number(c.repasse_km) + (adicional * pct) / 100
       : (valor * pct) / 100;
     const repasse = Math.round((Math.max(Number(c.repasse_minimo), bruto) + bonus) * 100) / 100;
-    return { km, valor, repasse, servico, zona_sul: zonaSul, urgente_extra: extraUrg, bonus };
+    return { km, valor, repasse, servico, zona_sul: zonaSul, urgente_extra: extraUrg, bonus, tamanho: tam, tamanho_extra: extraTam, longa: Boolean(porKmLonga) };
   }
 
   // ------------------------------------------- tipos de serviço e clientes fixos
@@ -818,7 +840,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       cliente, requisito, descricao: txt(d?.descricao, 1200),
       telefone: normalizarTelefone(d?.cliente_telefone ?? d?.telefone),
       agendadaPara: lerAgendada(d?.agendada_para),
-      urgente: d?.urgente ? 1 : 0, tarifaUrgente: d?.tarifa_urgente === true, servicoId: d?.servico_id ? Number(d.servico_id) : null,
+      urgente: d?.urgente ? 1 : 0, tarifaUrgente: d?.tarifa_urgente === true, tamanho: lerTamanho(d?.tamanho), servicoId: d?.servico_id ? Number(d.servico_id) : null,
       km: Number.isFinite(Number(d?.km)) && Number(d?.km) > 0 ? Number(d.km) : null, email: txt(d?.email, 120),
       coleta: lerPonto(d?.coleta, 'coleta'), entrega: lerPonto(d?.entrega, 'entrega'),
     };
@@ -826,7 +848,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
   // `retida`: fica parada (sem despacho) até o admin aprovar ou o cliente confirmar.
   function inserirDemanda(v, origem, ator, { retida = false, pagamento = '', ia = null } = {}) {
     const completo = v.coleta.lat != null && v.entrega.lat != null;
-    const { km, valor, repasse, servico, bonus } = cotar(v.coleta, v.entrega, { km: v.km, servicoId: v.servicoId, telefone: v.telefone, urgente: v.tarifaUrgente });
+    const { km, valor, repasse, servico, bonus } = cotar(v.coleta, v.entrega, { km: v.km, servicoId: v.servicoId, telefone: v.telefone, urgente: v.tarifaUrgente, tamanho: v.tamanho });
     const r = q(`INSERT INTO demandas (cliente, descricao, requisito, origem,
         coleta_endereco, coleta_lat, coleta_lon, coleta_contato,
         entrega_endereco, entrega_lat, entrega_lon, entrega_contato, status, criada_em,
@@ -841,6 +863,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
         ia ? (ia.aprovado ? 1 : 0) : null, ia ? txt(ia.aprovado ? ia.resumo : ia.motivos.join(' · '), 500) : null);
     const id = Number(r.lastInsertRowid);
     if (bonus) q('UPDATE demandas SET bonus_urgente = ? WHERE id = ?').run(bonus, id);
+    if (v.tamanho || v.tarifaUrgente) q('UPDATE demandas SET tamanho = ?, tarifa_urgente = ? WHERE id = ?').run(v.tamanho, v.tarifaUrgente ? 1 : 0, id);
     if (v.agendadaPara) q('UPDATE demandas SET agendada_para = ? WHERE id = ?').run(v.agendadaPara, id);
     auditar(ator, 'demanda_criada', `#${id} ${v.cliente}`);
     emitir('demanda_criada', { demanda: q('SELECT * FROM demandas WHERE id = ?').get(id) });
@@ -895,7 +918,9 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       const c = cfgBruta();
       const serv = d.servico ? q('SELECT * FROM servicos WHERE nome = ?').get(d.servico) : null;
       const pct = serv?.repasse_pct ?? Number(c.repasse_pct);
-      const repasse = Math.round(Math.max(Number(c.repasse_minimo), (valor * pct) / 100) * 100) / 100;
+      // Valor igual ao cotado: o repasse já calculado (tabela, tamanho, corrida longa) continua valendo.
+      const igual = d.valor != null && d.repasse != null && Math.abs(valor - d.valor) < 0.01;
+      const repasse = igual ? d.repasse : Math.round(Math.max(Number(c.repasse_minimo), (valor * pct) / 100) * 100) / 100;
       q('UPDATE demandas SET valor = ?, repasse = ?, repasse_padrao = NULL WHERE id = ?').run(Math.round(valor * 100) / 100, repasse, id);
       auditar(ator, 'demanda_valor', `#${id} ${valor}`);
     }
@@ -953,7 +978,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     const entrega = lerPonto({ endereco: d.entrega_endereco, lat: d.entrega_lat, lon: d.entrega_lon, ...dados?.entrega }, 'entrega');
     if (coleta.lat == null || entrega.lat == null) throw new Erro(422, 'local_invalido', 'Marque coleta e entrega no mapa.');
     const servicoId = d.servico ? q('SELECT id FROM servicos WHERE nome = ?').get(d.servico)?.id : null;
-    const { km, valor, repasse } = cotar(coleta, entrega, { servicoId, telefone: d.cliente_telefone });
+    const { km, valor, repasse, bonus } = cotar(coleta, entrega, { servicoId, telefone: d.cliente_telefone, urgente: d.tarifa_urgente === 1, tamanho: d.tamanho });
     // Já pago: o valor combinado com o cliente não muda.
     const novoValor = d.pagamento === 'pago' ? d.valor : valor;
     const novoRepasse = d.pagamento === 'pago' ? d.repasse : repasse;
@@ -961,6 +986,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     const cobrar = precisaCobrar(d, novoValor);
     const segurar = d.pagamento === 'pendente' || cobrar;
     tx(() => {
+      if (d.pagamento !== 'pago') q('UPDATE demandas SET bonus_urgente = ? WHERE id = ?').run(bonus || null, d.id);
       q(`UPDATE demandas SET coleta_endereco=?, coleta_lat=?, coleta_lon=?, entrega_endereco=?, entrega_lat=?,
          entrega_lon=?, status='aguardando', km=?, valor=?, repasse=?, repasse_padrao=NULL, retida=?, fila_em=? WHERE id=?`)
         .run(coleta.endereco, coleta.lat, coleta.lon, entrega.endereco, entrega.lat, entrega.lon, km, novoValor, novoRepasse,
@@ -1292,7 +1318,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       FROM ofertas o JOIN demandas d ON d.id = o.demanda_id
       WHERE o.turno_id = ? AND o.status = 'aberta' AND d.status = 'aguardando' AND d.retida = 0
       ORDER BY o.id`).all(turno.id).map(({ coleta_lat, coleta_lon, entrega_lat, entrega_lon, bonus_urgente, ...o }) => {
-        const naRota = repasseNaRota(turno, { id: o.demanda_id, coleta_lat, coleta_lon, entrega_lat, entrega_lon }, m);
+        const naRota = repasseNaRota(turno, { id: o.demanda_id, km: o.km, coleta_lat, coleta_lon, entrega_lat, entrega_lon }, m);
         const proprio = naRota ?? repasseProprio(m, o.km);
         const kmMais = naRota != null ? ultimoKmExtra : (o.dist_km || 0) + (o.km || 0);
         return {

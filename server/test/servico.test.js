@@ -359,3 +359,45 @@ test('central finaliza a entrega com motivo', () => {
   assert.match(d.entrega_justificativa, /Finalizada pela central: motoboy esqueceu/);
   assert.throws(() => s.finalizarDemanda(id, '', 'admin:teste'), /finalizada/);
 });
+
+const TABELA = { preco_base: '25', preco_km: '2', preco_minimo: '25', preco_km_incluso: '10', repasse_base: '15', repasse_km: '1.5' };
+
+test('tamanho G/GG: % a mais sobre o base, 60% do extra ao motoboy, soma com a urgente', () => {
+  const { s } = montar();
+  s.salvarConfig(TABELA, 'teste');
+  const normal = s.cotar(P(0), P(5), { km: 15, tamanho: 'medio' });
+  assert.equal(normal.valor, 35);
+  assert.equal(normal.repasse, 22.5);
+  const g = s.cotar(P(0), P(5), { km: 15, tamanho: 'grande' });
+  assert.equal(g.valor, 42);
+  assert.equal(g.repasse, 26.7);
+  assert.equal(g.tamanho_extra, 7);
+  const gg = s.cotar(P(0), P(5), { km: 15, tamanho: 'gg' });
+  assert.equal(gg.valor, 49);
+  assert.equal(gg.repasse, 30.9);
+  const tudo = s.cotar(P(0), P(5), { km: 15, tamanho: 'maior', urgente: true });
+  assert.equal(tudo.valor, 63); // 35 + 14 (urgente) + 14 (GG)
+  assert.equal(tudo.repasse, 40.7); // 22,50 + 9,80 + 8,40
+  const d = s.criarPedido({ cliente: 'Loja Teste', telefone: '27999990000', coleta: { endereco: 'Rua A, 1', ...P(0) }, entrega: { endereco: 'Rua B, 2', ...P(5) }, km: 15, tamanho: 'maior' }, 'site', {});
+  assert.equal(d.valor, 49);
+  assert.equal(d.tamanho, 'gg');
+  assert.equal(d.repasse, 30.9);
+});
+
+test('corrida longa: km inteiro na faixa (teto R$ 3) e 70% do total para o motoboy', () => {
+  const { s } = montar();
+  s.salvarConfig(TABELA, 'teste');
+  const caso = (km, valor, repasse, extra = {}) => {
+    const c = s.cotar(P(0), P(5), { km, ...extra });
+    assert.equal(c.valor, valor, `valor ${km} km`);
+    assert.equal(c.repasse, repasse, `repasse ${km} km`);
+  };
+  caso(30, 65, 45); // até 30 km: tabela normal
+  caso(31, 86.8, 60.76);
+  caso(50, 140, 98);
+  caso(60, 180, 126);
+  caso(120, 360, 252);
+  caso(60, 252, 169.2, { tamanho: 'gg' }); // 180 + 72; motoboy 126 + 43,20
+  s.salvarConfig({ longa_km1: '0', longa_km2: '0' }, 'teste'); // desligada: volta a tabela normal
+  caso(60, 125, 90);
+});
