@@ -346,7 +346,9 @@ function desenharTurno() {
     return;
   }
   // No Android o app é obrigatório: no navegador, depois do login, só aparece a tela de instalar.
-  if (!nativo && /android/i.test(navigator.userAgent)) {
+  // Desligado em 19/11: o Google Play Protect bloqueia o APK fora da loja. Volta quando o app estiver na Play Store.
+  const APP_OBRIGATORIO = false;
+  if (APP_OBRIGATORIO && !nativo && /android/i.test(navigator.userAgent)) {
     const abrir = `intent://entrar?t=${encodeURIComponent(token)}#Intent;scheme=speedy;package=br.com.speedboy.motoboy;end`;
     trocar(raiz,
       h('div', { class: 'topo' }, h('div', { class: 'nome' }, motoboy.nome), h('div', { class: 'info' }, 'Falta instalar o app')),
