@@ -109,6 +109,7 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
   rota('POST', '/api/publico/pedidos', 'publico', ({ corpo, ip }) => atendimento.pedidoSite(corpo, ip));
   rota('GET', '/api/publico/empresa', 'publico', ({ url }) => atendimento.empresaPublica(url.searchParams.get('k')));
   rota('POST', '/api/publico/empresa/pedidos', 'publico', ({ corpo, ip }) => atendimento.pedidoEmpresa(corpo, ip));
+  rota('GET', '/api/publico/empresa/entregas', 'publico', ({ url }) => atendimento.entregasEmpresa(url.searchParams.get('k'), url.searchParams.get('periodo')));
   // Cadastro de motoboy pela página pública: fica pendente até o dono responder no painel.
   rota('POST', '/api/publico/cadastro', 'publico', ({ corpo, ip }) => {
     const r = servico.candidatar(corpo, ip);

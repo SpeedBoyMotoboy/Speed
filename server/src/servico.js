@@ -253,6 +253,13 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     const porKm = Number(c.preco_km);
     const minimo = Number(c.preco_minimo);
     const adicional = servico?.adicional || 0;
+    // Preço fixo do tipo de serviço (ex.: Correios): qualquer distância, sem acréscimos; o motoboy leva o fixo dele.
+    if (Number(servico?.preco_fixo) > 0) {
+      const valorFixo = reaisInteiros(servico.preco_fixo);
+      const pctFixo = servico.repasse_pct ?? Number(c.repasse_pct);
+      const repFixo = reaisInteiros(servico.repasse_fixo != null ? servico.repasse_fixo : (valorFixo * pctFixo) / 100);
+      return { km, valor: valorFixo, repasse: repFixo, servico, zona_sul: false, urgente_extra: 0, bonus: 0, tamanho: lerTamanho(tamanho), tamanho_extra: 0, longa: false, fixo: true };
+    }
     if (!base && !porKm && !minimo && !adicional) return { ...nada, km };
     const normal = (k) => Math.max(minimo, base + Math.max(0, k - Number(c.preco_km_incluso)) * porKm);
     const porKmLonga = precoLonga(km);
@@ -293,12 +300,20 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     if (!Number.isFinite(adicional) || adicional < 0 || adicional > 100000) throw new Erro(422, 'servico_invalido', 'Valor adicional inválido.');
     if (pct != null && (!Number.isFinite(pct) || pct < 0 || pct > 100)) throw new Erro(422, 'servico_invalido', 'Repasse entre 0 e 100%.');
     const ativo = d?.ativo === false || d?.ativo === 0 ? 0 : 1;
+    const lerFixo = (v) => {
+      if (v == null || v === '') return null;
+      const n = Number(v);
+      if (!Number.isFinite(n) || n < 0 || n > 100000) throw new Erro(422, 'servico_invalido', 'Preço fixo inválido.');
+      return n > 0 ? n : null;
+    };
+    const precoFixo = lerFixo(d?.preco_fixo);
+    const repasseFixo = precoFixo == null ? null : lerFixo(d?.repasse_fixo);
     if (d?.id) {
-      const r = q('UPDATE servicos SET nome = ?, adicional = ?, repasse_pct = ?, ativo = ? WHERE id = ?').run(nome, adicional, pct, ativo, Number(d.id));
+      const r = q('UPDATE servicos SET nome = ?, adicional = ?, repasse_pct = ?, ativo = ?, preco_fixo = ?, repasse_fixo = ? WHERE id = ?').run(nome, adicional, pct, ativo, precoFixo, repasseFixo, Number(d.id));
       if (!r.changes) throw new Erro(404, 'nao_encontrado', 'Tipo de serviço não encontrado.');
     } else {
       const ordem = q('SELECT COALESCE(MAX(ordem), 0) + 1 AS n FROM servicos').get().n;
-      q('INSERT INTO servicos (nome, adicional, repasse_pct, ativo, ordem) VALUES (?,?,?,?,?)').run(nome, adicional, pct, ativo, ordem);
+      q('INSERT INTO servicos (nome, adicional, repasse_pct, ativo, ordem, preco_fixo, repasse_fixo) VALUES (?,?,?,?,?,?,?)').run(nome, adicional, pct, ativo, ordem, precoFixo, repasseFixo);
     }
     auditar(ator, 'servico_salvo', nome);
   }

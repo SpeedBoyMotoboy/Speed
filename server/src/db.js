@@ -323,7 +323,8 @@ const COLUNAS_NOVAS = {
   motoboys: { tipo: "TEXT NOT NULL DEFAULT 'diaria'", pin_claro: 'TEXT', documento: "TEXT NOT NULL DEFAULT ''", placa: "TEXT NOT NULL DEFAULT ''", diaria_valor: 'REAL', repasse_base: 'REAL', repasse_km: 'REAL', ve_valores: 'INTEGER NOT NULL DEFAULT 0', reserva_bloqueio_ate: 'INTEGER' },
   turnos: { tipo: "TEXT NOT NULL DEFAULT 'diaria'" },
   clientes: { faturado: 'INTEGER NOT NULL DEFAULT 0', preco_pct: 'REAL NOT NULL DEFAULT 100', email: "TEXT NOT NULL DEFAULT ''",
-    chave: 'TEXT', cnpj: "TEXT NOT NULL DEFAULT ''", entrega_fixa: 'TEXT', libera_direto: 'INTEGER NOT NULL DEFAULT 0', fechamento: "TEXT NOT NULL DEFAULT ''" },
+    chave: 'TEXT', cnpj: "TEXT NOT NULL DEFAULT ''", entrega_fixa: 'TEXT', libera_direto: 'INTEGER NOT NULL DEFAULT 0', fechamento: "TEXT NOT NULL DEFAULT ''", coleta_fixa: 'TEXT' },
+  servicos: { preco_fixo: 'REAL', repasse_fixo: 'REAL' },
   convocacoes: { origem: "TEXT NOT NULL DEFAULT 'admin'" },
   conversas: {
     telefone: 'TEXT', destino: 'TEXT', etapa: "TEXT NOT NULL DEFAULT ''", dados: "TEXT NOT NULL DEFAULT '{}'",
@@ -362,6 +363,14 @@ export function abrirBanco(arquivo) {
   if (db.prepare('SELECT COUNT(*) AS n FROM servicos').get().n === 0) {
     const novo = db.prepare('INSERT INTO servicos (nome, ordem) VALUES (?, ?)');
     SERVICOS_PADRAO.forEach((nome, i) => novo.run(nome, i));
+  }
+  // Correios: preço fixo em qualquer distância (código pronto / preencher à mão). Cria uma vez só.
+  if (!db.prepare("SELECT 1 FROM config WHERE chave = 'servicos_correios'").get()) {
+    const ordem = db.prepare('SELECT COALESCE(MAX(ordem), 0) AS n FROM servicos').get().n;
+    const novo = db.prepare('INSERT INTO servicos (nome, adicional, preco_fixo, repasse_fixo, ordem) VALUES (?, 0, ?, ?, ?)');
+    novo.run('Correios — postagem com código pronto', 45, 30, ordem + 1);
+    novo.run('Correios — preencher os dados à mão', 65, 45, ordem + 2);
+    db.prepare("INSERT INTO config (chave, valor) VALUES ('servicos_correios', '1')").run();
   }
   return db;
 }

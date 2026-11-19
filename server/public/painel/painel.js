@@ -572,6 +572,25 @@ function janelaDemanda(existente = null, previa = null) {
     const agendar = h('input', { type: 'datetime-local' });
     const tamanhoSel = h('select', null, [['', 'Normal (pequeno ou médio)'], ['g', 'G — até 40 cm (cobra a mais)'], ['gg', 'GG — mais de 40 cm (cobra a mais)']]
       .map(([v, r]) => h('option', { value: v }, r)));
+    // Tipo de serviço (só na criação). Correios: preço fixo e entrega na agência mais próxima da coleta.
+    let listaServ = [];
+    const servicoSel = h('select', null, h('option', { value: '' }, 'Normal (preço por km)'));
+    const notaServ = h('p', { class: 'nota' }, 'Correios: valor fixo em qualquer distância. O motoboy posta na agência mais próxima da coleta — não precisa marcar a entrega.');
+    notaServ.hidden = true;
+    const ehCorreio = () => {
+      const s = listaServ.find((x) => String(x.id) === servicoSel.value);
+      return Boolean(s && Number(s.preco_fixo) > 0 && /correio/i.test(s.nome));
+    };
+    if (!existente) {
+      api('GET', '/api/admin/servicos').then(({ servicos: todos }) => {
+        listaServ = todos.filter((s) => s.ativo);
+        for (const s of listaServ) servicoSel.append(h('option', { value: s.id }, s.preco_fixo ? `${s.nome} — ${reais(s.preco_fixo)} fixo` : s.nome));
+      }).catch(() => {});
+    }
+    servicoSel.addEventListener('change', () => {
+      notaServ.hidden = !ehCorreio();
+      if (ehCorreio() && !campos.entrega.endereco.value.trim()) campos.entrega.endereco.value = 'Agência dos Correios mais próxima';
+    });
     const campos = {};
     const botoesAlvo = {};
 
@@ -626,6 +645,11 @@ function janelaDemanda(existente = null, previa = null) {
           endereco: campos[qual].endereco.value, contato: campos[qual].contato.value,
           lat: pontos[qual].lat, lon: pontos[qual].lon,
         });
+        if (!existente && ehCorreio() && pontos.entrega.lat == null && pontos.coleta.lat != null) {
+          pontos.entrega.lat = pontos.coleta.lat;
+          pontos.entrega.lon = pontos.coleta.lon;
+          if (!campos.entrega.endereco.value.trim()) campos.entrega.endereco.value = 'Agência dos Correios mais próxima';
+        }
         if (pontos.coleta.lat == null || pontos.entrega.lat == null) throw new Error('Marque coleta e entrega no mapa.');
         if (existente) {
           await api('PUT', `/api/admin/demandas/${existente.id}/dados`, {
@@ -639,7 +663,7 @@ function janelaDemanda(existente = null, previa = null) {
           }
         } else {
           await api('POST', '/api/admin/demandas', {
-            cliente: cliente.value, requisito: requisito.value, descricao: descricao.value, mensagem_id: previa?.mensagem_id, telefone: previa?.telefone || undefined, agendada_para: agendar.value || undefined, tamanho: tamanhoSel.value || undefined,
+            cliente: cliente.value, requisito: requisito.value, descricao: descricao.value, mensagem_id: previa?.mensagem_id, telefone: previa?.telefone || undefined, agendada_para: agendar.value || undefined, tamanho: tamanhoSel.value || undefined, servico_id: servicoSel.value || undefined,
             coleta: ponto('coleta'), entrega: ponto('entrega'),
           });
         }
@@ -670,6 +694,7 @@ function janelaDemanda(existente = null, previa = null) {
       existente && ['atribuida', 'coletada'].includes(existente.status) && h('p', { class: 'nota' }, 'Já tem motoboy: o endereço não muda mais por aqui. Para outro destino, use "+ Entrega" no pedido.'),
       !existente && h('label', null, 'Agendar para (vazio = agora)'), !existente && agendar,
       !existente && h('label', null, 'Tamanho da mercadoria'), !existente && tamanhoSel,
+      !existente && h('label', null, 'Tipo de serviço'), !existente && servicoSel, !existente && notaServ,
       h('div', { class: 'grade2' }, bloco('coleta', 'Coleta'), bloco('entrega', 'Entrega')),
       h('div', { class: 'alvo' }, botoesAlvo.coleta, botoesAlvo.entrega),
       miniEl,
@@ -1321,10 +1346,12 @@ async function desenharConfig() {
     const adicional = h('input', { type: 'number', step: 0.01, min: 0, value: sv?.adicional ?? 0 });
     const pct = h('input', { type: 'number', step: 1, min: 0, max: 100, value: sv?.repasse_pct ?? '', placeholder: `Padrão (${c.repasse_pct}%)` });
     const ativo = h('input', { type: 'checkbox', checked: sv ? sv.ativo : true });
+    const fixo = h('input', { type: 'number', step: 0.01, min: 0, value: sv?.preco_fixo ?? '', placeholder: 'Vazio = preço por km' });
+    const repFixo = h('input', { type: 'number', step: 0.01, min: 0, value: sv?.repasse_fixo ?? '', placeholder: 'Vazio = % do repasse' });
     const ok = h('button', {
       class: 'primario',
       onclick: () => dlg.executar(async () => {
-        await api('POST', '/api/admin/servicos', { id: sv?.id, nome: nome.value, adicional: adicional.value, repasse_pct: pct.value, ativo: ativo.checked });
+        await api('POST', '/api/admin/servicos', { id: sv?.id, nome: nome.value, adicional: adicional.value, repasse_pct: pct.value, ativo: ativo.checked, preco_fixo: fixo.value, repasse_fixo: repFixo.value });
         desenharConfig();
       }, ok),
     }, 'Salvar');
@@ -1333,6 +1360,9 @@ async function desenharConfig() {
       h('div', { class: 'grade2' },
         h('div', null, h('label', null, 'Soma no preço (R$)'), adicional),
         h('div', null, h('label', null, 'Repasse ao avulso (%)'), pct)),
+      h('div', { class: 'grade2' },
+        h('div', null, h('label', null, 'Preço fixo, qualquer distância (R$)'), fixo),
+        h('div', null, h('label', null, 'Motoboy recebe no fixo (R$)'), repFixo)),
       h('label', { class: 'marcar' }, ativo, 'Ativo (aparece para o cliente)'),
       h('div', { class: 'linha fim' }, h('button', { onclick: dlg.fechar }, 'Voltar'), ok)];
   });
@@ -1445,8 +1475,8 @@ async function desenharConfig() {
       h('thead', null, h('tr', null, h('th', null, 'Serviço'), h('th', { class: 'num' }, 'Soma no preço'), h('th', { class: 'num' }, 'Repasse ao avulso'), h('th', null, ''))),
       h('tbody', null, servicos.map((sv) => h('tr', null,
         h('td', null, sv.nome, !sv.ativo && chip('desligado', 'inativo')),
-        h('td', { class: 'num' }, reais(sv.adicional)),
-        h('td', { class: 'num' }, sv.repasse_pct == null ? `padrão (${c.repasse_pct}%)` : `${sv.repasse_pct}%`),
+        h('td', { class: 'num' }, sv.preco_fixo ? `${reais(sv.preco_fixo)} fixo` : reais(sv.adicional)),
+        h('td', { class: 'num' }, sv.preco_fixo && sv.repasse_fixo != null ? `${reais(sv.repasse_fixo)} fixo` : sv.repasse_pct == null ? `padrão (${c.repasse_pct}%)` : `${sv.repasse_pct}%`),
         h('td', null, h('button', { class: 'pequeno', onclick: () => janelaServico(sv) }, 'Editar')))))),
     h('div', { class: 'linha' }, h('button', { class: 'pequeno', onclick: () => janelaServico() }, '+ Novo tipo de serviço'), avisoLista),
 

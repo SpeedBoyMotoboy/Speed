@@ -637,7 +637,7 @@ export function criarAtendimento({
       prazo_min: Number(c.urgente_prazo_min), pagamento: modoConfirmacao() === 'pagamento',
       pede_email: servico.modoPagamento() === 'mp', whatsapp: c.empresa_whatsapp,
       acrescimos: { urgente_pct: Number(c.urgente_pct || 0), g_pct: Number(c.tam_g_pct || 0), gg_pct: Number(c.tam_gg_pct || 0), tamanho_ate_km: Number(c.longa_km1 || 0) },
-      servicos: servico.listarServicos().filter((x) => x.ativo).map((x) => ({ id: x.id, nome: x.nome, adicional: x.adicional })),
+      servicos: servico.listarServicos().filter((x) => x.ativo).map((x) => ({ id: x.id, nome: x.nome, adicional: x.adicional, preco_fixo: x.preco_fixo || null })),
     };
   }
   // ── Link próprio de empresa (/empresa/?k=CHAVE): busca em fornecedores, entrega fixa, fatura do mês ──
@@ -648,16 +648,20 @@ export function criarAtendimento({
     return cli;
   }
   const entregaFixa = (cli) => { try { return JSON.parse(cli.entrega_fixa || 'null'); } catch { return null; } };
+  const coletaFixa = (cli) => { try { return JSON.parse(cli.coleta_fixa || 'null'); } catch { return null; } };
   function empresaPublica(k) {
     const cli = empresaDaChave(k);
     const fixa = entregaFixa(cli);
-    return { nome: cli.nome, entrega: fixa ? { endereco: fixa.endereco } : null, fechamento: cli.fechamento || 'mensal' };
+    const cf = coletaFixa(cli);
+    return { nome: cli.nome, entrega: fixa ? { endereco: fixa.endereco } : null, coleta: cf ? { endereco: cf.endereco } : null, fechamento: cli.fechamento || 'mensal' };
   }
   async function pedidoEmpresa(dados, ip) {
     limitar(`empresa:${ip}`, 60, 60 * MIN);
     const cli = empresaDaChave(dados?.k);
     const horario = servico.foraDoHorario();
     if (horario) throw new Erro(403, 'fechado', `Estamos fechados agora. Atendimento: ${horario}.`);
+    const cf = coletaFixa(cli);
+    if (cf) return pedidoLoja(cli, cf, dados);
     const fixa = entregaFixa(cli);
     if (!fixa) throw new Erro(422, 'sem_destino', 'Empresa sem endereço de entrega cadastrado. Fale com a SpeedBoy.');
     const coleta = lerPontoPublico(dados?.coleta);
@@ -686,6 +690,76 @@ export function criarAtendimento({
       d.status === 'sem_local' ? '⚠️ Não achei o fornecedor no mapa: marque no painel.' : '',
     ].filter(Boolean).join('\n'));
     return { id: d.id, codigo: d.codigo, status: d.status, valor: d.valor, km: d.km };
+  }
+
+  // Loja com coleta fixa (ex.: Enxoval): só diz para onde vai e quem recebe. A loja paga no fechamento.
+  async function pedidoLoja(cli, cf, dados) {
+    const entrega = lerPontoPublico(dados?.entrega);
+    if (entrega.endereco.length < 6) throw new Erro(422, 'endereco_invalido', 'Escreva o endereço de entrega com rua, número e bairro.');
+    const recebe = txt(dados?.recebe, 80);
+    if (recebe.length < 2) throw new Erro(422, 'recebedor_invalido', 'Diga quem vai receber.');
+    entrega.contato = [recebe, txt(dados?.fone, 30)].filter(Boolean).join(' · ');
+    await acharNoMapa(entrega);
+    const coleta = { endereco: txt(cf.endereco, 200), lat: cf.lat ?? null, lon: cf.lon ?? null, contato: txt(cf.contato, 120) };
+    if (coleta.lat == null) {
+      const p = { endereco: cf.busca || cf.endereco, lat: null };
+      await acharNoMapa(p);
+      if (p.lat != null) {
+        coleta.lat = p.lat; coleta.lon = p.lon;
+        q('UPDATE clientes SET coleta_fixa = ? WHERE id = ?').run(JSON.stringify({ ...cf, lat: p.lat, lon: p.lon }), cli.id);
+      }
+    }
+    const km = await distancia(coleta, entrega);
+    const oque = txt(dados?.oque, 300);
+    const autoriza = txt(dados?.autoriza, 80);
+    const grande = ['grande', 'maior', 'g', 'gg'].includes(String(dados?.tamanho || ''));
+    const semanal = cli.fechamento === 'semanal';
+    const descricao = [
+      oque && `📦 ${oque}`,
+      cf.obs && `🏬 ${txt(cf.obs, 200)}`,
+      autoriza && `✅ Pedido por ${autoriza} (${cli.nome}).`,
+      `💳 Pago pela ${cli.nome} (fechamento ${semanal ? 'semanal' : 'mensal'}): não cobrar de quem recebe.`,
+    ].filter(Boolean).join(' · ');
+    const d = servico.criarPedido({
+      cliente: cli.nome, telefone: cli.telefone, descricao, requisito: grande ? 'bau' : 'qualquer', tamanho: dados?.tamanho,
+      urgente: false, km, email: cli.email, coleta, entrega,
+    }, 'empresa', { retida: !cli.libera_direto, pagamento: 'faturado' });
+    q('UPDATE clientes SET pedidos = pedidos + 1 WHERE id = ?').run(cli.id);
+    avisarAdmin([
+      `🏬 ${cli.nome} lançou a entrega #${d.id}${cli.libera_direto ? ' (já foi para os motoboys)' : ': aprove no painel'}.`,
+      `📦 Coleta: ${d.coleta_endereco || '-'}`, `🏁 Entrega: ${d.entrega_endereco || '-'} (${entrega.contato})`, oque ? `📝 ${oque}` : '',
+      d.km != null ? `📏 ${String(d.km).replace('.', ',')} km` : '', d.valor != null ? `💰 ${reais(d.valor)} (fechamento ${semanal ? 'semanal' : 'mensal'})` : '',
+      d.status === 'sem_local' ? '⚠️ Não achei o endereço no mapa: marque no painel.' : '',
+    ].filter(Boolean).join('\n'));
+    return { id: d.id, codigo: d.codigo, status: d.status, valor: d.valor, km: d.km };
+  }
+  // Lista das entregas da empresa no período (a "planilha" do fechamento).
+  function entregasEmpresa(k, periodo) {
+    const cli = empresaDaChave(k);
+    const H3 = 3 * 3600e3;
+    const DIA = 86400e3;
+    const br = new Date(agora() - H3);
+    const y = br.getUTCFullYear();
+    const m = br.getUTCMonth();
+    const segunda = Date.UTC(y, m, br.getUTCDate() - ((br.getUTCDay() + 6) % 7)) + H3;
+    const SEMPRE = Number.MAX_SAFE_INTEGER;
+    const faixas = {
+      semana: [segunda, SEMPRE], passada: [segunda - 7 * DIA, segunda],
+      mes: [Date.UTC(y, m, 1) + H3, SEMPRE], mes_passado: [Date.UTC(y, m - 1, 1) + H3, Date.UTC(y, m, 1) + H3],
+    };
+    const qual = faixas[periodo] ? periodo : (cli.fechamento === 'semanal' ? 'semana' : 'mes');
+    const [ini, fim] = faixas[qual];
+    const linhas = q(`SELECT id, codigo, criado_em, entregue_em, status, retida, coleta_endereco, entrega_endereco, entrega_contato, valor, km
+      FROM demandas WHERE cliente_telefone = ? AND criado_em >= ? AND criado_em < ? ORDER BY id`).all(cli.telefone, ini, fim);
+    const validas = linhas.filter((l) => l.status !== 'cancelada');
+    const total = Math.round(validas.reduce((s, l) => s + (Number(l.valor) || 0), 0) * 100) / 100;
+    return {
+      nome: cli.nome, periodo: qual, de: ini, ate: fim === SEMPRE ? null : fim, quantidade: validas.length, total,
+      entregas: linhas.map((l) => ({
+        id: l.id, codigo: l.codigo, criado_em: l.criado_em, entregue_em: l.entregue_em, status: l.status, retida: Boolean(l.retida),
+        de: l.coleta_endereco, para: l.entrega_endereco, quem: l.entrega_contato, km: l.km, valor: l.status === 'cancelada' ? 0 : l.valor,
+      })),
+    };
   }
 
   function lerPontoPublico(p) {
@@ -890,7 +964,7 @@ export function criarAtendimento({
   return {
     avisarDono: (texto) => { try { avisarAdmin(texto); } catch { /* aviso é cortesia */ } },
     definirOrigem, receber, segredoConfere, webhookAutorizado, despacharSaida, rotina,
-    infoPublica, sugerirPublico, cotarPublico, pedidoSite, pedidoVivo, empresaPublica, pedidoEmpresa, webhookPagamento, expirarPagamentos,
+    infoPublica, sugerirPublico, cotarPublico, pedidoSite, pedidoVivo, empresaPublica, pedidoEmpresa, entregasEmpresa, webhookPagamento, expirarPagamentos,
     resumo, responder, modoConversa, testar, testarIA, analisarArquivos, analisarConversa, listarAnalises,
   };
 }
