@@ -570,6 +570,8 @@ function janelaDemanda(existente = null, previa = null) {
       Object.entries(ROTULO_REQUISITO).map(([v, r]) => h('option', { value: v, selected: (existente?.requisito ?? previa?.requisito) === v }, r)));
     const descricao = h('input', { maxlength: 500, value: existente?.descricao || previa?.descricao?.replace(/\s*\n+\s*/g, ' · ').slice(0, 500) || '', placeholder: 'O que é, observações' });
     const agendar = h('input', { type: 'datetime-local' });
+    const horaTipo = h('select', null, [['', 'Sem horário'], ['ate', 'Entregar até'], ['apartir', 'Coletar a partir de']].map(([v, r]) => h('option', { value: v }, r)));
+    const horaVal = h('input', { type: 'time' });
     const tamanhoSel = h('select', null, [['', 'Normal (pequeno ou médio)'], ['g', 'G — até 40 cm (cobra a mais)'], ['gg', 'GG — mais de 40 cm (cobra a mais)']]
       .map(([v, r]) => h('option', { value: v }, r)));
     // Tipo de serviço (só na criação). Correios: preço fixo e entrega na agência mais próxima da coleta.
@@ -663,7 +665,7 @@ function janelaDemanda(existente = null, previa = null) {
           }
         } else {
           await api('POST', '/api/admin/demandas', {
-            cliente: cliente.value, requisito: requisito.value, descricao: descricao.value, mensagem_id: previa?.mensagem_id, telefone: previa?.telefone || undefined, agendada_para: agendar.value || undefined, tamanho: tamanhoSel.value || undefined, servico_id: servicoSel.value || undefined,
+            cliente: cliente.value, requisito: requisito.value, descricao: descricao.value, mensagem_id: previa?.mensagem_id, telefone: previa?.telefone || undefined, agendada_para: agendar.value || undefined, hora_tipo: horaTipo.value || undefined, hora: horaTipo.value ? horaVal.value : undefined, tamanho: tamanhoSel.value || undefined, servico_id: servicoSel.value || undefined,
             coleta: ponto('coleta'), entrega: ponto('entrega'),
           });
         }
@@ -693,6 +695,7 @@ function janelaDemanda(existente = null, previa = null) {
       h('label', null, 'Descrição'), descricao,
       existente && ['atribuida', 'coletada'].includes(existente.status) && h('p', { class: 'nota' }, 'Já tem motoboy: o endereço não muda mais por aqui. Para outro destino, use "+ Entrega" no pedido.'),
       !existente && h('label', null, 'Agendar para (vazio = agora)'), !existente && agendar,
+      !existente && h('div', { class: 'grade2' }, h('div', null, h('label', null, 'Horário'), horaTipo), h('div', null, h('label', null, 'Hora'), horaVal)),
       !existente && h('label', null, 'Tamanho da mercadoria'), !existente && tamanhoSel,
       !existente && h('label', null, 'Tipo de serviço'), !existente && servicoSel, !existente && notaServ,
       h('div', { class: 'grade2' }, bloco('coleta', 'Coleta'), bloco('entrega', 'Entrega')),

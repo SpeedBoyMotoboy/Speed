@@ -1030,7 +1030,7 @@ test('pedido do site sem telefone: contato chega depois pelo WhatsApp', async ()
   await assert.rejects(a.pedidoSite(base, 'ip'), { codigo: 'telefone_invalido' });
   const r = await a.pedidoSite({ ...base, contato_whatsapp: true }, 'ip');
   assert.equal(demandas().find((d) => d.id === r.id).cliente_telefone, '');
-  assert.deepEqual(s.definirContato(r.id, '5527999990000', 'api'), { definido: true, igual: true });
+  assert.deepEqual(s.definirContato(r.id, '5527999990000', 'api'), { definido: true, igual: true, pix: null });
   assert.equal(demandas().find((d) => d.id === r.id).cliente_telefone, '27999990000');
   assert.equal(s.definirContato(r.id, '5527988880000', 'api').definido, false, 'não troca contato já definido');
 });

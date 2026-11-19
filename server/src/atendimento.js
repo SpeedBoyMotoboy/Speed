@@ -680,7 +680,7 @@ export function criarAtendimento({
     ].filter(Boolean).join(' · ');
     const d = servico.criarPedido({
       cliente: cli.nome, telefone: cli.telefone, descricao, requisito: tamanhoGrande ? 'bau' : 'qualquer', tamanho: dados?.tamanho,
-      urgente: false, km, email: cli.email, coleta, entrega,
+      urgente: false, km, email: cli.email, coleta, entrega, hora_tipo: dados?.hora_tipo, hora: dados?.hora, agendada_para: dados?.agendada_para,
     }, 'empresa', { retida: !cli.libera_direto, pagamento: 'faturado' });
     q('UPDATE clientes SET pedidos = pedidos + 1 WHERE id = ?').run(cli.id);
     avisarAdmin([
@@ -722,7 +722,7 @@ export function criarAtendimento({
     ].filter(Boolean).join(' · ');
     const d = servico.criarPedido({
       cliente: cli.nome, telefone: cli.telefone, descricao, requisito: grande ? 'bau' : 'qualquer', tamanho: dados?.tamanho,
-      urgente: false, km, email: cli.email, coleta, entrega,
+      urgente: false, km, email: cli.email, coleta, entrega, hora_tipo: dados?.hora_tipo, hora: dados?.hora, agendada_para: dados?.agendada_para,
     }, 'empresa', { retida: !cli.libera_direto, pagamento: 'faturado' });
     q('UPDATE clientes SET pedidos = pedidos + 1 WHERE id = ?').run(cli.id);
     avisarAdmin([
@@ -850,13 +850,26 @@ export function criarAtendimento({
         { servico_id: analise.servico_id, km: certo.km, valor: certo.valor });
     }
     if (analise && !analise.aprovado) modo = 'painel';
+    // Urgente: sai na hora para o motoboy e o Pix já vai para o cliente (a entrega só finaliza depois de pago).
+    const pixUrgente = tarifaUrgente && !fixo && c.pix_chave !== '' && previa.valor != null && !(analise && !analise.aprovado);
+    if (pixUrgente) modo = 'nenhuma';
     const d = servico.criarPedido({
       cliente: fixo?.nome || nome, telefone, descricao: dados?.descricao, requisito: dados?.requisito ?? 'qualquer',
       urgente: dados?.urgente !== false, tarifa_urgente: tarifaUrgente, tamanho: dados?.tamanho, servico_id: dados?.servico_id, km, email, coleta, entrega,
+      hora_tipo: dados?.hora_tipo, hora: dados?.hora, agendada_para: dados?.agendada_para,
     }, 'site', { retida: modo !== 'nenhuma', pagamento: fixo ? 'faturado' : '', ia: analise });
     if (telefone) lembrarCliente(telefone, nome, coleta, email);
 
     let pix = null;
+    if (pixUrgente) {
+      const codigo = brCode({ chave: c.pix_chave, nome: c.pix_nome || c.empresa_nome, cidade: c.pix_cidade, valor: d.valor, txid: `PEDIDO${d.id}` });
+      servico.registrarPix(d.id, { pagId: '', pix: codigo, qr: '', expira: agora() + 24 * 60 * MIN });
+      pix = { codigo, qr: '', manual: true, valor: d.valor };
+      avisarAdmin([
+        `⚡💰 URGENTE #${d.id} de ${d.cliente}: já foi para o motoboy. Pix de ${reais(d.valor)} enviado ao cliente. Quando cair, confirme no painel (Confirmar pagamento) — sem isso o motoboy não finaliza.`,
+        `📦 Coleta: ${d.coleta_endereco || '-'}`, `🏁 Entrega: ${d.entrega_endereco || '-'}`, d.descricao ? `📝 ${d.descricao}` : '',
+      ].filter(Boolean).join('\n'));
+    }
     if (modo === 'pagamento') {
       try {
         pix = await gerarPix(d);

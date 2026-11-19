@@ -318,7 +318,7 @@ const COLUNAS_NOVAS = {
     retida: 'INTEGER NOT NULL DEFAULT 0',
     urgente: 'INTEGER NOT NULL DEFAULT 0', servico: "TEXT NOT NULL DEFAULT ''", repasse: 'REAL', repasse_padrao: 'REAL', bonus_urgente: 'REAL', foto_em: 'INTEGER', rastreio_livre: 'INTEGER NOT NULL DEFAULT 0', repasse_manual: 'INTEGER NOT NULL DEFAULT 0', tamanho: "TEXT NOT NULL DEFAULT ''", tarifa_urgente: 'INTEGER NOT NULL DEFAULT 0', agendada_para: 'INTEGER', reservada_por: 'INTEGER',
     pagamento: "TEXT NOT NULL DEFAULT ''", pag_id: 'TEXT', pag_pix: 'TEXT', pag_qr: 'TEXT', pag_expira: 'INTEGER',
-    pago_em: 'INTEGER', fila_em: 'INTEGER', comprovante_em: 'INTEGER', ia_ok: 'INTEGER', ia_obs: 'TEXT', email: "TEXT NOT NULL DEFAULT ''", sem_aceite_avisado: 'INTEGER NOT NULL DEFAULT 0',
+    pago_em: 'INTEGER', fila_em: 'INTEGER', comprovante_em: 'INTEGER', ia_ok: 'INTEGER', ia_obs: 'TEXT', email: "TEXT NOT NULL DEFAULT ''", sem_aceite_avisado: 'INTEGER NOT NULL DEFAULT 0', hora_tipo: "TEXT NOT NULL DEFAULT ''", hora_limite: 'INTEGER',
   },
   motoboys: { tipo: "TEXT NOT NULL DEFAULT 'diaria'", pin_claro: 'TEXT', documento: "TEXT NOT NULL DEFAULT ''", placa: "TEXT NOT NULL DEFAULT ''", diaria_valor: 'REAL', repasse_base: 'REAL', repasse_km: 'REAL', ve_valores: 'INTEGER NOT NULL DEFAULT 0', reserva_bloqueio_ate: 'INTEGER' },
   turnos: { tipo: "TEXT NOT NULL DEFAULT 'diaria'" },

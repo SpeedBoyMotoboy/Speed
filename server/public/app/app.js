@@ -588,11 +588,12 @@ function cartaoParada(p) {
 
   function botoesIniciais() {
     formAberto = false;
-    trocar(area, 
+    trocar(area, ...[
+      !coleta && p.aguarda_pix && h('div', { class: 'faixa aviso' }, '💰 Cliente ainda não pagou o Pix. Só finalize depois que a central confirmar.'),
       h('button', { onclick: navegar }, 'Abrir rota no mapa'),
       h('button', { class: `grande ${p.tipo}`, onclick: () => (coleta ? enviar({}) : pedirRecebedor()) },
         coleta ? 'Coletei' : 'Entreguei'),
-      h('button', { class: 'leve', onclick: () => problema(1) }, 'Deu problema'));
+      h('button', { class: 'leve', onclick: () => problema(1) }, 'Deu problema')].filter(Boolean));
   }
   // "Deu problema": a Speedy guia o motoboy — quem recebe, depois a loja, por fim a central.
   function problema(passo) {

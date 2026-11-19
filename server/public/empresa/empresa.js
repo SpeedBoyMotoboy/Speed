@@ -51,6 +51,21 @@ function campoEndereco(id, valor) {
   return { el, nos: h('div', { class: 'com-sugestao' }, el, lista) };
 }
 
+// Horário de cada pedido: sem horário, entregar até, coletar a partir de, ou agendar dia e hora.
+function campoHorario(b, n) {
+  const tipo = h('select', { id: n('htipo') }, [['', 'Sem horário — o quanto antes'], ['ate', 'Entregar até…'], ['apartir', 'Coletar a partir de…'], ['agendar', 'Agendar dia e hora']]
+    .map(([v, t]) => h('option', { value: v }, t)));
+  const hora = h('input', { id: n('hora'), type: 'time', value: b.hora || '' });
+  const dia = h('input', { id: n('dia'), type: 'datetime-local', value: b.dia || '' });
+  tipo.value = b.htipo || '';
+  const ajustar = () => { hora.hidden = !['ate', 'apartir'].includes(tipo.value); dia.hidden = tipo.value !== 'agendar'; };
+  tipo.addEventListener('change', ajustar);
+  ajustar();
+  return { nos: h('div', null, h('label', { for: n('htipo') }, 'Horário'), tipo, hora, dia), ler: () => ({ htipo: tipo.value, hora: hora.value, dia: dia.value }) };
+}
+const faltaHora = (b) => (['ate', 'apartir'].includes(b.htipo) && !b.hora) || (b.htipo === 'agendar' && !b.dia);
+const corpoHorario = (b) => (b.htipo === 'agendar' ? { agendada_para: b.dia } : b.htipo ? { hora_tipo: b.htipo, hora: b.hora } : {});
+
 function cartaoBusca(b, i, total) {
   const n = (x) => `b${i}-${x}`;
   const forn = h('input', { id: n('forn'), maxlength: 80, list: 'lista-forn', placeholder: 'Ex.: Sinai Material de Construção', value: b.fornecedor || '' });
@@ -63,7 +78,8 @@ function cartaoBusca(b, i, total) {
   const tam = h('select', { id: n('tam') }, TAMANHOS.map(([v, t]) => h('option', { value: v }, t)));
   tam.value = b.tamanho || 'pequeno';
   const falar = h('input', { id: n('falar'), maxlength: 120, placeholder: 'Ex.: balcão, falar com Carlos (opcional)', value: b.falar || '' });
-  b.ler = () => Object.assign(b, { fornecedor: forn.value.trim(), endereco: end.el.value.trim(), oque: oque.value.trim(), tamanho: tam.value, falar: falar.value.trim() });
+  const hor = campoHorario(b, n);
+  b.ler = () => Object.assign(b, { fornecedor: forn.value.trim(), endereco: end.el.value.trim(), oque: oque.value.trim(), tamanho: tam.value, falar: falar.value.trim() }, hor.ler());
   return h('div', { class: 'cartao' },
     h('div', { class: 'cab-parada' }, h('b', null, total > 1 ? `Busca ${i + 1}` : 'Busca'),
       total > 1 && h('button', { type: 'button', class: 'pequeno', onclick: () => { buscas.forEach((x) => x.ler()); buscas.splice(i, 1); telaBuscas(); } }, 'Remover')),
@@ -71,7 +87,7 @@ function cartaoBusca(b, i, total) {
     h('label', { for: n('end') }, 'Endereço do fornecedor'), end.nos,
     h('label', { for: n('oque') }, 'O que o motoboy vai buscar'), oque,
     h('label', { for: n('tam') }, 'Tamanho'), tam,
-    h('label', { for: n('falar') }, 'Com quem falar no fornecedor'), falar);
+    h('label', { for: n('falar') }, 'Com quem falar no fornecedor'), falar, hor.nos);
 }
 
 function telaBuscas(mensagem = '') {
@@ -87,6 +103,8 @@ function telaBuscas(mensagem = '') {
       buscas.forEach((b) => b.ler());
       const ruim = buscas.findIndex((b) => b.endereco.length < 6 || b.oque.length < 2);
       if (ruim >= 0) { erro.textContent = `Preencha o endereço do fornecedor e o que buscar (busca ${ruim + 1}).`; return; }
+      const semHora = buscas.findIndex(faltaHora);
+      if (semHora >= 0) { erro.textContent = `Informe o horário (busca ${semHora + 1}).`; return; }
       if (quem.value.trim().length < 2) { erro.textContent = 'Informe seu nome.'; quem.focus(); return; }
       gravarJson(CHAVE_NOME, quem.value.trim());
       const salvos = fornecedores();
@@ -98,7 +116,7 @@ function telaBuscas(mensagem = '') {
       try {
         for (const b of buscas) {
           feitos.push(await api('POST', '/api/publico/empresa/pedidos', {
-            k: chave, fornecedor: b.fornecedor, oque: b.oque, tamanho: b.tamanho, autoriza: quem.value.trim(),
+            k: chave, fornecedor: b.fornecedor, oque: b.oque, tamanho: b.tamanho, autoriza: quem.value.trim(), ...corpoHorario(b),
             coleta: { endereco: b.fornecedor ? `${b.fornecedor} · ${b.endereco}` : b.endereco, contato: b.falar },
           }));
         }
@@ -146,7 +164,8 @@ function cartaoEnvio(b, i, total) {
   const oque = h('input', { id: n('oque'), maxlength: 300, placeholder: 'Ex.: 1 sacola com jogo de cama (opcional)', value: b.oque || '' });
   const tam = h('select', { id: n('tam') }, TAMANHOS.map(([v, t]) => h('option', { value: v }, t)));
   tam.value = b.tamanho || 'pequeno';
-  b.ler = () => Object.assign(b, { recebe: quem.value.trim(), endereco: end.el.value.trim(), fone: fone.value.trim(), oque: oque.value.trim(), tamanho: tam.value });
+  const hor = campoHorario(b, n);
+  b.ler = () => Object.assign(b, { recebe: quem.value.trim(), endereco: end.el.value.trim(), fone: fone.value.trim(), oque: oque.value.trim(), tamanho: tam.value }, hor.ler());
   return h('div', { class: 'cartao' },
     h('div', { class: 'cab-parada' }, h('b', null, total > 1 ? `Entrega ${i + 1}` : 'Entrega'),
       total > 1 && h('button', { type: 'button', class: 'pequeno', onclick: () => { envios.forEach((x) => x.ler()); envios.splice(i, 1); telaLoja(); } }, 'Remover')),
@@ -154,7 +173,7 @@ function cartaoEnvio(b, i, total) {
     h('label', { for: n('end') }, 'Endereço de entrega (com número e apartamento)'), end.nos,
     h('label', { for: n('fone') }, 'Telefone de quem recebe'), fone,
     h('label', { for: n('oque') }, 'O que vai'), oque,
-    h('label', { for: n('tam') }, 'Tamanho'), tam);
+    h('label', { for: n('tam') }, 'Tamanho'), tam, hor.nos);
 }
 
 function telaLoja(mensagem = '') {
@@ -170,6 +189,8 @@ function telaLoja(mensagem = '') {
       envios.forEach((b) => b.ler());
       const ruim = envios.findIndex((b) => b.endereco.length < 6 || b.recebe.length < 2);
       if (ruim >= 0) { erro.textContent = `Preencha quem recebe e o endereço com número (entrega ${ruim + 1}).`; return; }
+      const semHora = envios.findIndex(faltaHora);
+      if (semHora >= 0) { erro.textContent = `Informe o horário (entrega ${semHora + 1}).`; return; }
       if (quem.value.trim().length < 2) { erro.textContent = 'Informe seu nome.'; quem.focus(); return; }
       gravarJson(CHAVE_NOME, quem.value.trim());
       const salvos = destinos();
@@ -181,7 +202,7 @@ function telaLoja(mensagem = '') {
       try {
         for (const b of envios) {
           feitos.push(await api('POST', '/api/publico/empresa/pedidos', {
-            k: chave, recebe: b.recebe, fone: b.fone, oque: b.oque, tamanho: b.tamanho, autoriza: quem.value.trim(),
+            k: chave, recebe: b.recebe, fone: b.fone, oque: b.oque, tamanho: b.tamanho, autoriza: quem.value.trim(), ...corpoHorario(b),
             entrega: { endereco: b.endereco },
           }));
         }

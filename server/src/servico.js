@@ -865,13 +865,26 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     const n = typeof v === 'number' ? v : Date.parse(String(v));
     return Number.isFinite(n) && n > agora() ? n : null;
   }
+  // Horário combinado: 'ate' (entregar até) ou 'apartir' (coletar a partir de), hora 'HH:MM' no dia agendado ou hoje.
+  // Vai em destaque no começo da descrição (motoboy, painel e compartilhar já mostram).
+  function lerJanela(tipo, hora, agendadaPara) {
+    if (!['ate', 'apartir'].includes(tipo)) return { tipo: '', ms: null, texto: '' };
+    const m = String(hora ?? '').trim().match(/^(\d{1,2})[:h](\d{2})$/);
+    if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) throw new Erro(422, 'hora_invalida', 'Informe o horário (ex.: 15:30).');
+    const base = new Date((agendadaPara || agora()) - 3 * 3600e3);
+    const ms = Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate(), Number(m[1]), Number(m[2])) + 3 * 3600e3;
+    const hh = `${m[1].padStart(2, '0')}:${m[2]}`;
+    return { tipo, ms, texto: tipo === 'ate' ? `⏰ ENTREGAR ATÉ ${hh}` : `⏰ COLETAR A PARTIR DE ${hh}` };
+  }
   function validarDemanda(d) {
     const cliente = txt(d?.cliente, 120);
     if (cliente.length < 2) throw new Erro(422, 'cliente_invalido', 'Informe o cliente.');
     const requisito = d?.requisito ?? 'qualquer';
     if (!REQUISITOS.includes(requisito)) throw new Erro(422, 'requisito_invalido', 'Requisito inválido.');
+    const janela = lerJanela(d?.hora_tipo, d?.hora, lerAgendada(d?.agendada_para));
     return {
-      cliente, requisito, descricao: txt(d?.descricao, 1200),
+      cliente, requisito, descricao: [janela.texto, txt(d?.descricao, 1200)].filter(Boolean).join(' · ').slice(0, 1200),
+      horaTipo: janela.tipo, horaLimite: janela.ms,
       telefone: normalizarTelefone(d?.cliente_telefone ?? d?.telefone),
       agendadaPara: lerAgendada(d?.agendada_para),
       urgente: d?.urgente ? 1 : 0, tarifaUrgente: d?.tarifa_urgente === true, tamanho: lerTamanho(d?.tamanho), servicoId: d?.servico_id ? Number(d.servico_id) : null,
@@ -899,6 +912,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     if (bonus) q('UPDATE demandas SET bonus_urgente = ? WHERE id = ?').run(bonus, id);
     if (v.tamanho || v.tarifaUrgente) q('UPDATE demandas SET tamanho = ?, tarifa_urgente = ? WHERE id = ?').run(v.tamanho, v.tarifaUrgente ? 1 : 0, id);
     if (v.agendadaPara) q('UPDATE demandas SET agendada_para = ? WHERE id = ?').run(v.agendadaPara, id);
+    if (v.horaTipo) q('UPDATE demandas SET hora_tipo = ?, hora_limite = ? WHERE id = ?').run(v.horaTipo, v.horaLimite, id);
     auditar(ator, 'demanda_criada', `#${id} ${v.cliente}`);
     emitir('demanda_criada', { demanda: q('SELECT * FROM demandas WHERE id = ?').get(id) });
     if (completo && !retida) despachar(id);
@@ -971,11 +985,12 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     if (!d) throw new Erro(404, 'nao_encontrado', 'Demanda não encontrada.');
     const telefone = normalizarTelefone(telefoneBruto);
     if (!telefone) throw new Erro(422, 'telefone_invalido', 'Telefone inválido.');
-    if (d.cliente_telefone) return { definido: false, igual: d.cliente_telefone === telefone };
+    const pix = d.pagamento === 'pendente' && d.pag_pix && d.status !== 'cancelada' ? { id: d.id, codigo: d.pag_pix, valor: d.valor } : null;
+    if (d.cliente_telefone) return { definido: false, igual: d.cliente_telefone === telefone, pix };
     if (d.origem !== 'site' || ['entregue', 'cancelada'].includes(d.status)) return { definido: false, igual: false };
     q('UPDATE demandas SET cliente_telefone = ? WHERE id = ?').run(telefone, id);
     auditar(ator, 'demanda_contato', `#${id}`);
-    return { definido: true, igual: true };
+    return { definido: true, igual: true, pix };
   }
   // Pedido do site fechado por fora (ex.: cliente aceitou o valor no WhatsApp): grava o valor
   // combinado, recalcula o repasse e solta para o motoboy. Só pedido retido e ainda aberto.
@@ -1349,6 +1364,10 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
           : `Você está a ${dist} m do local. Explique o motivo para registrar.`,
         { distancia_m: dist });
     }
+    // Urgente pago no Pix: a entrega só finaliza depois que a central confirmar o pagamento.
+    if (tipo === 'entrega' && d.pagamento === 'pendente') {
+      throw new Erro(409, 'aguardando_pix', 'O cliente ainda não pagou o Pix. Peça o comprovante e avise a central: a entrega só finaliza depois do pagamento confirmado.');
+    }
     const nomeRecebedor = txt(recebedor, 80);
     if (tipo === 'entrega' && nomeRecebedor.length < 2) {
       throw new Erro(422, 'recebedor_obrigatorio', 'Informe o nome de quem recebeu.');
@@ -1479,7 +1498,8 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       },
       rota_versao: turno.rota_versao,
       cerca_m: c.cercaM,
-      rota: rotaDoTurno(turno.id).map(({ ordem, ...p }) => ({ ...p, repasse: paga(p.repasse), valor_cliente: valorCliente(p.demanda_id) })),
+      rota: rotaDoTurno(turno.id).map(({ ordem, ...p }) => ({ ...p, repasse: paga(p.repasse), valor_cliente: valorCliente(p.demanda_id),
+        aguarda_pix: q('SELECT pagamento FROM demandas WHERE id = ?').get(p.demanda_id)?.pagamento === 'pendente' })),
     };
   }
 
