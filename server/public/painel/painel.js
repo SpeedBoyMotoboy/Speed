@@ -424,6 +424,7 @@ function desenharLateral() {
       d.status === 'sem_local'
         ? h('button', { class: 'pequeno primario', onclick: () => janelaDemanda(d) }, 'Marcar no mapa')
         : h('button', { class: 'pequeno', onclick: () => { escolhendoPara = escolhendoPara === d.id ? null : d.id; desenharLateral(); } }, d.motoboy_id ? 'Trocar motoboy' : 'Escolher motoboy'),
+      d.status === 'aguardando' && !d.motoboy_id && d.repasse != null && h('button', { class: 'pequeno', onclick: () => compartilharDemanda(d) }, 'Compartilhar'),
       !['pago', 'pendente'].includes(d.pagamento) && h('button', { class: 'pequeno', onclick: () => janelaValor(d) }, 'Valor'),
       h('button', { class: 'pequeno', onclick: () => janelaFinalizar(d) }, 'Finalizar'),
       h('button', {
@@ -667,6 +668,39 @@ async function convocar(id) {
           target: '_blank', rel: 'noopener noreferrer', onclick: () => setTimeout(dlg.fechar, 200),
         }, 'Avisar pelo WhatsApp'))]);
   } catch (e) { els.conexao.textContent = e.message; }
+}
+
+// "Bairro, Cidade" de um endereço gravado (ex.: "R. X, 556 - Centro, Piúma - ES, 29285-000" → "Centro, Piúma").
+// Sem cidade reconhecível, devolve ''. Nunca rua, número, nome do cliente ou complemento.
+function bairroCidade(endereco) {
+  let s = String(endereco || '').split(' — ')[0];
+  if (s.includes(' · ')) s = s.slice(s.lastIndexOf(' · ') + 3);
+  const m = s.match(/^(.*?)([^,\-]+?)\s*-\s*ES\b/i);
+  if (!m) return '';
+  const cidade = m[2].trim();
+  const partes = m[1].split(/,| - /).map((x) => x.trim()).filter(Boolean);
+  let bairro = partes.length > 1 ? partes[partes.length - 1] : '';
+  if (/^\d|^(r\.|rua|av\.?|avenida|rod\.?|rodovia|travessa|estrada)\b|^s\/n$/i.test(bairro)) bairro = '';
+  return [bairro, cidade].filter(Boolean).join(', ');
+}
+
+// Texto para recrutar motoboy no WhatsApp: trajeto (bairro e cidade), km e o que o motoboy recebe, + link do cadastro.
+// Sem cliente, telefone ou endereço completo.
+function compartilharDemanda(d) {
+  const de = bairroCidade(d.coleta_endereco);
+  const para = bairroCidade(d.entrega_endereco);
+  const cadastro = `${location.origin.replace('//despacho.', '//speedy.')}/cadastro/`;
+  const texto = [
+    '🛵 *Entrega disponível — SpeedBoy*', '',
+    (de || para) && `📍 ${de || 'Grande Vitória'} → ${para || 'Grande Vitória'}`,
+    d.km != null && `📏 ${String(d.km).replace('.', ',')} km`,
+    `💰 *${reais(d.repasse)}*`, '',
+    'Essa e muitas outras entregas estão disponíveis todos os dias no app Speedy.', '',
+    'Quer rodar com a SpeedBoy? Faça seu cadastro:', cadastro, '',
+    'Depois do cadastro, a SpeedBoy confere seus dados e libera seu acesso.',
+  ].filter((l) => l !== false && l !== null).join('\n');
+  try { navigator.clipboard?.writeText(texto); } catch { /* sem área de transferência */ }
+  window.open(`https://wa.me/?text=${encodeURIComponent(texto)}`, '_blank', 'noopener');
 }
 
 // Muda o valor do pedido (ex.: desconto) e o que o motoboy recebe. O motoboy não muda sozinho.
