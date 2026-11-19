@@ -286,14 +286,14 @@ test('avulso: rota da mesma coleta paga só o que a rota cresce', () => {
   const o2 = s.estadoMotoboy(turno()).ofertas.find((o) => o.demanda_id === d2);
   // rota coleta→5→8: 10,8 km = R$ 16,20; só a primeira (6,75 km) = R$ 15. A segunda soma R$ 1,20.
   assert.equal(o2.na_rota, true);
-  assert.ok(Math.abs(o2.repasse - 1.2) < 0.1, `extra da rota ${o2.repasse}`);
+  assert.equal(o2.repasse, 1, `extra da rota ${o2.repasse}`); // 16,20 - 15 = 1,20, sem centavos
   const extra = o2.repasse;
   s.responderOferta(turno(), { oferta_id: o2.id, acao: 'aceitar' });
   const ganhos = s.estadoMotoboy(turno()).rota.filter((p) => p.tipo === 'entrega').map((p) => p.repasse).sort((a, b) => a - b);
   assert.deepEqual(ganhos, [extra, 15]);
 });
 
-test('tarifa urgente: +40% (mínimo R$ 10) e 70% do extra para o motoboy', () => {
+test('tarifa urgente: +20% (mínimo R$ 10) e 70% do extra para o motoboy', () => {
   const { s } = montar();
   s.salvarConfig({ preco_base: '25', preco_km: '2', preco_minimo: '25', preco_km_incluso: '10', repasse_base: '15', repasse_km: '1.5' }, 'teste');
   const normal = s.cotar(P(0), P(5), { km: 8 });
@@ -302,8 +302,8 @@ test('tarifa urgente: +40% (mínimo R$ 10) e 70% do extra para o motoboy', () =>
   assert.equal(urg.valor, 35);
   assert.equal(urg.repasse, 22);
   const longe = s.cotar(P(0), P(20), { km: 30, urgente: true });
-  assert.equal(longe.valor, 91);
-  assert.equal(longe.repasse, 63.2);
+  assert.equal(longe.valor, 78); // 65 + 13
+  assert.equal(longe.repasse, 54); // 45 + 9,10, sem centavos
 });
 
 test('agendada: fica fora do despacho, reserva, expira sem confirmar e bloqueia 1 dia', () => {
@@ -367,21 +367,21 @@ test('tamanho G/GG: % a mais sobre o base, 60% do extra ao motoboy, soma com a u
   s.salvarConfig(TABELA, 'teste');
   const normal = s.cotar(P(0), P(5), { km: 15, tamanho: 'medio' });
   assert.equal(normal.valor, 35);
-  assert.equal(normal.repasse, 22.5);
+  assert.equal(normal.repasse, 22); // 22,50 sem centavos
   const g = s.cotar(P(0), P(5), { km: 15, tamanho: 'grande' });
   assert.equal(g.valor, 42);
-  assert.equal(g.repasse, 26.7);
+  assert.equal(g.repasse, 26);
   assert.equal(g.tamanho_extra, 7);
   const gg = s.cotar(P(0), P(5), { km: 15, tamanho: 'gg' });
   assert.equal(gg.valor, 49);
-  assert.equal(gg.repasse, 30.9);
+  assert.equal(gg.repasse, 30);
   const tudo = s.cotar(P(0), P(5), { km: 15, tamanho: 'maior', urgente: true });
-  assert.equal(tudo.valor, 63); // 35 + 14 (urgente) + 14 (GG)
-  assert.equal(tudo.repasse, 40.7); // 22,50 + 9,80 + 8,40
+  assert.equal(tudo.valor, 59); // 35 + 10 (urgente: 20% = 7, mínimo 10) + 14 (GG)
+  assert.equal(tudo.repasse, 37); // 22,50 + 7 + 8,40 = 37,90
   const d = s.criarPedido({ cliente: 'Loja Teste', telefone: '27999990000', coleta: { endereco: 'Rua A, 1', ...P(0) }, entrega: { endereco: 'Rua B, 2', ...P(5) }, km: 15, tamanho: 'maior' }, 'site', {});
   assert.equal(d.valor, 49);
   assert.equal(d.tamanho, 'gg');
-  assert.equal(d.repasse, 30.9);
+  assert.equal(d.repasse, 30);
 });
 
 test('corrida longa: km inteiro na faixa (teto R$ 3) e 70% do total para o motoboy', () => {
@@ -393,12 +393,12 @@ test('corrida longa: km inteiro na faixa (teto R$ 3) e 70% do total para o motob
     assert.equal(c.repasse, repasse, `repasse ${km} km`);
   };
   caso(30, 65, 45); // até 30 km: tabela normal
-  caso(31, 86.8, 60.76);
+  caso(31, 86, 60); // 86,80 e 60,76 sem centavos
   caso(50, 140, 98);
   caso(60, 180, 126);
   caso(120, 360, 252);
   caso(60, 180, 126, { tamanho: 'gg' }); // corrida longa não cobra tamanho
-  caso(30, 91, 60.6, { tamanho: 'gg' }); // até 30 km cobra: 65 + 26; motoboy 45 + 15,60
+  caso(30, 91, 60, { tamanho: 'gg' }); // até 30 km cobra: 65 + 26; motoboy 45 + 15,60
   s.salvarConfig({ longa_km1: '0', longa_km2: '0' }, 'teste'); // desligada: volta a tabela normal
   caso(60, 125, 90);
 });
@@ -410,7 +410,7 @@ test('central edita o valor: cliente e motoboy, travado, não muda depois de fin
   assert.equal(d.valor, 35);
   const e = s.editarValor(d.id, { valor: '30,50', motivo: 'desconto' }, 'teste');
   assert.equal(e.valor, 30.5);
-  assert.equal(e.repasse, 22.5); // motoboy não muda sozinho
+  assert.equal(e.repasse, 22); // motoboy não muda sozinho
   assert.equal(e.repasse_manual, 1);
   const f = s.editarValor(d.id, { valor: 30.5, repasse: 20 }, 'teste');
   assert.equal(f.repasse, 20);

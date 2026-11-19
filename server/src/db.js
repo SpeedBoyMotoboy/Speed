@@ -242,7 +242,7 @@ export const CONFIG_PADRAO = {
   // Acréscimo ao cliente quando a coleta ou a entrega cai na zona sul de Vila Velha (o motoboy não recebe).
   preco_zona_sul: '15',
   // Tarifa urgente (chave do site): % a mais sobre o valor, com mínimo em R$; parte do extra que vai ao motoboy.
-  urgente_pct: '40',
+  urgente_pct: '20',
   urgente_min: '10',
   urgente_repasse_pct: '70',
   // Tamanho da mercadoria: % a mais para G (até 40 cm) e GG (mais de 40 cm); parte do extra que vai ao motoboy.

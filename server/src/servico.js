@@ -179,13 +179,15 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
   }
   // Tamanho da mercadoria que cobra a mais: 'g' (até 40 cm) ou 'gg' (mais de 40 cm). Pequeno e médio = ''.
   const lerTamanho = (t) => ({ g: 'g', grande: 'g', gg: 'gg', maior: 'gg', gigante: 'gg' }[String(t ?? '').trim().toLowerCase()] || '');
+  // Valores em reais inteiros, sempre para baixo (cliente e motoboy): 319,20 → 319; 223,44 → 223.
+  const reaisInteiros = (v) => Math.floor(Math.round(Number(v) * 100) / 100 + 1e-9);
   function repasseProprio(m, km) {
     if (!m || km == null || (m.repasse_base == null && m.repasse_km == null)) return null;
     if (precoLonga(km)) return null; // corrida longa: vale o % do total (repasse padrão da demanda)
     const c = cfgBruta();
     const base = m.repasse_base ?? Number(c.repasse_base);
     const porKm = m.repasse_km ?? Number(c.repasse_km);
-    return Math.round((base + Math.max(0, Number(km) - Number(c.preco_km_incluso)) * porKm) * 100) / 100;
+    return reaisInteiros(base + Math.max(0, Number(km) - Number(c.preco_km_incluso)) * porKm);
   }
   // Rota da mesma coleta (motoboy avulso): ganha pelo km total da rota, coleta → entregas em linha
   // (sempre a entrega mais perta de onde ele está). Entrega que entra numa rota aberta paga só o que a rota cresce.
@@ -226,7 +228,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     ultimoKmExtra = Math.max(0, kmDepois - kmAntes);
     const antes = custoRota(mb, kmAntes);
     const depois = custoRota(mb, kmDepois);
-    return Math.round(Math.max(0, depois - antes) * 100) / 100;
+    return Math.max(0, reaisInteiros(depois) - reaisInteiros(antes)); // a rota inteira fecha em reais inteiros
   }
   function cotar(coleta, entrega, { km: kmRota = null, servicoId = null, telefone = '', urgente = false, tamanho = '' } = {}) {
     const servico = servicoId ? q('SELECT * FROM servicos WHERE id = ? AND ativo = 1').get(Number(servicoId)) || null : null;
@@ -254,7 +256,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     const bonus = Math.round(((extraUrg * Number(c.urgente_repasse_pct || 0)) / 100 + (extraTam * Number(c.tam_repasse_pct || 0)) / 100) * 100) / 100;
     valor += extraUrg + extraTam;
     if (zonaSul) valor += Number(c.preco_zona_sul || 0);
-    valor = Math.round(valor * 100) / 100;
+    valor = reaisInteiros(valor);
     const pct = servico?.repasse_pct ?? Number(c.repasse_pct);
     // Tabela própria do motoboy (valor base até os km incluídos + valor por km a mais), se o dono preencheu;
     // sem ela vale o percentual do valor cobrado. O adicional do serviço segue repassado pelo percentual.
@@ -263,7 +265,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     const bruto = porKmLonga ? (valorKm * Number(c.longa_repasse_pct || 0)) / 100 + (adicional * pct) / 100 : repBase > 0
       ? repBase + Math.max(0, km - Number(c.preco_km_incluso)) * Number(c.repasse_km) + (adicional * pct) / 100
       : (valor * pct) / 100;
-    const repasse = Math.round((Math.max(Number(c.repasse_minimo), bruto) + bonus) * 100) / 100;
+    const repasse = reaisInteiros(Math.max(Number(c.repasse_minimo), bruto) + bonus);
     return { km, valor, repasse, servico, zona_sul: zonaSul, urgente_extra: extraUrg, bonus, tamanho: tam, tamanho_extra: extraTam, longa: Boolean(porKmLonga) };
   }
 
@@ -921,7 +923,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       const pct = serv?.repasse_pct ?? Number(c.repasse_pct);
       // Valor igual ao cotado: o repasse já calculado (tabela, tamanho, corrida longa) continua valendo.
       const igual = d.valor != null && d.repasse != null && Math.abs(valor - d.valor) < 0.01;
-      const repasse = igual ? d.repasse : Math.round(Math.max(Number(c.repasse_minimo), (valor * pct) / 100) * 100) / 100;
+      const repasse = igual ? d.repasse : reaisInteiros(Math.max(Number(c.repasse_minimo), (valor * pct) / 100));
       q('UPDATE demandas SET valor = ?, repasse = ?, repasse_padrao = NULL, repasse_manual = ? WHERE id = ?').run(Math.round(valor * 100) / 100, repasse, igual ? d.repasse_manual : 0, id);
       auditar(ator, 'demanda_valor', `#${id} ${valor}`);
     }
@@ -1090,7 +1092,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       const padrao = atual.repasse_padrao ?? atual.repasse;
       const mb = turno.tipo === 'avulso' && !atual.repasse_manual ? q('SELECT repasse_base, repasse_km FROM motoboys WHERE id = ?').get(turno.motoboy_id) : null;
       const semBonus = mb ? (repasseNaRota(turno, atual, mb) ?? repasseProprio(mb, atual.km)) : null;
-      const proprio = semBonus == null ? null : Math.round((semBonus + (atual.bonus_urgente || 0)) * 100) / 100;
+      const proprio = semBonus == null ? null : reaisInteiros(semBonus + (atual.bonus_urgente || 0));
       q('UPDATE demandas SET repasse = ?, repasse_padrao = ? WHERE id = ?').run(proprio ?? padrao, proprio != null ? padrao : null, d.id);
     }
     nova.forEach((p, i) => {
@@ -1349,7 +1351,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
         return {
           ...o, coleta_lat, coleta_lon, entrega_lat, entrega_lon, na_rota: naRota != null,
           tempo_min: Math.round((kmMais / VEL_KMH) * 60 + MIN_PARADA * (naRota != null ? 1 : 2)),
-          repasse: paga(proprio != null ? Math.round((proprio + (bonus_urgente || 0)) * 100) / 100 : o.repasse),
+          repasse: paga(proprio != null ? reaisInteiros(proprio + (bonus_urgente || 0)) : o.repasse),
         };
       });
     const feitas = avulso ? q(`SELECT id, servico, entrega_endereco, entregue_em, repasse FROM demandas

@@ -636,7 +636,7 @@ test('tipo de serviço soma no preço e pode ter repasse próprio', () => {
   s.salvarServico({ id: cartorio.id, nome: cartorio.nome, adicional: 30, repasse_pct: 70 }, 'teste');
   const cot = s.cotar(P(0), P(3), { servicoId: cartorio.id });
   assert.equal(cot.valor, 42, 'R$ 12 da distância + R$ 30 do cartório');
-  assert.equal(cot.repasse, 29.4, '70% para o motoboy');
+  assert.equal(cot.repasse, 29, '70% para o motoboy');
   assert.equal(s.cotar(P(0), P(3), { km: 10 }).valor, 24, 'km pelas ruas, quando informado, vale mais que a linha reta');
   assert.throws(() => s.salvarServico({ nome: 'X' }, 'teste'), { codigo: 'servico_invalido' });
 });
@@ -713,7 +713,7 @@ test('cliente fixo: preço próprio, vai para a fatura e confirma pelo WhatsApp 
     nome: 'Recepção', telefone: '11977770001', descricao: 'Exames',
     coleta: { endereco: 'Rua da Coleta, 10, Centro' }, entrega: { endereco: 'Rua da Entrega, 20, Centro' },
   }, 'ip');
-  assert.deepEqual([r.confirmacao, r.pix, r.valor], ['whatsapp', null, 9.6]);
+  assert.deepEqual([r.confirmacao, r.pix, r.valor], ['whatsapp', null, 9]);
   const [d] = demandas();
   assert.deepEqual([d.cliente, d.pagamento, d.retida], ['Clínica Vida', 'faturado', 1]);
   await a.receber({ telefone: '5511977770001', nome: 'Recepção', texto: '1' });

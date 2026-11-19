@@ -636,6 +636,7 @@ export function criarAtendimento({
       mapa: { lat: Number(c.mapa_lat), lon: Number(c.mapa_lon) },
       prazo_min: Number(c.urgente_prazo_min), pagamento: modoConfirmacao() === 'pagamento',
       pede_email: servico.modoPagamento() === 'mp', whatsapp: c.empresa_whatsapp,
+      acrescimos: { urgente_pct: Number(c.urgente_pct || 0), g_pct: Number(c.tam_g_pct || 0), gg_pct: Number(c.tam_gg_pct || 0), tamanho_ate_km: Number(c.longa_km1 || 0) },
       servicos: servico.listarServicos().filter((x) => x.ativo).map((x) => ({ id: x.id, nome: x.nome, adicional: x.adicional })),
     };
   }
