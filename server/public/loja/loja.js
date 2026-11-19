@@ -260,11 +260,24 @@ function telaConfirmar() {
     if (cotadas.some((c) => c.entrega.lat == null || c.coleta.lat == null)) { erro.textContent = 'Tem endereço que não achamos no mapa. Volte e corrija.'; return; }
     enviar.disabled = true;
     enviar.textContent = 'Enviando…';
-    const feitos = [];
     try {
-      for (let i = 0; i < cotadas.length; i++) feitos.push(await api('POST', '/api/publico/pedidos', montarPedido(i)));
-      telaPronto(feitos);
+      // Cada entrega enviada fica marcada: um novo clique não manda de novo.
+      for (let i = 0; i < cotadas.length; i++) {
+        if (!cotadas[i].feito) cotadas[i].feito = await api('POST', '/api/publico/pedidos', montarPedido(i));
+      }
+      telaPronto(cotadas.map((c) => c.feito));
     } catch (e) {
+      // A conferência viu outro tipo de serviço: mostra o valor certo e o próximo clique já vai com ele.
+      if (e.dados?.erro === 'servico_diferente' && e.dados.servico_id) {
+        const c = cotadas.find((x) => !x.feito);
+        if (c) Object.assign(c, { servico_id: e.dados.servico_id, valor: e.dados.valor ?? c.valor, km: e.dados.km ?? c.km });
+        desenhar();
+        erro.textContent = e.message;
+        enviar.disabled = false;
+        enviar.textContent = 'Confirmar';
+        return;
+      }
+      const feitos = cotadas.filter((c) => c.feito).map((c) => c.feito);
       if (feitos.length) { telaPronto(feitos, `Algumas entregas não foram enviadas: ${e.message}`); return; }
       erro.textContent = e.message;
       enviar.disabled = false;
@@ -325,7 +338,7 @@ function montarPedido(i) {
     loja.nf && `🧾 NOTA FISCAL: CNPJ ${loja.nf.cnpj}${loja.nf.email ? ` · ${loja.nf.email}` : ''}`,
   ].filter(Boolean);
   return {
-    nome: loja.nome, telefone: loja.telefone, requisito, tamanho: p.tamanho, site: '', email: loja.nf?.email || '',
+    nome: loja.nome, telefone: loja.telefone, requisito, tamanho: p.tamanho, site: '', email: loja.nf?.email || '', servico_id: c.servico_id || undefined,
     descricao: `Loja ${loja.nome} · ${partes.join(' · ')}`.slice(0, 1200),
     coleta: { endereco: loja.coleta.endereco, lat: loja.coleta.lat, lon: loja.coleta.lon, contato: (loja.falar || `${loja.nome} ${loja.telefone}`).slice(0, 120) },
     entrega: {
