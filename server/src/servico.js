@@ -167,7 +167,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
   };
   // Repasse próprio do motoboy avulso (definido no painel): base até os km incluídos + valor por km a mais.
   // Sem valor próprio, devolve null e vale o repasse padrão da demanda.
-  // Corrida longa: acima do limite, o km inteiro paga o valor da faixa. Devolve o R$/km da faixa (0 = tabela normal).
+  // Corrida longa: diz se a corrida passa do 1º limite (devolve o R$/km da faixa; 0 = tabela normal).
   function precoLonga(km) {
     const n = Number(km);
     if (km == null || !Number.isFinite(n)) return 0;
@@ -176,6 +176,19 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     if (k2 > 0 && p2 > 0 && n > k2) return p2;
     if (k1 > 0 && p1 > 0 && n > k1) return p1;
     return 0;
+  }
+  // Valor da corrida longa, suave: a tabela normal até o 1º limite + cada km a mais no valor da sua faixa
+  // (ex.: 36 km = tabela até 30 km + 6 × R$ 2,50; acima de 50 km, R$ 3,00 por km).
+  function valorLonga(km, normal) {
+    const c = cfgBruta();
+    const [k1, p1, k2, p2] = [c.longa_km1, c.longa_preco1, c.longa_km2, c.longa_preco2].map(Number);
+    const faixa1 = k1 > 0 && p1 > 0;
+    const faixa2 = k2 > 0 && p2 > 0;
+    const ini = faixa1 ? k1 : k2;
+    let v = normal(ini);
+    if (faixa1) v += (Math.min(km, faixa2 && k2 > k1 ? k2 : km) - k1) * p1;
+    if (faixa2 && km > k2) v += (km - Math.max(k2, faixa1 ? k1 : 0)) * p2;
+    return v;
   }
   // Tamanho da mercadoria que cobra a mais: 'g' (até 40 cm) ou 'gg' (mais de 40 cm). Pequeno e médio = ''.
   const lerTamanho = (t) => ({ g: 'g', grande: 'g', gg: 'gg', maior: 'gg', gigante: 'gg' }[String(t ?? '').trim().toLowerCase()] || '');
@@ -241,8 +254,9 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     const minimo = Number(c.preco_minimo);
     const adicional = servico?.adicional || 0;
     if (!base && !porKm && !minimo && !adicional) return { ...nada, km };
+    const normal = (k) => Math.max(minimo, base + Math.max(0, k - Number(c.preco_km_incluso)) * porKm);
     const porKmLonga = precoLonga(km);
-    const valorKm = porKmLonga ? km * porKmLonga : Math.max(minimo, base + Math.max(0, km - Number(c.preco_km_incluso)) * porKm);
+    const valorKm = porKmLonga ? valorLonga(km, normal) : normal(km);
     let valor = valorKm + adicional;
     const fixo = telefone ? q('SELECT preco_pct FROM clientes WHERE telefone = ? AND faturado = 1').get(telefone) : null;
     if (fixo) valor *= fixo.preco_pct / 100;

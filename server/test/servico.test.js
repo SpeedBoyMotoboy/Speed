@@ -384,7 +384,7 @@ test('tamanho G/GG: % a mais sobre o base, 60% do extra ao motoboy, soma com a u
   assert.equal(d.repasse, 30);
 });
 
-test('corrida longa: km inteiro na faixa (teto R$ 3) e 70% do total para o motoboy', () => {
+test('corrida longa suave: tabela até 30 km, R$ 2,50 por km até 50, R$ 3 acima; 70% para o motoboy', () => {
   const { s } = montar();
   s.salvarConfig(TABELA, 'teste');
   const caso = (km, valor, repasse, extra = {}) => {
@@ -393,11 +393,12 @@ test('corrida longa: km inteiro na faixa (teto R$ 3) e 70% do total para o motob
     assert.equal(c.repasse, repasse, `repasse ${km} km`);
   };
   caso(30, 65, 45); // até 30 km: tabela normal
-  caso(31, 86, 60); // 86,80 e 60,76 sem centavos
-  caso(50, 140, 98);
-  caso(60, 180, 126);
-  caso(120, 360, 252);
-  caso(60, 180, 126, { tamanho: 'gg' }); // corrida longa não cobra tamanho
+  caso(31, 67, 47); // 65 + 2,50 = 67,50; motoboy 47,25
+  caso(36, 80, 56); // Jacaraípe: 65 + 6 × 2,50
+  caso(50, 115, 80);
+  caso(60, 145, 101); // 115 + 10 × 3
+  caso(120, 325, 227);
+  caso(60, 145, 101, { tamanho: 'gg' }); // corrida longa não cobra tamanho
   caso(30, 91, 60, { tamanho: 'gg' }); // até 30 km cobra: 65 + 26; motoboy 45 + 15,60
   s.salvarConfig({ longa_km1: '0', longa_km2: '0' }, 'teste'); // desligada: volta a tabela normal
   caso(60, 125, 90);

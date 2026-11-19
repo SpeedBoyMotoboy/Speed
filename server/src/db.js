@@ -249,10 +249,11 @@ export const CONFIG_PADRAO = {
   tam_g_pct: '10',
   tam_gg_pct: '20',
   tam_repasse_pct: '60',
-  // Corrida longa (coleta → entrega): acima de cada limite, o km inteiro paga o valor da faixa;
+  // Corrida longa (coleta → entrega): até o 1º limite vale a tabela normal; cada km acima dele paga o valor
+  // da faixa (suave, sem salto);
   // o motoboy avulso leva um % do valor total da corrida.
   longa_km1: '30',
-  longa_preco1: '2.8',
+  longa_preco1: '2.5',
   longa_km2: '50',
   longa_preco2: '3',
   longa_repasse_pct: '70',
