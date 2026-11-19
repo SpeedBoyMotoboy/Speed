@@ -66,7 +66,7 @@ const ROTULO_STATUS = {
   entregue: 'Entregue', cancelada: 'Cancelada',
 };
 const ROTULO_ALERTA = {
-  parado: 'Parado na rota', sem_sinal: 'Sem sinal', gps_falso: 'GPS falso', gps_desligado: 'GPS desligado',
+  problema: 'Problema na entrega', parado: 'Parado na rota', sem_sinal: 'Sem sinal', gps_falso: 'GPS falso', gps_desligado: 'GPS desligado',
   salto: 'Salto de posição', fora_do_local: 'Confirmou longe do local', troca_aparelho: 'Trocou de aparelho',
   carga_pendente: 'Turno encerrado com carga',
 };
@@ -424,6 +424,7 @@ function desenharLateral() {
       d.status === 'sem_local'
         ? h('button', { class: 'pequeno primario', onclick: () => janelaDemanda(d) }, 'Marcar no mapa')
         : h('button', { class: 'pequeno', onclick: () => { escolhendoPara = escolhendoPara === d.id ? null : d.id; desenharLateral(); } }, d.motoboy_id ? 'Trocar motoboy' : 'Escolher motoboy'),
+      h('button', { class: 'pequeno', onclick: () => janelaFinalizar(d) }, 'Finalizar'),
       h('button', {
         class: 'pequeno perigo',
         onclick: () => confirmar('Cancelar demanda', `Cancelar a demanda #${d.id} de ${d.cliente}?`, 'Cancelar demanda',
@@ -550,6 +551,7 @@ function janelaDemanda(existente = null, previa = null) {
     const requisito = h('select', { disabled: Boolean(existente) },
       Object.entries(ROTULO_REQUISITO).map(([v, r]) => h('option', { value: v, selected: (existente?.requisito ?? previa?.requisito) === v }, r)));
     const descricao = h('input', { maxlength: 500, value: existente?.descricao || previa?.descricao?.replace(/\s*\n+\s*/g, ' · ').slice(0, 500) || '', disabled: Boolean(existente), placeholder: 'O que é, observações' });
+    const agendar = h('input', { type: 'datetime-local' });
     const campos = {};
     const botoesAlvo = {};
 
@@ -609,7 +611,7 @@ function janelaDemanda(existente = null, previa = null) {
           await api('PUT', `/api/admin/demandas/${existente.id}/locais`, { coleta: ponto('coleta'), entrega: ponto('entrega') });
         } else {
           await api('POST', '/api/admin/demandas', {
-            cliente: cliente.value, requisito: requisito.value, descricao: descricao.value, mensagem_id: previa?.mensagem_id,
+            cliente: cliente.value, requisito: requisito.value, descricao: descricao.value, mensagem_id: previa?.mensagem_id, agendada_para: agendar.value || undefined,
             coleta: ponto('coleta'), entrega: ponto('entrega'),
           });
         }
@@ -637,6 +639,7 @@ function janelaDemanda(existente = null, previa = null) {
         h('div', null, h('label', null, 'Cliente'), cliente),
         h('div', null, h('label', null, 'Exige'), requisito)),
       h('label', null, 'Descrição'), descricao,
+      !existente && h('label', null, 'Agendar para (vazio = agora)'), !existente && agendar,
       h('div', { class: 'grade2' }, bloco('coleta', 'Coleta'), bloco('entrega', 'Entrega')),
       h('div', { class: 'alvo' }, botoesAlvo.coleta, botoesAlvo.entrega),
       miniEl,
@@ -660,6 +663,20 @@ async function convocar(id) {
           target: '_blank', rel: 'noopener noreferrer', onclick: () => setTimeout(dlg.fechar, 200),
         }, 'Avisar pelo WhatsApp'))]);
   } catch (e) { els.conexao.textContent = e.message; }
+}
+
+function janelaFinalizar(d) {
+  dialogo(`Finalizar entrega #${d.id}`, (dlg) => {
+    const motivo = h('textarea', { maxlength: 300, rows: 3, placeholder: 'O que ocorreu (opcional). Ex.: motoboy entregou e esqueceu de marcar.' });
+    const ok = h('button', {
+      class: 'primario',
+      onclick: () => dlg.executar(() => api('POST', `/api/admin/demandas/${d.id}/finalizar`, { motivo: motivo.value }), ok),
+    }, 'Finalizar como entregue');
+    return [
+      h('p', { class: 'nota' }, `${d.cliente}: marca a entrega como concluída com sucesso. Fica registrado que foi finalizada pela central.`),
+      h('label', null, 'Motivo'), motivo,
+      h('div', { class: 'linha fim' }, h('button', { onclick: dlg.fechar }, 'Voltar'), ok)];
+  });
 }
 
 function janelaMotoboy(m = null) {
@@ -1244,7 +1261,7 @@ async function desenharConfig() {
       num('repasse_pct', 'Repasse padrão ao avulso (% do valor)'), num('repasse_minimo', 'Repasse mínimo por entrega (R$)', 0.01),
       num('oferta_raio_km', 'Oferecer a quem está até (km) da coleta', 0.5),
       num('oferta_alerta_min', 'Avisar se ninguém aceitar em (min)'), num('avulso_max_horas', 'Avulso fica online no máximo (horas)')),
-    h('div', { class: 'nota' }, 'A cada 1,5 min sem aceite o raio da oferta dobra (até 8 vezes). Se o repasse mínimo for maior que o preço cobrado, a entrega dá prejuízo: mantenha o valor mínimo da entrega acima dele.'),
+    h('div', { class: 'nota' }, 'A oferta vai para todos os motoboys dentro dessa distância da coleta. A cada 1,5 min sem ninguém aceitar, a distância dobra (até 8 vezes) e mais motoboys recebem. Atenção: o repasse mínimo do motoboy tem que ser menor que o valor mínimo cobrado do cliente, senão a entrega dá prejuízo.'),
 
     h('h3', null, 'Pagamento por Pix'),
     h('div', { class: 'nota' }, 'Opção 1 — sua chave Pix (sem taxa): o cliente paga direto na sua conta e manda o comprovante; você confirma no painel ou respondendo "pago 12" no WhatsApp.'),

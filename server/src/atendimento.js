@@ -17,7 +17,7 @@ const TENTATIVAS_MAX = 6;
 const PEDIDOS_ABERTOS_MAX = 5;
 const ALERTAS_AVISADOS = {
   parado: 'Parado na rota', sem_sinal: 'Sem sinal', gps_falso: 'GPS falso', gps_desligado: 'GPS desligado',
-  carga_pendente: 'Turno encerrado com carga',
+  carga_pendente: 'Turno encerrado com carga', problema: 'PROBLEMA NA ENTREGA',
 };
 const txt = (v, max) => String(v ?? '').trim().slice(0, max);
 const hora = (ts) => new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });

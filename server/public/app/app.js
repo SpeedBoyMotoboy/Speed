@@ -254,32 +254,6 @@ function desenharTurno() {
   const [atual, ...proximas] = rota;
   const partes = [];
 
-  // Entregas disponíveis: o primeiro motoboy que aceitar leva.
-  for (const o of ofertas) {
-    const erro = h('div', { class: 'erro', role: 'alert' });
-    const responder = async (acao) => {
-      try {
-        estado = { ...(await api('POST', '/api/motoboy/oferta', { oferta_id: o.id, acao })), semConexao: false };
-        desenharTurno();
-      } catch (e) {
-        if (e.status === 401) return encerrado();
-        erro.textContent = e.message;
-        setTimeout(buscarEstado, 1500);
-      }
-      return undefined;
-    };
-    partes.push(h('div', { class: 'cartao oferta' },
-      h('span', { class: 'etiqueta oferta' }, o.urgente ? 'ENTREGA URGENTE DISPONÍVEL' : 'ENTREGA DISPONÍVEL'),
-      o.repasse != null && h('div', { class: 'ganho' }, `Você recebe ${reais(o.repasse)}`),
-      h('div', { class: 'detalhe' }, `Coleta: ${o.coleta_endereco}${o.dist_km != null ? ` (a ${String(o.dist_km).replace('.', ',')} km de você)` : ''}`),
-      h('div', { class: 'detalhe' }, `Entrega: ${o.entrega_endereco}${o.km != null ? ` (${String(o.km).replace('.', ',')} km)` : ''}`),
-      (o.servico || o.descricao) && h('div', { class: 'detalhe' }, [o.servico, o.descricao].filter(Boolean).join(' · ')),
-      h('div', { class: 'botoes' },
-        h('button', { class: 'grande coleta', onclick: () => responder('aceitar') }, 'Aceitar'),
-        h('button', { onclick: () => responder('recusar') }, 'Recusar')),
-      erro));
-  }
-
   if (turno.almoco_ate) {
     partes.push(h('div', { class: 'cartao livre' },
       h('h2', null, 'Em almoço'), h('p', { class: 'nota' }, `Até ${hora(turno.almoco_ate)}. Bom apetite!`),
@@ -288,6 +262,7 @@ function desenharTurno() {
 
   if (atual) {
     partes.push(cartaoParada(atual));
+    if (estado.previsao_fim) partes.push(h('p', { class: 'previsao' }, `Previsão de terminar a rota: ${hora(estado.previsao_fim)} (5 min por parada)`));
     if (proximas.length) {
       partes.push(h('div', { class: 'titulo-secao' }, `Depois (${proximas.length})`),
         h('div', { class: 'cartao' }, proximas.map((p) => h('div', { class: 'proxima' },
@@ -296,9 +271,11 @@ function desenharTurno() {
     }
   } else if (!turno.almoco_ate) {
     partes.push(h('div', { class: 'cartao livre' },
-      h('h2', null, ofertas.length ? 'Escolha uma entrega acima' : 'Sem demanda no momento'),
+      h('h2', null, ofertas.length ? 'Escolha uma entrega no quadro abaixo' : 'Sem demanda no momento'),
       h('p', { class: 'nota' }, 'Fique com o app ligado. Quando entrar demanda perto de você, o celular avisa.')));
   }
+
+  partes.push(...quadro());
 
   const carregando = rota.some((p) => p.tipo === 'entrega' && !rota.some((c) => c.tipo === 'coleta' && c.demanda_id === p.demanda_id));
   if (!turno.almoco_usado) {
@@ -337,6 +314,122 @@ function desenharTurno() {
     h('div', { class: 'conteudo' }, partes));
 }
 
+// ── Quadro de entregas: ofertas agrupadas por loja/coleta e entregas agendadas ──
+const minutos = (m) => (m >= 60 ? `${Math.floor(m / 60)}h${doisDig(m % 60)}` : `${m} min`);
+const kmTxt = (v) => `${String(v).replace('.', ',')} km`;
+const diaHora = (ts) => {
+  const d = new Date(ts);
+  const hoje = new Date();
+  return d.toDateString() === hoje.toDateString() ? `HOJE ${hora(ts)}` : `${doisDig(d.getDate())}/${doisDig(d.getMonth() + 1)} ${hora(ts)}`;
+};
+let grupoAberto = null;
+function quadro() {
+  const { ofertas, agendadas = [] } = estado;
+  if (!ofertas.length && !agendadas.length) return [];
+  const grupos = new Map();
+  for (const o of ofertas) {
+    const k = `${o.cliente || ''}|${o.coleta_endereco}`;
+    if (!grupos.has(k)) grupos.set(k, []);
+    grupos.get(k).push(o);
+  }
+  return [h('div', { class: 'titulo-secao' }, 'Quadro de entregas'),
+    ...[...grupos].map(([k, lista]) => cartaoGrupo(k, lista)),
+    ...agendadas.map(cartaoAgendada)];
+}
+function desenharMapa(el, coleta, entregas) {
+  const L = window.L;
+  if (!L) { el.remove(); return; }
+  const mapa = L.map(el, { zoomControl: false });
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(mapa);
+  const pino = (classe, texto) => L.divIcon({ className: '', html: `<div class="pino ${classe}">${texto}</div>`, iconSize: [30, 30], iconAnchor: [15, 15] });
+  const pontos = [];
+  if (coleta.lat != null) { L.marker([coleta.lat, coleta.lon], { icon: pino('coleta', 'C') }).addTo(mapa); pontos.push([coleta.lat, coleta.lon]); }
+  entregas.forEach((e, i) => {
+    if (e.lat == null) return;
+    L.marker([e.lat, e.lon], { icon: pino('entrega', `E${i + 1}`) }).addTo(mapa);
+    pontos.push([e.lat, e.lon]);
+  });
+  if (pontos.length) mapa.fitBounds(pontos, { padding: [30, 30], maxZoom: 15 });
+}
+function cartaoGrupo(chave, lista) {
+  const erro = h('div', { class: 'erro', role: 'alert' });
+  const o0 = lista[0];
+  const naRota = lista.every((o) => o.na_rota);
+  const temValor = lista.some((o) => o.repasse != null);
+  const total = lista.reduce((s, o) => s + (o.repasse || 0), 0);
+  const tempo = lista.reduce((s, o) => s + (o.tempo_min || 0), 0);
+  const responder = async (acao) => {
+    try {
+      for (const o of lista) estado = { ...(await api('POST', '/api/motoboy/oferta', { oferta_id: o.id, acao })), semConexao: false };
+      grupoAberto = null;
+      desenharTurno();
+    } catch (e) {
+      if (e.status === 401) return encerrado();
+      erro.textContent = e.message;
+      setTimeout(buscarEstado, 1500);
+    }
+    return undefined;
+  };
+  const aberto = grupoAberto === chave;
+  const mapaEl = aberto ? h('div', { class: 'mapa-quadro' }) : null;
+  const rotulo = naRota ? 'NA SUA ROTA' : o0.urgente ? 'URGENTE' : o0.dist_km != null ? `A ${kmTxt(o0.dist_km).toUpperCase()} DE VOCÊ` : 'DISPONÍVEL';
+  const no = h('div', { class: `cartao oferta${naRota ? ' na-rota' : ''}` },
+    h('div', { class: 'linha-topo' },
+      h('span', { class: `etiqueta ${naRota ? 'rota' : 'oferta'}` }, rotulo),
+      temValor && h('span', { class: 'ganho' }, `${naRota ? '+ ' : ''}${reais(total)}`)),
+    h('div', { class: 'endereco pequeno' }, `${o0.cliente || 'Cliente'} · ${lista.length} entrega${lista.length > 1 ? 's' : ''}`),
+    h('div', { class: 'detalhe' }, `Coleta: ${o0.coleta_endereco}`),
+    !aberto && lista.length === 1 && h('div', { class: 'detalhe' }, `Entrega: ${o0.entrega_endereco}${o0.km != null ? ` (${kmTxt(o0.km)})` : ''}`),
+    tempo > 0 && h('div', { class: 'tempo' }, `${naRota ? '+ ' : ''}${minutos(tempo)}`),
+    aberto && lista.map((o, i) => h('div', { class: 'proxima' },
+      h('span', { class: 'etiqueta entrega' }, `E${i + 1}`),
+      h('div', null, h('div', null, o.entrega_endereco),
+        h('div', { class: 'detalhe' }, [o.km != null && kmTxt(o.km), o.repasse != null && reais(o.repasse), o.descricao].filter(Boolean).join(' · '))))),
+    mapaEl,
+    h('div', { class: 'botoes' },
+      h('button', { class: 'grande coleta', onclick: () => responder('aceitar') }, lista.length > 1 ? `Pegar as ${lista.length}` : 'Pegar'),
+      h('button', { onclick: () => { grupoAberto = aberto ? null : chave; desenharTurno(); } }, aberto ? 'Fechar' : 'Ver entregas')),
+    h('button', { class: 'leve', onclick: () => responder('recusar') }, 'Não quero'),
+    erro);
+  if (mapaEl) {
+    setTimeout(() => desenharMapa(mapaEl, { lat: o0.coleta_lat, lon: o0.coleta_lon },
+      lista.map((o) => ({ lat: o.entrega_lat, lon: o.entrega_lon }))), 60);
+  }
+  return no;
+}
+function cartaoAgendada(a) {
+  const erro = h('div', { class: 'erro', role: 'alert' });
+  const agir = async (acao) => {
+    try {
+      estado = { ...(await api('POST', '/api/motoboy/agendada', { demanda_id: a.demanda_id, acao })), semConexao: false };
+      desenharTurno();
+    } catch (e) {
+      if (e.status === 401) return encerrado();
+      erro.textContent = e.message;
+      setTimeout(buscarEstado, 1500);
+    }
+    return undefined;
+  };
+  return h('div', { class: 'cartao agendada' },
+    h('div', { class: 'linha-topo' },
+      h('span', { class: 'etiqueta agendada' }, `AGENDADA · ${diaHora(a.agendada_para)}`),
+      a.repasse != null && h('span', { class: 'ganho' }, reais(a.repasse))),
+    h('div', { class: 'endereco pequeno' }, a.cliente),
+    h('div', { class: 'detalhe' }, `Coleta: ${a.coleta_endereco}`),
+    h('div', { class: 'detalhe' }, `Entrega: ${a.entrega_endereco}${a.km != null ? ` (${kmTxt(a.km)})` : ''}`),
+    estado.previsao_fim && h('div', { class: 'tempo' }, `Sua rota atual termina por volta de ${hora(estado.previsao_fim)}`),
+    a.minha
+      ? h('p', { class: 'nota' }, a.pode_confirmar
+        ? `Reservada para você. Confirme até ${hora(a.confirmar_ate)}. Sem confirmar, ela volta para o quadro.`
+        : `Reservada para você. A confirmação abre às ${hora(a.confirmar_ate - 3600000)} e vai até ${hora(a.confirmar_ate)}.`)
+      : h('p', { class: 'nota' }, `Reservou? Confirme até ${hora(a.confirmar_ate)}. Sem confirmar, ela volta para o quadro.`),
+    h('div', { class: 'botoes' },
+      a.minha && a.pode_confirmar && h('button', { class: 'grande coleta', onclick: () => agir('confirmar') }, 'Confirmar que vou fazer'),
+      a.minha && h('button', { onclick: () => agir('soltar') }, 'Não vou conseguir'),
+      !a.minha && h('button', { class: 'primario', onclick: () => agir('reservar') }, `Reservar para ${hora(a.agendada_para)}`)),
+    erro);
+}
+
 // Informações da parada em linhas separadas: prazo em destaque, contato com botões, observações em lista.
 function blocoInfo(p) {
   const partes = String(p.descricao || '').split(/\s+·\s+|\n+/).map((s) => s.trim()).filter(Boolean);
@@ -348,6 +441,7 @@ function blocoInfo(p) {
   const linha = (rot, val) => h('div', { class: 'info-linha' },
     h('span', { class: 'info-rot' }, rot), h('span', { class: 'info-val' }, val));
   return h('div', { class: 'info' },
+    p.agendada_para && h('div', { class: 'prazo' }, `Agendada: ${diaHora(p.agendada_para)}`),
     ...prazo.map((s) => h('div', { class: 'prazo' }, s)),
     linha('Cliente', p.cliente),
     p.servico && linha('Serviço', p.servico),
@@ -376,7 +470,61 @@ function cartaoParada(p) {
     trocar(area, 
       h('button', { onclick: navegar }, 'Abrir rota no mapa'),
       h('button', { class: `grande ${p.tipo}`, onclick: () => (coleta ? enviar({}) : pedirRecebedor()) },
-        coleta ? 'Coletei' : 'Entreguei'));
+        coleta ? 'Coletei' : 'Entreguei'),
+      h('button', { class: 'leve', onclick: () => problema(1) }, 'Deu problema'));
+  }
+  // "Deu problema": a Speedy guia o motoboy — quem recebe, depois a loja, por fim a central.
+  function problema(passo) {
+    formAberto = true;
+    const fone = (s) => {
+      const m = String(s || '').match(/(?:\+?55\s*)?\(?\d{2}\)?\s*9?\d{4}[-\s]?\d{4}/);
+      if (!m) return '';
+      const d = m[0].replace(/\D/g, '');
+      return d.length > 11 ? d : `55${d}`;
+    };
+    const contatos = (rot, f, msg) => (f
+      ? h('div', { class: 'info-acoes' },
+        h('a', { class: 'info-botao', href: `tel:+${f}` }, `Ligar: ${rot}`),
+        h('a', { class: 'info-botao', href: `https://wa.me/${f}?text=${encodeURIComponent(msg)}`, target: '_blank', rel: 'noopener' }, 'WhatsApp pronto'))
+      : h('p', { class: 'nota' }, `Sem telefone de ${rot} neste pedido.`));
+    const onde = coleta ? 'no local da coleta' : 'no local da entrega';
+    const fLoja = coleta ? '' : fone(p.coleta_contato);
+    if (passo === 1) {
+      trocar(area,
+        h('p', { class: 'speedy' }, `Speedy: você já ligou para ${coleta ? 'o contato da coleta' : 'quem recebe'}?`),
+        contatos(coleta ? 'coleta' : 'quem recebe', fone(p.contato),
+          `Olá! Sou o motoboy da SpeedBoy e estou ${onde} (${p.endereco}). Pode me atender?`),
+        h('button', { onclick: () => problema(fLoja ? 2 : 3) }, 'Já tentei, ninguém atende'),
+        h('button', { onclick: botoesIniciais }, 'Resolvido, voltar'));
+    } else if (passo === 2) {
+      trocar(area,
+        h('p', { class: 'speedy' }, 'Speedy: agora tente a loja que enviou.'),
+        contatos('loja', fLoja, `Olá! Sou o motoboy da SpeedBoy. Estou na entrega em ${p.endereco} e ninguém atende. Consegue falar com o cliente?`),
+        h('button', { onclick: () => problema(3) }, 'Também não resolveu'),
+        h('button', { onclick: botoesIniciais }, 'Resolvido, voltar'));
+    } else {
+      const texto = h('textarea', { maxlength: 300, rows: 3, placeholder: 'Conte em uma frase o que aconteceu' });
+      const chamar = h('button', {
+        class: 'primario',
+        onclick: async () => {
+          erro.textContent = '';
+          chamar.disabled = true;
+          try {
+            await api('POST', '/api/motoboy/problema', { demanda_id: p.demanda_id, tipo: p.tipo, texto: texto.value });
+            trocar(area,
+              h('p', { class: 'speedy' }, 'Speedy: avisei a central. Aguarde no local: vão te dizer se volta com a entrega ou se deixa em outro lugar.'),
+              h('button', { onclick: botoesIniciais }, 'Voltar'));
+          } catch (e) {
+            if (e.status === 401) { encerrado(); return; }
+            erro.textContent = e.message;
+            chamar.disabled = false;
+          }
+        },
+      }, 'Chamar a central');
+      trocar(area,
+        h('p', { class: 'speedy' }, 'Speedy: vou chamar a central da SpeedBoy.'),
+        texto, chamar, h('button', { onclick: botoesIniciais }, 'Voltar'));
+    }
   }
   function pedirRecebedor() {
     formAberto = true;

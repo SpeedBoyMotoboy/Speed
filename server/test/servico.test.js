@@ -305,3 +305,57 @@ test('tarifa urgente: +40% (mínimo R$ 10) e 70% do extra para o motoboy', () =>
   assert.equal(longe.valor, 91);
   assert.equal(longe.repasse, 63.2);
 });
+
+test('agendada: fica fora do despacho, reserva, expira sem confirmar e bloqueia 1 dia', () => {
+  const { s, db, relogio, avancar, novoMotoboy, posicao, demanda } = montar();
+  s.salvarConfig({ preco_base: '25', preco_km: '2', preco_minimo: '25', repasse_base: '15', repasse_km: '1.5', preco_km_incluso: '10' }, 'teste');
+  const mb = novoMotoboy('Caio', '11999990010', { tipo: 'avulso' });
+  const { token } = s.loginMotoboy({ telefone: '11999990010', pin: '123456', aceito_termo: true, dispositivo: 'c', origem: 'app' }, '1.1.1.1');
+  const turno = () => s.autenticarMotoboy(token);
+  posicao(token, P(0));
+  const r = demanda(0, 5, { agendada_para: relogio.t + 6 * 60 * MIN });
+  const id = typeof r === 'object' ? r.id : r;
+  let e = s.estadoMotoboy(turno());
+  assert.equal(e.ofertas.length, 0);
+  assert.equal(e.agendadas.length, 1);
+  s.agendadaMotoboy(turno(), { demanda_id: id, acao: 'reservar' });
+  e = s.estadoMotoboy(turno());
+  assert.equal(e.agendadas[0].minha, true);
+  assert.equal(e.agendadas[0].pode_confirmar, false);
+  assert.throws(() => s.agendadaMotoboy(turno(), { demanda_id: id, acao: 'confirmar' }), /2 horas/);
+  avancar(5 * 60 + 1); // passou de 1h antes sem confirmar
+  posicao(token, P(0));
+  s.rotina();
+  const d = db.prepare('SELECT reservada_por FROM demandas WHERE id = ?').get(id);
+  assert.equal(d.reservada_por, null);
+  assert.ok(db.prepare('SELECT reserva_bloqueio_ate FROM motoboys WHERE id = ?').get(mb).reserva_bloqueio_ate > relogio.t);
+});
+
+test('agendada: confirmar na janela entra na rota do motoboy', () => {
+  const { s, relogio, avancar, novoMotoboy, posicao, demanda } = montar();
+  novoMotoboy('Dani', '11999990011', { tipo: 'avulso' });
+  const { token } = s.loginMotoboy({ telefone: '11999990011', pin: '123456', aceito_termo: true, dispositivo: 'd', origem: 'app' }, '1.1.1.1');
+  const turno = () => s.autenticarMotoboy(token);
+  posicao(token, P(0));
+  const r = demanda(0, 5, { agendada_para: relogio.t + 3 * 60 * MIN });
+  const id = typeof r === 'object' ? r.id : r;
+  s.agendadaMotoboy(turno(), { demanda_id: id, acao: 'reservar' });
+  avancar(90);
+  posicao(token, P(0));
+  s.agendadaMotoboy(turno(), { demanda_id: id, acao: 'confirmar' });
+  const e = s.estadoMotoboy(turno());
+  assert.equal(e.rota.length, 2);
+  assert.ok(e.previsao_fim > relogio.t);
+});
+
+test('central finaliza a entrega com motivo', () => {
+  const { s, db, demanda } = montar();
+  const r = demanda(0, 5);
+  const id = typeof r === 'object' ? r.id : r;
+  s.finalizarDemanda(id, 'motoboy esqueceu de marcar', 'admin:teste');
+  const d = db.prepare('SELECT status, entregue_em, entrega_justificativa FROM demandas WHERE id = ?').get(id);
+  assert.equal(d.status, 'entregue');
+  assert.ok(d.entregue_em > 0);
+  assert.match(d.entrega_justificativa, /Finalizada pela central: motoboy esqueceu/);
+  assert.throws(() => s.finalizarDemanda(id, '', 'admin:teste'), /finalizada/);
+});

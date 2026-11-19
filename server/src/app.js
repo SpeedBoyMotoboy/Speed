@@ -160,6 +160,14 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
     servico.responderOferta(turno, corpo);
     return servico.estadoMotoboy(servico.autenticarMotoboy(turno.token));
   });
+  rota('POST', '/api/motoboy/agendada', 'motoboy', ({ turno, corpo }) => {
+    servico.agendadaMotoboy(turno, corpo);
+    return servico.estadoMotoboy(servico.autenticarMotoboy(turno.token));
+  });
+  rota('POST', '/api/motoboy/problema', 'motoboy', ({ turno, corpo }) => {
+    servico.problemaMotoboy(turno, corpo);
+    return { ok: true };
+  });
   rota('POST', '/api/motoboy/encerrar', 'motoboy', ({ turno }) => {
     servico.encerrarPeloMotoboy(turno);
     return { ok: true };
@@ -235,6 +243,10 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
   });
   rota('POST', '/api/admin/demandas/:id/atribuir', 'admin', ({ admin, corpo, p }) => {
     servico.reatribuir(p.id, corpo.motoboy_id ? Number(corpo.motoboy_id) : null, ator(admin));
+    return { ok: true };
+  });
+  rota('POST', '/api/admin/demandas/:id/finalizar', 'admin', ({ admin, corpo, p }) => {
+    servico.finalizarDemanda(p.id, corpo?.motivo, ator(admin));
     return { ok: true };
   });
   rota('POST', '/api/admin/demandas/:id/cancelar', 'admin', ({ admin, p }) => {

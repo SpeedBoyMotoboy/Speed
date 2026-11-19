@@ -175,6 +175,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
   // Rota da mesma coleta (motoboy avulso): ganha pelo km total da rota, coleta → entregas em linha
   // (sempre a entrega mais perta de onde ele está). Entrega que entra numa rota aberta paga só o que a rota cresce.
   const COLETA_MESMA_M = 150;
+  let ultimoKmExtra = 0; // km que a última entrega avaliada soma à rota (para a previsão de tempo)
   function kmEmLinha(origem, destinos) {
     let atual = origem;
     let km = 0;
@@ -204,8 +205,11 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       .all(turno.id, d.id)
       .filter((g) => distM(coleta, { lat: g.coleta_lat, lon: g.coleta_lon }) <= COLETA_MESMA_M);
     if (!grupo.length) return null;
-    const antes = custoRota(mb, kmEmLinha(coleta, grupo));
-    const depois = custoRota(mb, kmEmLinha(coleta, [...grupo, { lat: d.entrega_lat, lon: d.entrega_lon }]));
+    const kmAntes = kmEmLinha(coleta, grupo);
+    const kmDepois = kmEmLinha(coleta, [...grupo, { lat: d.entrega_lat, lon: d.entrega_lon }]);
+    ultimoKmExtra = Math.max(0, kmDepois - kmAntes);
+    const antes = custoRota(mb, kmAntes);
+    const depois = custoRota(mb, kmDepois);
     return Math.round(Math.max(0, depois - antes) * 100) / 100;
   }
   function cotar(coleta, entrega, { km: kmRota = null, servicoId = null, telefone = '', urgente = false } = {}) {
@@ -795,6 +799,16 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     if (temCoord && !coordValida(lat, lon)) throw new Erro(422, 'local_invalido', `Local de ${nome} inválido.`);
     return { endereco, lat: temCoord ? lat : null, lon: temCoord ? lon : null, contato: txt(p?.contato, 120) };
   }
+  // Entrega agendada: data/hora da coleta (ms ou texto ISO). Só vale se for no futuro.
+  const ANTECEDENCIA = 60 * MIN; // até 1h antes a agendada fica só no quadro (reserva); depois entra no despacho normal
+  const JANELA_CONFIRMA = 120 * MIN; // a confirmação da reserva abre 2h antes
+  const VEL_KMH = 25; // velocidade média na cidade, para previsão de tempo
+  const MIN_PARADA = 5; // minutos por parada
+  function lerAgendada(v) {
+    if (v == null || v === '') return null;
+    const n = typeof v === 'number' ? v : Date.parse(String(v));
+    return Number.isFinite(n) && n > agora() ? n : null;
+  }
   function validarDemanda(d) {
     const cliente = txt(d?.cliente, 120);
     if (cliente.length < 2) throw new Erro(422, 'cliente_invalido', 'Informe o cliente.');
@@ -803,6 +817,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     return {
       cliente, requisito, descricao: txt(d?.descricao, 1200),
       telefone: normalizarTelefone(d?.cliente_telefone ?? d?.telefone),
+      agendadaPara: lerAgendada(d?.agendada_para),
       urgente: d?.urgente ? 1 : 0, tarifaUrgente: d?.tarifa_urgente === true, servicoId: d?.servico_id ? Number(d.servico_id) : null,
       km: Number.isFinite(Number(d?.km)) && Number(d?.km) > 0 ? Number(d.km) : null, email: txt(d?.email, 120),
       coleta: lerPonto(d?.coleta, 'coleta'), entrega: lerPonto(d?.entrega, 'entrega'),
@@ -826,6 +841,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
         ia ? (ia.aprovado ? 1 : 0) : null, ia ? txt(ia.aprovado ? ia.resumo : ia.motivos.join(' · '), 500) : null);
     const id = Number(r.lastInsertRowid);
     if (bonus) q('UPDATE demandas SET bonus_urgente = ? WHERE id = ?').run(bonus, id);
+    if (v.agendadaPara) q('UPDATE demandas SET agendada_para = ? WHERE id = ?').run(v.agendadaPara, id);
     auditar(ator, 'demanda_criada', `#${id} ${v.cliente}`);
     emitir('demanda_criada', { demanda: q('SELECT * FROM demandas WHERE id = ?').get(id) });
     if (completo && !retida) despachar(id);
@@ -967,6 +983,23 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     });
   }
 
+  // A central marca a entrega como concluída (ex.: o motoboy entregou e esqueceu de registrar).
+  function finalizarDemanda(id, motivo, ator) {
+    const d = q('SELECT * FROM demandas WHERE id = ?').get(id);
+    if (!d) throw new Erro(404, 'nao_encontrado', 'Demanda não encontrada.');
+    if (['entregue', 'cancelada'].includes(d.status)) throw new Erro(409, 'ja_finalizada', 'Demanda já finalizada.');
+    const t = agora();
+    const obs = txt(motivo, 300);
+    tx(() => {
+      q(`UPDATE demandas SET status = 'entregue', entregue_em = ?, coletada_em = COALESCE(coletada_em, ?), retida = 0,
+         entrega_justificativa = ?, recebedor = COALESCE(recebedor, ?) WHERE id = ?`)
+        .run(t, t, `Finalizada pela central${obs ? `: ${obs}` : ''}`, 'Finalizada pela central', id);
+      q("UPDATE ofertas SET status = 'encerrada', respondida_em = ? WHERE demanda_id = ? AND status = 'aberta'").run(t, id);
+      if (d.turno_id) q('UPDATE turnos SET rota_versao = rota_versao + 1 WHERE id = ?').run(d.turno_id);
+      auditar(ator, 'demanda_finalizada', `#${id}${obs ? `: ${obs}` : ''}`);
+    });
+  }
+
   // ----------------------------------------------------- rota e despacho
   const parada = (d, tipo) => ({
     demanda_id: d.id,
@@ -979,6 +1012,8 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     descricao: d.descricao,
     servico: d.servico,
     repasse: d.repasse,
+    agendada_para: d.agendada_para ?? null,
+    coleta_contato: d.coleta_contato,
     ordem: tipo === 'coleta' ? d.ordem_coleta : d.ordem_entrega,
   });
   function rotaDoTurno(turnoId) {
@@ -1066,6 +1101,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
   function despachar(demandaId) {
     const d = q("SELECT * FROM demandas WHERE id = ? AND status = 'aguardando' AND retida = 0").get(demandaId);
     if (!d) return false;
+    if (d.agendada_para && agora() < d.agendada_para - ANTECEDENCIA) return false; // agendada: só no quadro, para reserva
     if (!d.urgente) {
       const escolhido = escolherMotoboy(d, candidatos().filter((x) => x.turno.tipo === 'diaria'), cfg());
       if (escolhido) {
@@ -1182,6 +1218,68 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     });
   }
 
+  // ------------------------------------------------------- agendadas e problema
+  // Quadro de agendadas: as livres (até 1h antes) e as reservadas por este motoboy.
+  function agendadasPara(turno, paga) {
+    const t = agora();
+    return q(`SELECT id, cliente, coleta_endereco, entrega_endereco, km, repasse, agendada_para, reservada_por,
+        coleta_lat, coleta_lon, entrega_lat, entrega_lon FROM demandas
+        WHERE status = 'aguardando' AND retida = 0 AND agendada_para IS NOT NULL AND agendada_para - ? > ?
+          AND (reservada_por IS NULL OR reservada_por = ?) ORDER BY agendada_para`).all(ANTECEDENCIA, t, turno.motoboy_id)
+      .map(({ id, reservada_por: dono, repasse, ...d }) => ({
+        ...d, demanda_id: id, repasse: paga(repasse), minha: dono === turno.motoboy_id,
+        confirmar_ate: d.agendada_para - ANTECEDENCIA, pode_confirmar: dono === turno.motoboy_id && t >= d.agendada_para - JANELA_CONFIRMA,
+      }));
+  }
+  // Previsão de quando a rota atual termina: trajeto a 25 km/h + 5 min por parada.
+  function previsaoFim(turno) {
+    const rota = rotaDoTurno(turno.id).filter((p) => p.lat != null);
+    if (!rota.length) return null;
+    let atual = turno.ult_lat != null ? { lat: turno.ult_lat, lon: turno.ult_lon } : rota[0];
+    let km = 0;
+    for (const p of rota) { km += distRuaKm(atual, p); atual = p; }
+    return agora() + Math.round((km / VEL_KMH) * 60 + MIN_PARADA * rota.length) * MIN;
+  }
+  function agendadaMotoboy(turno, { demanda_id: id, acao }) {
+    const t = agora();
+    const fora = () => new Erro(409, 'agendada_indisponivel', 'Essa entrega agendada não está mais disponível.');
+    tx(() => {
+      const d = q("SELECT * FROM demandas WHERE id = ? AND status = 'aguardando' AND retida = 0 AND agendada_para IS NOT NULL").get(Number(id));
+      if (!d) throw fora();
+      if (acao === 'reservar') {
+        if (d.reservada_por || t >= d.agendada_para - ANTECEDENCIA) throw fora();
+        const mb = q('SELECT reserva_bloqueio_ate FROM motoboys WHERE id = ?').get(turno.motoboy_id);
+        if ((mb?.reserva_bloqueio_ate || 0) > t) throw fora(); // perdeu a prioridade por 1 dia (sem aviso explícito)
+        q('UPDATE demandas SET reservada_por = ? WHERE id = ?').run(turno.motoboy_id, d.id);
+        auditar(`motoboy:${turno.motoboy_id}`, 'agendada_reservada', `#${d.id}`);
+      } else if (acao === 'soltar') {
+        if (d.reservada_por !== turno.motoboy_id) throw fora();
+        q('UPDATE demandas SET reservada_por = NULL WHERE id = ?').run(d.id);
+        auditar(`motoboy:${turno.motoboy_id}`, 'agendada_solta', `#${d.id}`);
+      } else if (acao === 'confirmar') {
+        if (d.reservada_por !== turno.motoboy_id) throw fora();
+        if (t < d.agendada_para - JANELA_CONFIRMA) throw new Erro(409, 'cedo', 'A confirmação abre 2 horas antes do horário.');
+        atribuir(d, q('SELECT * FROM turnos WHERE id = ?').get(turno.id));
+        auditar(`motoboy:${turno.motoboy_id}`, 'agendada_confirmada', `#${d.id}`);
+      } else throw new Erro(422, 'acao_invalida', 'Ação inválida.');
+    });
+  }
+  // Reserva não confirmada até 1h antes: volta ao quadro e o motoboy fica 1 dia sem poder reservar.
+  function expirarReservas(t) {
+    for (const d of q(`SELECT id, reservada_por FROM demandas WHERE status = 'aguardando' AND reservada_por IS NOT NULL
+        AND agendada_para IS NOT NULL AND agendada_para - ? <= ?`).all(ANTECEDENCIA, t)) {
+      q('UPDATE demandas SET reservada_por = NULL WHERE id = ?').run(d.id);
+      q('UPDATE motoboys SET reserva_bloqueio_ate = ? WHERE id = ?').run(t + 24 * 60 * MIN, d.reservada_por);
+      auditar('sistema', 'reserva_expirada', `#${d.id} (motoboy ${d.reservada_por} sem reservar por 1 dia)`);
+    }
+  }
+  // Motoboy não conseguiu resolver com quem recebe nem com a loja: chama a central.
+  function problemaMotoboy(turno, { demanda_id: id, tipo, texto }) {
+    const d = q('SELECT id, cliente FROM demandas WHERE id = ? AND turno_id = ?').get(Number(id), turno.id);
+    if (!d) throw new Erro(404, 'nao_encontrado', 'Entrega não encontrada na sua rota.');
+    alertaPontual(turno, 'problema', `#${d.id} ${d.cliente} (${tipo === 'coleta' ? 'na coleta' : 'na entrega'}): ${txt(texto, 300) || 'sem detalhe'}. Já tentou os contatos. Decidir: voltar com a entrega ou deixar em outro lugar.`);
+  }
+
   // ------------------------------------------------------- telas (leitura)
   function estadoMotoboy(turno) {
     const m = q('SELECT nome, veiculo, repasse_base, repasse_km FROM motoboys WHERE id = ?').get(turno.motoboy_id);
@@ -1190,13 +1288,18 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     // A diária não recebe por entrega: o valor do repasse só aparece para o avulso.
     const paga = (v) => (avulso ? v : null);
     const ofertas = q(`SELECT o.id, o.dist_km, d.id AS demanda_id, d.servico, d.descricao, d.coleta_endereco,
-        d.entrega_endereco, d.km, d.repasse, d.urgente, d.bonus_urgente, d.coleta_lat, d.coleta_lon, d.entrega_lat, d.entrega_lon
+        d.entrega_endereco, d.km, d.repasse, d.urgente, d.bonus_urgente, d.cliente, d.coleta_lat, d.coleta_lon, d.entrega_lat, d.entrega_lon
       FROM ofertas o JOIN demandas d ON d.id = o.demanda_id
       WHERE o.turno_id = ? AND o.status = 'aberta' AND d.status = 'aguardando' AND d.retida = 0
       ORDER BY o.id`).all(turno.id).map(({ coleta_lat, coleta_lon, entrega_lat, entrega_lon, bonus_urgente, ...o }) => {
         const naRota = repasseNaRota(turno, { id: o.demanda_id, coleta_lat, coleta_lon, entrega_lat, entrega_lon }, m);
         const proprio = naRota ?? repasseProprio(m, o.km);
-        return { ...o, na_rota: naRota != null, repasse: paga(proprio != null ? Math.round((proprio + (bonus_urgente || 0)) * 100) / 100 : o.repasse) };
+        const kmMais = naRota != null ? ultimoKmExtra : (o.dist_km || 0) + (o.km || 0);
+        return {
+          ...o, coleta_lat, coleta_lon, entrega_lat, entrega_lon, na_rota: naRota != null,
+          tempo_min: Math.round((kmMais / VEL_KMH) * 60 + MIN_PARADA * (naRota != null ? 1 : 2)),
+          repasse: paga(proprio != null ? Math.round((proprio + (bonus_urgente || 0)) * 100) / 100 : o.repasse),
+        };
       });
     const feitas = avulso ? q(`SELECT id, servico, entrega_endereco, entregue_em, repasse FROM demandas
         WHERE turno_id = ? AND status = 'entregue' ORDER BY entregue_em DESC`).all(turno.id) : [];
@@ -1204,6 +1307,8 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       agora: agora(),
       motoboy: { nome: m.nome, veiculo: m.veiculo, tipo: turno.tipo },
       ofertas,
+      agendadas: agendadasPara(turno, paga),
+      previsao_fim: previsaoFim(turno),
       ganhos: avulso ? { total: Math.round(feitas.reduce((soma, d) => soma + (d.repasse || 0), 0) * 100) / 100, entregas: feitas } : null,
       pode_encerrar: avulso && abertasDoTurno(turno.id) === 0,
       turno: {
@@ -1486,6 +1591,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
   function rotina() {
     const c = cfg();
     const t = agora();
+    expirarReservas(t);
     for (const turno of q('SELECT * FROM turnos WHERE fim_real IS NULL').all()) {
       if (t >= turno.fim_previsto) {
         const comCarga = q("SELECT COUNT(*) AS n FROM demandas WHERE turno_id = ? AND status = 'coletada'").get(turno.id).n;
@@ -1523,7 +1629,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     criarDemanda, criarDemandaExterna, definirLocais, cancelarDemanda, reatribuir, confirmarParada,
     despacharPendentes, estadoMotoboy, estadoAdmin, trilha, relatorio, rotina,
     importarWhatsapp, listarConversas, mensagensDaConversa, excluirConversa,
-    aoEvento, cotar, foraDoHorario, criarPedido, liberarDemanda, fecharPedido, definirContato, pedidoPublico, relatorioClientes, relatorioEntregas,
+    aoEvento, cotar, agendadaMotoboy, problemaMotoboy, finalizarDemanda, foraDoHorario, criarPedido, liberarDemanda, fecharPedido, definirContato, pedidoPublico, relatorioClientes, relatorioEntregas,
     listarServicos, salvarServico, listarClientes, salvarCliente, registrarPix, marcarPago,
     responderOferta, encerrarPeloMotoboy, modoPagamento,
     interno: { q, tx, cfgBruta, auditar, agora, exigirNaoBloqueado, registrarFalha },
