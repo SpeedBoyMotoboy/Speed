@@ -727,7 +727,7 @@ export function criarAtendimento({
     if (analise && !analise.aprovado) modo = 'painel';
     const d = servico.criarPedido({
       cliente: fixo?.nome || nome, telefone, descricao: dados?.descricao, requisito: dados?.requisito ?? 'qualquer',
-      urgente: true, servico_id: dados?.servico_id, km, email, coleta, entrega,
+      urgente: dados?.urgente !== false, servico_id: dados?.servico_id, km, email, coleta, entrega,
     }, 'site', { retida: modo !== 'nenhuma', pagamento: fixo ? 'faturado' : '', ia: analise });
     if (telefone) lembrarCliente(telefone, nome, coleta, email);
 
