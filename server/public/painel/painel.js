@@ -429,6 +429,7 @@ function desenharLateral() {
         : h('button', { class: 'pequeno', onclick: () => janelaEscolher(d) }, d.motoboy_id ? 'Trocar motoboy' : 'Escolher motoboy'),
       d.status === 'aguardando' && !d.motoboy_id && d.repasse != null && h('button', { class: 'pequeno', onclick: () => compartilharDemanda(d) }, 'Compartilhar'),
       !['pago', 'pendente'].includes(d.pagamento) && h('button', { class: 'pequeno', onclick: () => janelaValor(d) }, 'Valor'),
+      d.codigo && h('button', { class: 'pequeno', onclick: () => linkCliente(d) }, 'Link do cliente'),
       h('button', { class: 'pequeno', onclick: () => janelaFinalizar(d) }, 'Finalizar'),
       h('button', {
         class: 'pequeno perigo',
@@ -807,6 +808,16 @@ async function verFoto(d) {
       h('img', { src: r.foto, alt: 'Foto da entrega', class: 'foto-entrega' }),
       h('div', { class: 'linha fim' }, h('button', { onclick: dlg.fechar }, 'Fechar'))], { largo: true });
   } catch (e) { els.conexao.textContent = e.message; }
+}
+
+// Link de acompanhamento do pedido: copia e abre o WhatsApp do cliente com a mensagem pronta.
+function linkCliente(d) {
+  const link = `https://www.speedboy.com.br/acompanhar/?c=${d.codigo}`;
+  const texto = `Olá! Aqui é a SpeedBoy. Acompanhe a sua entrega por este link: ${link}\nO mapa com o motoboy aparece quando ele estiver a caminho do destino.`;
+  try { navigator.clipboard?.writeText(link); } catch { /* sem área de transferência */ }
+  const tel = String(d.cliente_telefone || '').replace(/\D/g, '');
+  const para = tel ? (tel.length <= 11 ? `55${tel}` : tel) : '';
+  window.open(`https://wa.me/${para}?text=${encodeURIComponent(texto)}`, '_blank', 'noopener');
 }
 
 function janelaFinalizar(d) {

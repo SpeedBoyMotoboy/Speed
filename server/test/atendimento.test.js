@@ -384,7 +384,7 @@ test('site: pedido fica retido até o admin aprovar', async () => {
   assert.equal(depois.motoboy.nome, 'Ana');
   assert.equal(depois.motoboy.lat, null, 'posição só aparece com rastreio_cliente ligado');
   s.salvarConfig({ rastreio_cliente: '1' }, 'teste');
-  assert.equal(s.pedidoPublico(r.codigo).motoboy.lat, P(0).lat);
+  assert.equal(s.pedidoPublico(r.codigo).motoboy.lat, null, 'antes da coleta o cliente n?o v? o motoboy no mapa');
   assert.equal(s.pedidoPublico(r.codigo).paradas_antes, 0);
 });
 

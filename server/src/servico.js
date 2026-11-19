@@ -1484,7 +1484,11 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     if (emRota && d.turno_id) {
       const turno = q('SELECT * FROM turnos WHERE id = ?').get(d.turno_id);
       const m = q('SELECT nome, veiculo FROM motoboys WHERE id = ?').get(d.motoboy_id);
-      const ver = cfgBruta().rastreio_cliente === '1' && turno?.ult_lat != null;
+      // Cliente vê o motoboy no mapa só a caminho do destino: depois da coleta, ou desde a saída quando
+      // coleta e entrega são o mesmo lugar (endereço único: visita, notificação).
+      const unico = d.coleta_lat != null && d.entrega_lat != null
+        && distM({ lat: d.coleta_lat, lon: d.coleta_lon }, { lat: d.entrega_lat, lon: d.entrega_lon }) <= 150;
+      const ver = cfgBruta().rastreio_cliente === '1' && turno?.ult_lat != null && (d.status === 'coletada' || unico);
       motoboy = {
         nome: m.nome.split(/\s+/)[0], veiculo: m.veiculo,
         lat: ver ? turno.ult_lat : null, lon: ver ? turno.ult_lon : null, ult_ts: ver ? turno.ult_ts : null,
