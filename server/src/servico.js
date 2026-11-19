@@ -922,7 +922,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       // Valor igual ao cotado: o repasse já calculado (tabela, tamanho, corrida longa) continua valendo.
       const igual = d.valor != null && d.repasse != null && Math.abs(valor - d.valor) < 0.01;
       const repasse = igual ? d.repasse : Math.round(Math.max(Number(c.repasse_minimo), (valor * pct) / 100) * 100) / 100;
-      q('UPDATE demandas SET valor = ?, repasse = ?, repasse_padrao = NULL WHERE id = ?').run(Math.round(valor * 100) / 100, repasse, id);
+      q('UPDATE demandas SET valor = ?, repasse = ?, repasse_padrao = NULL, repasse_manual = ? WHERE id = ?').run(Math.round(valor * 100) / 100, repasse, igual ? d.repasse_manual : 0, id);
       auditar(ator, 'demanda_valor', `#${id} ${valor}`);
     }
     const r = liberarDemanda(id, ator);
@@ -989,7 +989,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     tx(() => {
       if (d.pagamento !== 'pago') q('UPDATE demandas SET bonus_urgente = ? WHERE id = ?').run(bonus || null, d.id);
       q(`UPDATE demandas SET coleta_endereco=?, coleta_lat=?, coleta_lon=?, entrega_endereco=?, entrega_lat=?,
-         entrega_lon=?, status='aguardando', km=?, valor=?, repasse=?, repasse_padrao=NULL, retida=?, fila_em=? WHERE id=?`)
+         entrega_lon=?, status='aguardando', km=?, valor=?, repasse=?, repasse_padrao=NULL, repasse_manual=0, retida=?, fila_em=? WHERE id=?`)
         .run(coleta.endereco, coleta.lat, coleta.lon, entrega.endereco, entrega.lat, entrega.lon, km, novoValor, novoRepasse,
           segurar ? 1 : 0, agora(), id);
       auditar(ator, 'demanda_local', `#${id}`);
@@ -1011,6 +1011,30 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
   }
 
   // A central marca a entrega como concluída (ex.: o motoboy entregou e esqueceu de registrar).
+  // Central muda o valor do pedido (ex.: desconto combinado com o cliente) e o que o motoboy recebe.
+  // O repasse digitado fica travado: a tabela própria do motoboy e a conta da rota não mexem mais nele.
+  function editarValor(id, dados, ator) {
+    const d = q('SELECT * FROM demandas WHERE id = ?').get(id);
+    if (!d) throw new Erro(404, 'nao_encontrado', 'Demanda não encontrada.');
+    if (['entregue', 'cancelada'].includes(d.status)) throw new Erro(409, 'ja_finalizada', 'Demanda já finalizada: o valor não muda mais.');
+    if (d.pagamento === 'pago') throw new Erro(409, 'ja_pago', 'Pedido já pago: o valor não muda.');
+    if (d.pagamento === 'pendente') throw new Erro(409, 'pix_gerado', 'O Pix deste pedido já foi gerado com o valor antigo.');
+    const numero = (v, nome) => {
+      const n = Number(String(v ?? '').replace(',', '.'));
+      if (String(v ?? '').trim() === '' || !Number.isFinite(n) || n < 0 || n > 100000) throw new Erro(422, 'valor_invalido', `${nome}: valor inválido.`);
+      return Math.round(n * 100) / 100;
+    };
+    const valor = numero(dados?.valor, 'Cliente paga');
+    if (valor <= 0) throw new Erro(422, 'valor_invalido', 'Cliente paga: valor inválido.');
+    const repasse = dados?.repasse == null || String(dados.repasse).trim() === '' ? d.repasse : numero(dados.repasse, 'Motoboy recebe');
+    const obs = txt(dados?.motivo, 200);
+    tx(() => {
+      q('UPDATE demandas SET valor = ?, repasse = ?, repasse_padrao = NULL, bonus_urgente = NULL, repasse_manual = 1 WHERE id = ?').run(valor, repasse, id);
+      if (d.turno_id) q('UPDATE turnos SET rota_versao = rota_versao + 1 WHERE id = ?').run(d.turno_id);
+      auditar(ator, 'demanda_valor', `#${id} cliente ${d.valor ?? '—'} → ${valor}; motoboy ${d.repasse ?? '—'} → ${repasse ?? '—'}${obs ? `: ${obs}` : ''}`);
+    });
+    return q('SELECT * FROM demandas WHERE id = ?').get(id);
+  }
   function finalizarDemanda(id, motivo, ator) {
     const d = q('SELECT * FROM demandas WHERE id = ?').get(id);
     if (!d) throw new Erro(404, 'nao_encontrado', 'Demanda não encontrada.');
@@ -1062,9 +1086,9 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
        coletada_em = NULL, coleta_dist_m = NULL, coleta_justificativa = NULL WHERE id = ?`)
       .run(turno.motoboy_id, turno.id, t, d.id);
     {
-      const atual = q('SELECT id, repasse, repasse_padrao, bonus_urgente, km, coleta_lat, coleta_lon, entrega_lat, entrega_lon FROM demandas WHERE id = ?').get(d.id);
+      const atual = q('SELECT id, repasse, repasse_padrao, repasse_manual, bonus_urgente, km, coleta_lat, coleta_lon, entrega_lat, entrega_lon FROM demandas WHERE id = ?').get(d.id);
       const padrao = atual.repasse_padrao ?? atual.repasse;
-      const mb = turno.tipo === 'avulso' ? q('SELECT repasse_base, repasse_km FROM motoboys WHERE id = ?').get(turno.motoboy_id) : null;
+      const mb = turno.tipo === 'avulso' && !atual.repasse_manual ? q('SELECT repasse_base, repasse_km FROM motoboys WHERE id = ?').get(turno.motoboy_id) : null;
       const semBonus = mb ? (repasseNaRota(turno, atual, mb) ?? repasseProprio(mb, atual.km)) : null;
       const proprio = semBonus == null ? null : Math.round((semBonus + (atual.bonus_urgente || 0)) * 100) / 100;
       q('UPDATE demandas SET repasse = ?, repasse_padrao = ? WHERE id = ?').run(proprio ?? padrao, proprio != null ? padrao : null, d.id);
@@ -1315,12 +1339,12 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     // A diária não recebe por entrega: o valor do repasse só aparece para o avulso.
     const paga = (v) => (avulso ? v : null);
     const ofertas = q(`SELECT o.id, o.dist_km, d.id AS demanda_id, d.servico, d.descricao, d.coleta_endereco,
-        d.entrega_endereco, d.km, d.repasse, d.urgente, d.bonus_urgente, d.cliente, d.coleta_lat, d.coleta_lon, d.entrega_lat, d.entrega_lon
+        d.entrega_endereco, d.km, d.repasse, d.repasse_manual, d.urgente, d.bonus_urgente, d.cliente, d.coleta_lat, d.coleta_lon, d.entrega_lat, d.entrega_lon
       FROM ofertas o JOIN demandas d ON d.id = o.demanda_id
       WHERE o.turno_id = ? AND o.status = 'aberta' AND d.status = 'aguardando' AND d.retida = 0
-      ORDER BY o.id`).all(turno.id).map(({ coleta_lat, coleta_lon, entrega_lat, entrega_lon, bonus_urgente, ...o }) => {
-        const naRota = repasseNaRota(turno, { id: o.demanda_id, km: o.km, coleta_lat, coleta_lon, entrega_lat, entrega_lon }, m);
-        const proprio = naRota ?? repasseProprio(m, o.km);
+      ORDER BY o.id`).all(turno.id).map(({ coleta_lat, coleta_lon, entrega_lat, entrega_lon, bonus_urgente, repasse_manual, ...o }) => {
+        const naRota = repasse_manual ? null : repasseNaRota(turno, { id: o.demanda_id, km: o.km, coleta_lat, coleta_lon, entrega_lat, entrega_lon }, m);
+        const proprio = repasse_manual ? null : naRota ?? repasseProprio(m, o.km);
         const kmMais = naRota != null ? ultimoKmExtra : (o.dist_km || 0) + (o.km || 0);
         return {
           ...o, coleta_lat, coleta_lon, entrega_lat, entrega_lon, na_rota: naRota != null,
@@ -1656,7 +1680,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     criarDemanda, criarDemandaExterna, definirLocais, cancelarDemanda, reatribuir, confirmarParada,
     despacharPendentes, estadoMotoboy, estadoAdmin, trilha, relatorio, rotina,
     importarWhatsapp, listarConversas, mensagensDaConversa, excluirConversa,
-    aoEvento, cotar, agendadaMotoboy, problemaMotoboy, finalizarDemanda, foraDoHorario, criarPedido, liberarDemanda, fecharPedido, definirContato, pedidoPublico, relatorioClientes, relatorioEntregas,
+    aoEvento, cotar, agendadaMotoboy, problemaMotoboy, finalizarDemanda, editarValor, foraDoHorario, criarPedido, liberarDemanda, fecharPedido, definirContato, pedidoPublico, relatorioClientes, relatorioEntregas,
     listarServicos, salvarServico, listarClientes, salvarCliente, registrarPix, marcarPago,
     responderOferta, encerrarPeloMotoboy, modoPagamento,
     interno: { q, tx, cfgBruta, auditar, agora, exigirNaoBloqueado, registrarFalha },

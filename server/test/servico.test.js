@@ -402,3 +402,20 @@ test('corrida longa: km inteiro na faixa (teto R$ 3) e 70% do total para o motob
   s.salvarConfig({ longa_km1: '0', longa_km2: '0' }, 'teste'); // desligada: volta a tabela normal
   caso(60, 125, 90);
 });
+
+test('central edita o valor: cliente e motoboy, travado, não muda depois de finalizada', () => {
+  const { s } = montar();
+  s.salvarConfig(TABELA, 'teste');
+  const d = s.criarPedido({ cliente: 'Cliente Desconto', telefone: '27999990001', coleta: { endereco: 'Rua A, 1', ...P(0) }, entrega: { endereco: 'Rua B, 2', ...P(5) }, km: 15 }, 'site', { retida: true });
+  assert.equal(d.valor, 35);
+  const e = s.editarValor(d.id, { valor: '30,50', motivo: 'desconto' }, 'teste');
+  assert.equal(e.valor, 30.5);
+  assert.equal(e.repasse, 22.5); // motoboy não muda sozinho
+  assert.equal(e.repasse_manual, 1);
+  const f = s.editarValor(d.id, { valor: 30.5, repasse: 20 }, 'teste');
+  assert.equal(f.repasse, 20);
+  assert.throws(() => s.editarValor(d.id, { valor: 0 }, 'teste'), /inválido/);
+  assert.throws(() => s.editarValor(d.id, { valor: 'abc' }, 'teste'), /inválido/);
+  s.finalizarDemanda(d.id, '', 'teste');
+  assert.throws(() => s.editarValor(d.id, { valor: 40 }, 'teste'), /finalizada/);
+});

@@ -424,6 +424,7 @@ function desenharLateral() {
       d.status === 'sem_local'
         ? h('button', { class: 'pequeno primario', onclick: () => janelaDemanda(d) }, 'Marcar no mapa')
         : h('button', { class: 'pequeno', onclick: () => { escolhendoPara = escolhendoPara === d.id ? null : d.id; desenharLateral(); } }, d.motoboy_id ? 'Trocar motoboy' : 'Escolher motoboy'),
+      !['pago', 'pendente'].includes(d.pagamento) && h('button', { class: 'pequeno', onclick: () => janelaValor(d) }, 'Valor'),
       h('button', { class: 'pequeno', onclick: () => janelaFinalizar(d) }, 'Finalizar'),
       h('button', {
         class: 'pequeno perigo',
@@ -666,6 +667,25 @@ async function convocar(id) {
           target: '_blank', rel: 'noopener noreferrer', onclick: () => setTimeout(dlg.fechar, 200),
         }, 'Avisar pelo WhatsApp'))]);
   } catch (e) { els.conexao.textContent = e.message; }
+}
+
+// Muda o valor do pedido (ex.: desconto) e o que o motoboy recebe. O motoboy não muda sozinho.
+function janelaValor(d) {
+  dialogo(`Valor do pedido #${d.id}`, (dlg) => {
+    const valor = h('input', { type: 'number', step: '0.01', min: '0', inputmode: 'decimal', value: d.valor ?? '' });
+    const repasse = h('input', { type: 'number', step: '0.01', min: '0', inputmode: 'decimal', value: d.repasse ?? '' });
+    const motivo = h('input', { maxlength: 200, placeholder: 'Ex.: desconto combinado com o cliente' });
+    const ok = h('button', {
+      class: 'primario',
+      onclick: () => dlg.executar(() => api('PUT', `/api/admin/demandas/${d.id}/valor`, { valor: valor.value, repasse: repasse.value, motivo: motivo.value }), ok),
+    }, 'Salvar valor');
+    return [
+      h('p', { class: 'nota' }, `${d.cliente}. O que o motoboy recebe não muda sozinho: ajuste abaixo se precisar.`),
+      h('label', null, 'Cliente paga (R$)'), valor,
+      h('label', null, 'Motoboy recebe (R$)'), repasse,
+      h('label', null, 'Motivo (opcional)'), motivo,
+      h('div', { class: 'linha fim' }, h('button', { onclick: dlg.fechar }, 'Voltar'), ok)];
+  });
 }
 
 function janelaFinalizar(d) {
