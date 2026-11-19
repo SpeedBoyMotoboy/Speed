@@ -749,14 +749,14 @@ export function criarAtendimento({
     };
     const qual = faixas[periodo] ? periodo : (cli.fechamento === 'semanal' ? 'semana' : 'mes');
     const [ini, fim] = faixas[qual];
-    const linhas = q(`SELECT id, codigo, criado_em, entregue_em, status, retida, coleta_endereco, entrega_endereco, entrega_contato, valor, km
-      FROM demandas WHERE cliente_telefone = ? AND criado_em >= ? AND criado_em < ? ORDER BY id`).all(cli.telefone, ini, fim);
+    const linhas = q(`SELECT id, codigo, criada_em, entregue_em, status, retida, coleta_endereco, entrega_endereco, entrega_contato, valor, km
+      FROM demandas WHERE cliente_telefone = ? AND criada_em >= ? AND criada_em < ? ORDER BY id`).all(cli.telefone, ini, fim);
     const validas = linhas.filter((l) => l.status !== 'cancelada');
     const total = Math.round(validas.reduce((s, l) => s + (Number(l.valor) || 0), 0) * 100) / 100;
     return {
       nome: cli.nome, periodo: qual, de: ini, ate: fim === SEMPRE ? null : fim, quantidade: validas.length, total,
       entregas: linhas.map((l) => ({
-        id: l.id, codigo: l.codigo, criado_em: l.criado_em, entregue_em: l.entregue_em, status: l.status, retida: Boolean(l.retida),
+        id: l.id, codigo: l.codigo, criado_em: l.criada_em, entregue_em: l.entregue_em, status: l.status, retida: Boolean(l.retida),
         de: l.coleta_endereco, para: l.entrega_endereco, quem: l.entrega_contato, km: l.km, valor: l.status === 'cancelada' ? 0 : l.valor,
       })),
     };
