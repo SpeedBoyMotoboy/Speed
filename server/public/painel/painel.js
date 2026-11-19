@@ -1243,7 +1243,7 @@ async function desenharConfig() {
       num('preco_zona_sul', 'Acréscimo zona sul de Vila Velha (R$)', 0.01),
       num('urgente_pct', 'Urgente: % a mais', 1), num('urgente_min', 'Urgente: mínimo a mais (R$)', 0.01),
       num('urgente_repasse_pct', 'Urgente: % do extra para o motoboy', 1),
-      num('tam_g_pct', 'Tamanho G (até 40 cm): % a mais', 1), num('tam_gg_pct', 'Tamanho GG (mais de 40 cm): % a mais', 1),
+      num('tam_g_pct', 'Tamanho G (até 40 cm): % a mais (não vale em corrida longa)', 1), num('tam_gg_pct', 'Tamanho GG (mais de 40 cm): % a mais (não vale em corrida longa)', 1),
       num('tam_repasse_pct', 'Tamanho: % do extra para o motoboy', 1),
       num('longa_km1', 'Corrida longa 1: acima de (km)', 1), num('longa_preco1', 'Corrida longa 1: R$ por km inteiro', 0.01),
       num('longa_km2', 'Corrida longa 2: acima de (km)', 1), num('longa_preco2', 'Corrida longa 2: R$ por km inteiro', 0.01),

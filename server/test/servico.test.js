@@ -397,7 +397,8 @@ test('corrida longa: km inteiro na faixa (teto R$ 3) e 70% do total para o motob
   caso(50, 140, 98);
   caso(60, 180, 126);
   caso(120, 360, 252);
-  caso(60, 252, 169.2, { tamanho: 'gg' }); // 180 + 72; motoboy 126 + 43,20
+  caso(60, 180, 126, { tamanho: 'gg' }); // corrida longa não cobra tamanho
+  caso(30, 91, 60.6, { tamanho: 'gg' }); // até 30 km cobra: 65 + 26; motoboy 45 + 15,60
   s.salvarConfig({ longa_km1: '0', longa_km2: '0' }, 'teste'); // desligada: volta a tabela normal
   caso(60, 125, 90);
 });

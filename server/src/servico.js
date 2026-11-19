@@ -248,8 +248,9 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     // Tarifa urgente: % a mais (com mínimo), antes do acréscimo de região. Parte do extra vai ao motoboy.
     const extraUrg = urgente ? Math.round(Math.max(Number(c.urgente_min || 0), (valor * Number(c.urgente_pct || 0)) / 100) * 100) / 100 : 0;
     // Tamanho G/GG: % a mais sobre o mesmo valor base (soma com a urgente, não acumula). Parte do extra vai ao motoboy.
+    // Corrida longa não cobra tamanho (o tamanho continua gravado para o motoboy saber que precisa de baú).
     const tam = lerTamanho(tamanho);
-    const extraTam = tam ? Math.round(((valor * Number((tam === 'gg' ? c.tam_gg_pct : c.tam_g_pct) || 0)) / 100) * 100) / 100 : 0;
+    const extraTam = tam && !porKmLonga ? Math.round(((valor * Number((tam === 'gg' ? c.tam_gg_pct : c.tam_g_pct) || 0)) / 100) * 100) / 100 : 0;
     const bonus = Math.round(((extraUrg * Number(c.urgente_repasse_pct || 0)) / 100 + (extraTam * Number(c.tam_repasse_pct || 0)) / 100) * 100) / 100;
     valor += extraUrg + extraTam;
     if (zonaSul) valor += Number(c.preco_zona_sul || 0);
