@@ -323,7 +323,7 @@ const COLUNAS_NOVAS = {
   motoboys: { tipo: "TEXT NOT NULL DEFAULT 'diaria'", pin_claro: 'TEXT', documento: "TEXT NOT NULL DEFAULT ''", placa: "TEXT NOT NULL DEFAULT ''", diaria_valor: 'REAL', repasse_base: 'REAL', repasse_km: 'REAL', ve_valores: 'INTEGER NOT NULL DEFAULT 0', reserva_bloqueio_ate: 'INTEGER' },
   turnos: { tipo: "TEXT NOT NULL DEFAULT 'diaria'" },
   clientes: { faturado: 'INTEGER NOT NULL DEFAULT 0', preco_pct: 'REAL NOT NULL DEFAULT 100', email: "TEXT NOT NULL DEFAULT ''",
-    chave: 'TEXT', cnpj: "TEXT NOT NULL DEFAULT ''", entrega_fixa: 'TEXT', libera_direto: 'INTEGER NOT NULL DEFAULT 0', fechamento: "TEXT NOT NULL DEFAULT ''", coleta_fixa: 'TEXT' },
+    chave: 'TEXT', cnpj: "TEXT NOT NULL DEFAULT ''", entrega_fixa: 'TEXT', libera_direto: 'INTEGER NOT NULL DEFAULT 0', fechamento: "TEXT NOT NULL DEFAULT ''", coleta_fixa: 'TEXT', preco_fixo: 'REAL', motoboy_id: 'INTEGER' },
   servicos: { preco_fixo: 'REAL', repasse_fixo: 'REAL' },
   convocacoes: { origem: "TEXT NOT NULL DEFAULT 'admin'" },
   conversas: {

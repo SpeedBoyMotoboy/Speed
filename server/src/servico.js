@@ -265,7 +265,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     const porKmLonga = precoLonga(km);
     const valorKm = porKmLonga ? valorLonga(km, normal) : normal(km);
     let valor = valorKm + adicional;
-    const fixo = telefone ? q('SELECT preco_pct FROM clientes WHERE telefone = ? AND faturado = 1').get(telefone) : null;
+    const fixo = telefone ? q('SELECT preco_pct, preco_fixo FROM clientes WHERE telefone = ? AND faturado = 1').get(telefone) : null;
     if (fixo) valor *= fixo.preco_pct / 100;
     const zonaSul = naZonaSul(coleta) || naZonaSul(entrega);
     // Tarifa urgente: % a mais (com mínimo), antes do acréscimo de região. Parte do extra vai ao motoboy.
@@ -278,6 +278,8 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     valor += extraUrg + extraTam;
     if (zonaSul) valor += Number(c.preco_zona_sul || 0);
     valor = reaisInteiros(valor);
+    // Cliente com valor fechado por viagem (ex.: Biohelp R$ 40): vale em qualquer caso.
+    if (Number(fixo?.preco_fixo) > 0) valor = reaisInteiros(fixo.preco_fixo);
     const pct = servico?.repasse_pct ?? Number(c.repasse_pct);
     // Tabela própria do motoboy (valor base até os km incluídos + valor por km a mais), se o dono preencheu;
     // sem ela vale o percentual do valor cobrado. O adicional do serviço segue repassado pelo percentual.
@@ -903,6 +905,43 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     return q('SELECT * FROM demandas WHERE id = ?').get(id);
   }
   // Pedido vindo do site ou do robô (os dados já foram conferidos por quem chama).
+  // Cliente fixo com coleta e entrega fixas (ex.: Biohelp): o robô avisa pelo WhatsApp.
+  // tipo 'nova' cria a viagem do dia (ou anota na que ainda não saiu); 'info' só anota.
+  function coletaFixa(d) {
+    const tel = normalizarTelefone(d?.telefone);
+    const cli = tel ? q('SELECT * FROM clientes WHERE telefone = ? AND faturado = 1').get(tel) : null;
+    const ler = (s) => { try { return JSON.parse(s || 'null'); } catch { return null; } };
+    const cf = ler(cli?.coleta_fixa);
+    const ef = ler(cli?.entrega_fixa);
+    if (!cli || !cf || !ef) return { acao: 'ignorado', motivo: 'cliente sem coleta e entrega fixas' };
+    const tipo = d?.tipo === 'nova' ? 'nova' : d?.tipo === 'info' ? 'info' : '';
+    const nota = txt(d?.nota, 300);
+    if (!tipo) return { acao: 'ignorado', motivo: 'tipo' };
+    const br = new Date(agora() - 3 * 3600e3);
+    const inicioDia = Date.UTC(br.getUTCFullYear(), br.getUTCMonth(), br.getUTCDate()) + 3 * 3600e3;
+    const aberta = q(`SELECT * FROM demandas WHERE cliente_telefone = ? AND status IN ('aguardando', 'sem_local', 'atribuida')
+      AND criada_em >= ? ORDER BY id DESC LIMIT 1`).get(tel, inicioDia);
+    if (aberta) {
+      if (nota && !String(aberta.descricao || '').includes(nota)) {
+        q('UPDATE demandas SET descricao = ? WHERE id = ?').run(`${aberta.descricao ? `${aberta.descricao} · ` : ''}📝 ${nota}`.slice(0, 1200), aberta.id);
+        auditar('robo', 'coleta_fixa_nota', `#${aberta.id}`);
+      }
+      return { acao: 'anotada', id: aberta.id };
+    }
+    if (tipo !== 'nova') return { acao: 'ignorado', motivo: 'sem coleta aberta hoje' };
+    const ponto = (p) => ({ endereco: txt(p.endereco, 200), contato: txt(p.contato, 120), lat: p.lat ?? null, lon: p.lon ?? null });
+    const descricao = [cf.obs && `📦 ${txt(cf.obs, 200)}`, ef.obs && `🏁 ${txt(ef.obs, 200)}`, nota && `📝 ${nota}`].filter(Boolean).join(' · ');
+    const nova = criarPedido({
+      cliente: cli.nome, telefone: tel, descricao, requisito: 'qualquer', urgente: false, coleta: ponto(cf), entrega: ponto(ef),
+    }, 'empresa', { retida: false, pagamento: 'faturado' });
+    q('UPDATE clientes SET pedidos = pedidos + 1 WHERE id = ?').run(cli.id);
+    let motoboy = null;
+    if (cli.motoboy_id && nova.status === 'aguardando') {
+      try { reatribuir(nova.id, Number(cli.motoboy_id), 'robo'); motoboy = Number(cli.motoboy_id); } catch (e) { console.error('[coleta fixa]', e.message); }
+    }
+    auditar('robo', 'coleta_fixa_criada', `#${nova.id} ${cli.nome}`);
+    return { acao: 'criada', id: nova.id, status: nova.status, motoboy };
+  }
   function criarPedido(dados, origem, opcoes) {
     const v = validarDemanda(dados);
     return tx(() => inserirDemanda(v, origem, origem, opcoes));
@@ -1753,7 +1792,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     criarDemanda, criarDemandaExterna, definirLocais, cancelarDemanda, reatribuir, confirmarParada,
     despacharPendentes, estadoMotoboy, estadoAdmin, trilha, relatorio, rotina,
     importarWhatsapp, listarConversas, mensagensDaConversa, excluirConversa,
-    aoEvento, cotar, agendadaMotoboy, problemaMotoboy, finalizarDemanda, editarValor, editarDados, liberarRastreio, fotoPermitida, fotoGravada, foraDoHorario, criarPedido, liberarDemanda, fecharPedido, definirContato, pedidoPublico, relatorioClientes, relatorioEntregas,
+    aoEvento, cotar, agendadaMotoboy, problemaMotoboy, finalizarDemanda, editarValor, editarDados, liberarRastreio, fotoPermitida, fotoGravada, foraDoHorario, criarPedido, coletaFixa, liberarDemanda, fecharPedido, definirContato, pedidoPublico, relatorioClientes, relatorioEntregas,
     listarServicos, salvarServico, listarClientes, salvarCliente, registrarPix, marcarPago,
     responderOferta, encerrarPeloMotoboy, modoPagamento,
     interno: { q, tx, cfgBruta, auditar, agora, exigirNaoBloqueado, registrarFalha },
