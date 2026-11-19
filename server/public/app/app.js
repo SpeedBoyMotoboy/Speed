@@ -266,10 +266,36 @@ function faixaSinal() {
   return h('div', { class: 'faixa ok' }, 'Localização ativa');
 }
 
+// Botão "Baixar app": só no navegador do Android, depois do login (no app instalado não aparece).
+// "Agora não" esconde por 7 dias neste aparelho.
+const CHAVE_APP_DEPOIS = 'speed_app_depois';
+function cartaoBaixarApp() {
+  if (nativo || !/android/i.test(navigator.userAgent)) return null;
+  let depois = 0;
+  try { depois = Number(localStorage.getItem(CHAVE_APP_DEPOIS)) || 0; } catch { /* sem armazenamento */ }
+  if (Date.now() < depois) return null;
+  const cartao = h('div', { class: 'cartao baixar-app' },
+    h('b', null, 'Instale o app Speedy Motoboy'),
+    h('div', { class: 'nota' }, 'Com o app, a localização segue com a tela apagada e o aviso de entrega nova chega na hora. No navegador, só com esta tela aberta.'),
+    h('div', { class: 'botoes' },
+      h('a', { class: 'botao-link', href: '/app/speed-motoboy.apk', download: 'speedy-motoboy.apk' }, 'Baixar app (Android)'),
+      h('button', {
+        type: 'button',
+        onclick: () => {
+          try { localStorage.setItem(CHAVE_APP_DEPOIS, String(Date.now() + 7 * 24 * 3600 * 1000)); } catch { /* sem armazenamento */ }
+          cartao.remove();
+        },
+      }, 'Agora não')),
+    h('div', { class: 'nota' }, 'Ao abrir o arquivo, o Android pede para permitir instalar desta fonte: toque em Configurações e ative. Depois entre com o mesmo telefone e senha.'));
+  return cartao;
+}
+
 function desenharTurno() {
   const { turno, rota, motoboy, ofertas, ganhos } = estado;
   const [atual, ...proximas] = rota;
   const partes = [];
+  const baixar = cartaoBaixarApp();
+  if (baixar) partes.push(baixar);
 
   if (turno.almoco_ate) {
     partes.push(h('div', { class: 'cartao livre' },

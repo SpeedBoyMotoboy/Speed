@@ -13,7 +13,7 @@ const QRCODE = path.dirname(createRequire(import.meta.url).resolve('qrcode-gener
 const TIPOS = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.svg': 'image/svg+xml',
-  '.json': 'application/json; charset=utf-8', '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json',
+  '.json': 'application/json; charset=utf-8', '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json', '.apk': 'application/vnd.android.package-archive',
 };
 const COOKIE = 'speed_admin';
 const TEXTO = Symbol('texto'); // rota que responde texto puro em vez de JSON
