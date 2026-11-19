@@ -640,6 +640,54 @@ export function criarAtendimento({
       servicos: servico.listarServicos().filter((x) => x.ativo).map((x) => ({ id: x.id, nome: x.nome, adicional: x.adicional })),
     };
   }
+  // ── Link próprio de empresa (/empresa/?k=CHAVE): busca em fornecedores, entrega fixa, fatura do mês ──
+  function empresaDaChave(k) {
+    const chave = txt(k, 64);
+    const cli = chave.length >= 16 ? q('SELECT * FROM clientes WHERE chave = ? AND faturado = 1').get(chave) : null;
+    if (!cli) throw new Erro(404, 'link_invalido', 'Link inválido. Peça o link certo à SpeedBoy.');
+    return cli;
+  }
+  const entregaFixa = (cli) => { try { return JSON.parse(cli.entrega_fixa || 'null'); } catch { return null; } };
+  function empresaPublica(k) {
+    const cli = empresaDaChave(k);
+    const fixa = entregaFixa(cli);
+    return { nome: cli.nome, entrega: fixa ? { endereco: fixa.endereco } : null, fechamento: cli.fechamento || 'mensal' };
+  }
+  async function pedidoEmpresa(dados, ip) {
+    limitar(`empresa:${ip}`, 60, 60 * MIN);
+    const cli = empresaDaChave(dados?.k);
+    const horario = servico.foraDoHorario();
+    if (horario) throw new Erro(403, 'fechado', `Estamos fechados agora. Atendimento: ${horario}.`);
+    const fixa = entregaFixa(cli);
+    if (!fixa) throw new Erro(422, 'sem_destino', 'Empresa sem endereço de entrega cadastrado. Fale com a SpeedBoy.');
+    const coleta = lerPontoPublico(dados?.coleta);
+    if (coleta.endereco.length < 6) throw new Erro(422, 'endereco_invalido', 'Escreva o endereço do fornecedor com rua, número e bairro.');
+    const oque = txt(dados?.oque, 300);
+    if (oque.length < 2) throw new Erro(422, 'descricao_invalida', 'Diga o que o motoboy vai buscar.');
+    await acharNoMapa(coleta);
+    const entrega = { endereco: txt(fixa.endereco, 200), lat: fixa.lat ?? null, lon: fixa.lon ?? null, contato: txt(fixa.contato, 120) };
+    const km = await distancia(coleta, entrega);
+    const autoriza = txt(dados?.autoriza, 80);
+    const tamanhoGrande = ['grande', 'maior', 'g', 'gg'].includes(String(dados?.tamanho || ''));
+    const descricao = [
+      `📦 ${oque}`,
+      autoriza && `✅ Pedido por ${autoriza} (${cli.nome}). No balcão, informe o seu nome: a retirada já está autorizada.`,
+      '🧾 Material já faturado pelo fornecedor: não paga nada na retirada.',
+    ].filter(Boolean).join(' · ');
+    const d = servico.criarPedido({
+      cliente: cli.nome, telefone: cli.telefone, descricao, requisito: tamanhoGrande ? 'bau' : 'qualquer', tamanho: dados?.tamanho,
+      urgente: false, km, email: cli.email, coleta, entrega,
+    }, 'empresa', { retida: !cli.libera_direto, pagamento: 'faturado' });
+    q('UPDATE clientes SET pedidos = pedidos + 1 WHERE id = ?').run(cli.id);
+    avisarAdmin([
+      `🏭 ${cli.nome} lançou a busca #${d.id}${cli.libera_direto ? ' (já foi para os motoboys)' : ': aprove no painel'}.`,
+      `📦 Coleta: ${d.coleta_endereco || '-'}`, `🏁 Entrega: ${d.entrega_endereco || '-'}`, `📝 ${oque}`,
+      d.km != null ? `📏 ${String(d.km).replace('.', ',')} km` : '', d.valor != null ? `💰 ${reais(d.valor)} (fatura)` : '',
+      d.status === 'sem_local' ? '⚠️ Não achei o fornecedor no mapa: marque no painel.' : '',
+    ].filter(Boolean).join('\n'));
+    return { id: d.id, codigo: d.codigo, status: d.status, valor: d.valor, km: d.km };
+  }
+
   function lerPontoPublico(p) {
     const lat = p?.lat == null || p.lat === '' ? null : Number(p.lat);
     const lon = p?.lon == null || p.lon === '' ? null : Number(p.lon);
@@ -842,7 +890,7 @@ export function criarAtendimento({
   return {
     avisarDono: (texto) => { try { avisarAdmin(texto); } catch { /* aviso é cortesia */ } },
     definirOrigem, receber, segredoConfere, webhookAutorizado, despacharSaida, rotina,
-    infoPublica, sugerirPublico, cotarPublico, pedidoSite, pedidoVivo, webhookPagamento, expirarPagamentos,
+    infoPublica, sugerirPublico, cotarPublico, pedidoSite, pedidoVivo, empresaPublica, pedidoEmpresa, webhookPagamento, expirarPagamentos,
     resumo, responder, modoConversa, testar, testarIA, analisarArquivos, analisarConversa, listarAnalises,
   };
 }

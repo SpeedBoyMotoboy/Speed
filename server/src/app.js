@@ -107,6 +107,8 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
   rota('GET', '/api/publico/sugerir', 'publico', ({ url, ip }) => atendimento.sugerirPublico(url.searchParams.get('q'), ip));
   rota('POST', '/api/publico/cotar', 'publico', ({ corpo, ip }) => atendimento.cotarPublico(corpo, ip));
   rota('POST', '/api/publico/pedidos', 'publico', ({ corpo, ip }) => atendimento.pedidoSite(corpo, ip));
+  rota('GET', '/api/publico/empresa', 'publico', ({ url }) => atendimento.empresaPublica(url.searchParams.get('k')));
+  rota('POST', '/api/publico/empresa/pedidos', 'publico', ({ corpo, ip }) => atendimento.pedidoEmpresa(corpo, ip));
   // Cadastro de motoboy pela página pública: fica pendente até o dono responder no painel.
   rota('POST', '/api/publico/cadastro', 'publico', ({ corpo, ip }) => {
     const r = servico.candidatar(corpo, ip);
@@ -359,7 +361,7 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
 
     if (req.method !== 'GET' && req.method !== 'HEAD') throw new Erro(405, 'metodo', 'Método não permitido.');
     if (caminho === '/') { res.writeHead(302, { Location: '/painel/' }); return res.end(); }
-    if (['/painel', '/app', '/pedir', '/acompanhar', '/cadastro', '/loja'].includes(caminho)) { res.writeHead(302, { Location: `${caminho}/${url.search}` }); return res.end(); }
+    if (['/painel', '/app', '/pedir', '/acompanhar', '/cadastro', '/loja', '/empresa'].includes(caminho)) { res.writeHead(302, { Location: `${caminho}/${url.search}` }); return res.end(); }
     if (caminho.startsWith('/vendor/leaflet/')) {
       if (servirArquivo(res, LEAFLET, caminho.slice('/vendor/leaflet/'.length), req.method)) return undefined;
     } else if (caminho === '/vendor/qrcode/qrcode.mjs') {

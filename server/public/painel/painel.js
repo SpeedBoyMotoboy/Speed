@@ -71,7 +71,7 @@ const ROTULO_ALERTA = {
   carga_pendente: 'Turno encerrado com carga',
 };
 const ROTULO_REQUISITO = { qualquer: 'Qualquer', moto: 'Só moto', bau: 'Baú', bag: 'Bag' };
-const ROTULO_ORIGEM = { site: 'Site', robo: 'WhatsApp', whatsapp: 'WhatsApp', api: 'API' };
+const ROTULO_ORIGEM = { empresa: 'Empresa', site: 'Site', robo: 'WhatsApp', whatsapp: 'WhatsApp', api: 'API' };
 const chip = (texto, classe = '') => h('span', { class: `chip ${classe}` }, texto);
 const equipamento = (m) => [m.veiculo === 'bike' ? 'Bike' : 'Moto', m.tem_bau && 'baú', m.tem_bag && 'bag', m.tipo === 'avulso' ? 'avulso' : 'diária'].filter(Boolean).join(' · ');
 
