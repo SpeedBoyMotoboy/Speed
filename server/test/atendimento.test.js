@@ -773,7 +773,7 @@ test('Pix na chave da empresa: cliente manda o comprovante e o responsável libe
   assert.match(fim, /Pedido #1 reservado[\s\S]*R\$\s12,00[\s\S]*000201[\s\S]*envie o comprovante aqui/);
   assert.ok(enviadas.some((m) => m.destino === '5511988880000' && /esperando Pix de R\$\s12,00[\s\S]*pago 1/.test(m.texto)));
   const publico = s.pedidoPublico(demandas()[0].codigo);
-  assert.deepEqual([publico.pix.manual, publico.pix.whatsapp, publico.pix.qr], [true, '27999165959', '']);
+  assert.deepEqual([publico.pix.manual, publico.pix.whatsapp, publico.pix.qr.startsWith('data:image/')], [true, '27999165959', true]);
   assert.match(publico.pix.codigo, /0014br\.gov\.bcb\.pix011446178859000196[\s\S]*540512\.00[\s\S]*0507PEDIDO1/);
   assert.equal(estadoDe(token).ofertas.length, 0);
 

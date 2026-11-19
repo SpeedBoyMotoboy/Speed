@@ -850,8 +850,10 @@ export function criarAtendimento({
         { servico_id: analise.servico_id, km: certo.km, valor: certo.valor });
     }
     if (analise && !analise.aprovado) modo = 'painel';
-    // Urgente: sai na hora para o motoboy e o Pix já vai para o cliente (a entrega só finaliza depois de pago).
-    const pixUrgente = tarifaUrgente && !fixo && c.pix_chave !== '' && previa.valor != null && !(analise && !analise.aprovado);
+    // Todo pedido do site com valor já mostra o Pix (a entrega só finaliza depois de pago).
+    // Urgente: além disso, sai na hora para o motoboy.
+    const pixNaHora = !fixo && c.pix_chave !== '' && previa.valor != null && !(analise && !analise.aprovado);
+    const pixUrgente = pixNaHora && tarifaUrgente;
     if (pixUrgente) modo = 'nenhuma';
     const d = servico.criarPedido({
       cliente: fixo?.nome || nome, telefone, descricao: dados?.descricao, requisito: dados?.requisito ?? 'qualquer',
@@ -861,10 +863,8 @@ export function criarAtendimento({
     if (telefone) lembrarCliente(telefone, nome, coleta, email);
 
     let pix = null;
+    if (pixNaHora) pix = servico.gerarPixManual(d.id);
     if (pixUrgente) {
-      const codigo = brCode({ chave: c.pix_chave, nome: c.pix_nome || c.empresa_nome, cidade: c.pix_cidade, valor: d.valor, txid: `PEDIDO${d.id}` });
-      servico.registrarPix(d.id, { pagId: '', pix: codigo, qr: '', expira: agora() + 24 * 60 * MIN });
-      pix = { codigo, qr: '', manual: true, valor: d.valor };
       avisarAdmin([
         `⚡💰 URGENTE #${d.id} de ${d.cliente}: já foi para o motoboy. Pix de ${reais(d.valor)} enviado ao cliente. Quando cair, confirme no painel (Confirmar pagamento) — sem isso o motoboy não finaliza.`,
         `📦 Coleta: ${d.coleta_endereco || '-'}`, `🏁 Entrega: ${d.entrega_endereco || '-'}`, d.descricao ? `📝 ${d.descricao}` : '',

@@ -5,7 +5,16 @@ import {
 import crypto from 'node:crypto';
 import { distM, distRuaKm, coordValida } from './geo.js';
 import { PROVEDORES, normalizarTelefone } from './mensageiro.js';
-import { TIPOS_CHAVE, normalizarChave } from './pix.js';
+import { TIPOS_CHAVE, normalizarChave, brCode } from './pix.js';
+import { createRequire } from 'node:module';
+const qrcode = createRequire(import.meta.url)('qrcode-generator');
+// QR Code do Pix em imagem (data URL), para o site e a página de acompanhamento mostrarem.
+function qrDataUrl(texto) {
+  const qr = qrcode(0, 'M');
+  qr.addData(texto);
+  qr.make();
+  return qr.createDataURL(5, 8);
+}
 import { MODELOS_IA } from './ia.js';
 import { atende, escolherMotoboy, melhorInsercao, REQUISITOS } from './despacho.js';
 import { lerConversa, textoDoZip, nomeDaConversa } from './whatsapp.js';
@@ -985,7 +994,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     if (!d) throw new Erro(404, 'nao_encontrado', 'Demanda não encontrada.');
     const telefone = normalizarTelefone(telefoneBruto);
     if (!telefone) throw new Erro(422, 'telefone_invalido', 'Telefone inválido.');
-    const pix = d.pagamento === 'pendente' && d.pag_pix && d.status !== 'cancelada' ? { id: d.id, codigo: d.pag_pix, valor: d.valor } : null;
+    const pix = pixAtual(d) ? { id: d.id, codigo: d.pag_pix, valor: d.valor } : null;
     if (d.cliente_telefone) return { definido: false, igual: d.cliente_telefone === telefone, pix };
     if (d.origem !== 'site' || ['entregue', 'cancelada'].includes(d.status)) return { definido: false, igual: false };
     q('UPDATE demandas SET cliente_telefone = ? WHERE id = ?').run(telefone, id);
@@ -1014,6 +1023,31 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     return { liberada: r === true, status: q('SELECT status FROM demandas WHERE id = ?').get(id).status };
   }
   // Pix gerado para o pedido (o código fica guardado para a página de acompanhamento mostrar).
+  // Pix na chave da empresa (copia e cola + QR), com o valor do pedido. O cliente paga e a central confirma no painel.
+  function gerarPixManual(id) {
+    const c = cfgBruta();
+    const d = q('SELECT * FROM demandas WHERE id = ?').get(id);
+    if (!d || !c.pix_chave || d.valor == null || ['pago', 'faturado'].includes(d.pagamento) || d.status === 'cancelada') return null;
+    const codigo = brCode({ chave: c.pix_chave, nome: c.pix_nome || c.empresa_nome, cidade: c.pix_cidade, valor: d.valor, txid: `PEDIDO${d.id}` });
+    const qr = qrDataUrl(codigo);
+    registrarPix(id, { pagId: '', pix: codigo, qr, expira: agora() + 24 * 3600e3 });
+    return { codigo, qr, valor: d.valor, manual: true };
+  }
+  // Pix manual em aberto: se o valor mudou (desconto, correção), o código e o QR acompanham.
+  function pixAtual(d) {
+    if (d.pagamento !== 'pendente' || d.status === 'cancelada' || !d.pag_pix) return false;
+    if (!d.pag_id) {
+      const c = cfgBruta();
+      const codigo = brCode({ chave: c.pix_chave, nome: c.pix_nome || c.empresa_nome, cidade: c.pix_cidade, valor: d.valor, txid: `PEDIDO${d.id}` });
+      if (codigo !== d.pag_pix || !d.pag_qr) {
+        const qr = qrDataUrl(codigo);
+        q('UPDATE demandas SET pag_pix = ?, pag_qr = ? WHERE id = ?').run(codigo, qr, d.id);
+        d.pag_pix = codigo;
+        d.pag_qr = qr;
+      }
+    }
+    return true;
+  }
   function registrarPix(id, { pagId, pix, qr, expira }) {
     q("UPDATE demandas SET pagamento = 'pendente', pag_id = ?, pag_pix = ?, pag_qr = ?, pag_expira = ? WHERE id = ?")
       .run(String(pagId), pix, qr, expira, id);
@@ -1103,7 +1137,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     if (!d) throw new Erro(404, 'nao_encontrado', 'Demanda não encontrada.');
     if (['entregue', 'cancelada'].includes(d.status)) throw new Erro(409, 'ja_finalizada', 'Demanda já finalizada: o valor não muda mais.');
     if (d.pagamento === 'pago') throw new Erro(409, 'ja_pago', 'Pedido já pago: o valor não muda.');
-    if (d.pagamento === 'pendente') throw new Erro(409, 'pix_gerado', 'O Pix deste pedido já foi gerado com o valor antigo.');
+    if (d.pagamento === 'pendente' && d.pag_id) throw new Erro(409, 'pix_gerado', 'O Pix deste pedido já foi gerado com o valor antigo.');
     const numero = (v, nome) => {
       const n = Number(String(v ?? '').replace(',', '.'));
       if (String(v ?? '').trim() === '' || !Number.isFinite(n) || n < 0 || n > 100000) throw new Erro(422, 'valor_invalido', `${nome}: valor inválido.`);
@@ -1604,7 +1638,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       id: d.id, status: d.status, retida: Boolean(d.retida), descricao: d.descricao, valor: d.valor, km: d.km,
       servico: d.servico, urgente: Boolean(d.urgente), prazo_min: Number(cfgBruta().urgente_prazo_min),
       pagamento: d.pagamento,
-      pix: d.pagamento === 'pendente' && d.status !== 'cancelada' ? {
+      pix: pixAtual(d) ? {
         codigo: d.pag_pix, qr: d.pag_qr, expira: d.pag_expira,
         // Pix na chave da empresa: o cliente manda o comprovante e a equipe confirma.
         manual: !d.pag_id, whatsapp: cfgBruta().empresa_whatsapp, comprovante: d.comprovante_em != null,
@@ -1813,7 +1847,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     criarDemanda, criarDemandaExterna, definirLocais, cancelarDemanda, reatribuir, confirmarParada,
     despacharPendentes, estadoMotoboy, estadoAdmin, trilha, relatorio, rotina,
     importarWhatsapp, listarConversas, mensagensDaConversa, excluirConversa,
-    aoEvento, cotar, agendadaMotoboy, problemaMotoboy, finalizarDemanda, editarValor, editarDados, liberarRastreio, fotoPermitida, fotoGravada, foraDoHorario, criarPedido, coletaFixa, liberarDemanda, fecharPedido, definirContato, pedidoPublico, relatorioClientes, relatorioEntregas,
+    aoEvento, cotar, agendadaMotoboy, problemaMotoboy, finalizarDemanda, editarValor, editarDados, liberarRastreio, fotoPermitida, fotoGravada, foraDoHorario, criarPedido, coletaFixa, gerarPixManual, liberarDemanda, fecharPedido, definirContato, pedidoPublico, relatorioClientes, relatorioEntregas,
     listarServicos, salvarServico, listarClientes, salvarCliente, registrarPix, marcarPago,
     responderOferta, encerrarPeloMotoboy, modoPagamento,
     interno: { q, tx, cfgBruta, auditar, agora, exigirNaoBloqueado, registrarFalha },
