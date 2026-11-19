@@ -319,7 +319,7 @@ const COLUNAS_NOVAS = {
     pagamento: "TEXT NOT NULL DEFAULT ''", pag_id: 'TEXT', pag_pix: 'TEXT', pag_qr: 'TEXT', pag_expira: 'INTEGER',
     pago_em: 'INTEGER', fila_em: 'INTEGER', comprovante_em: 'INTEGER', ia_ok: 'INTEGER', ia_obs: 'TEXT', email: "TEXT NOT NULL DEFAULT ''", sem_aceite_avisado: 'INTEGER NOT NULL DEFAULT 0',
   },
-  motoboys: { tipo: "TEXT NOT NULL DEFAULT 'diaria'", pin_claro: 'TEXT', documento: "TEXT NOT NULL DEFAULT ''", placa: "TEXT NOT NULL DEFAULT ''", diaria_valor: 'REAL', repasse_base: 'REAL', repasse_km: 'REAL', reserva_bloqueio_ate: 'INTEGER' },
+  motoboys: { tipo: "TEXT NOT NULL DEFAULT 'diaria'", pin_claro: 'TEXT', documento: "TEXT NOT NULL DEFAULT ''", placa: "TEXT NOT NULL DEFAULT ''", diaria_valor: 'REAL', repasse_base: 'REAL', repasse_km: 'REAL', ve_valores: 'INTEGER NOT NULL DEFAULT 0', reserva_bloqueio_ate: 'INTEGER' },
   turnos: { tipo: "TEXT NOT NULL DEFAULT 'diaria'" },
   clientes: { faturado: 'INTEGER NOT NULL DEFAULT 0', preco_pct: 'REAL NOT NULL DEFAULT 100', email: "TEXT NOT NULL DEFAULT ''" },
   convocacoes: { origem: "TEXT NOT NULL DEFAULT 'admin'" },

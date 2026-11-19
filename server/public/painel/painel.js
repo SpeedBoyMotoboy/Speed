@@ -423,7 +423,7 @@ function desenharLateral() {
       }, 'Aprovar'),
       d.status === 'sem_local'
         ? h('button', { class: 'pequeno primario', onclick: () => janelaDemanda(d) }, 'Marcar no mapa')
-        : h('button', { class: 'pequeno', onclick: () => { escolhendoPara = escolhendoPara === d.id ? null : d.id; desenharLateral(); } }, d.motoboy_id ? 'Trocar motoboy' : 'Escolher motoboy'),
+        : h('button', { class: 'pequeno', onclick: () => janelaEscolher(d) }, d.motoboy_id ? 'Trocar motoboy' : 'Escolher motoboy'),
       d.status === 'aguardando' && !d.motoboy_id && d.repasse != null && h('button', { class: 'pequeno', onclick: () => compartilharDemanda(d) }, 'Compartilhar'),
       !['pago', 'pendente'].includes(d.pagamento) && h('button', { class: 'pequeno', onclick: () => janelaValor(d) }, 'Valor'),
       h('button', { class: 'pequeno', onclick: () => janelaFinalizar(d) }, 'Finalizar'),
@@ -497,7 +497,7 @@ function desenharLateral() {
     fechadas.length > 0 && gaveta('finalizadas', false, null, h('summary', null, `Finalizadas hoje (${fechadas.length})`), fechadas.map(cartaoDemanda)),
 
     h('h3', null, `Motoboys em turno (${emTurno.length})`),
-    emTurno.length ? emTurno.map(cartaoMotoboy) : h('div', { class: 'vazio' }, 'Ninguém em turno. Convoque na aba Motoboys.'));
+    emTurno.length ? emTurno.map((m) => [cartaoMotoboy(m), entregasDe(m)]) : h('div', { class: 'vazio' }, 'Ninguém em turno. Convoque na aba Motoboys.'));
 }
 
 async function abrirTrilha(turnoId, nome) {
@@ -756,6 +756,44 @@ function janelaValor(d) {
       h('label', null, 'Motivo (opcional)'), motivo,
       h('div', { class: 'linha fim' }, h('button', { onclick: dlg.fechar }, 'Voltar'), ok)];
   });
+}
+
+// Entregas que cada motoboy tem agora (para ver quem está com o quê).
+function entregasDe(m) {
+  const lista = estado.demandas.filter((d) => d.motoboy_id === m.id && ['atribuida', 'coletada'].includes(d.status));
+  if (!lista.length) return null;
+  return h('div', { class: 'com-ele' }, lista.map((d) => h('div', { class: 'linha-entrega' },
+    chip(d.status === 'coletada' ? 'Levando' : 'Vai coletar', d.status),
+    h('span', null, `#${d.id} ${d.cliente} → ${bairroCidade(d.entrega_endereco) || d.entrega_endereco}`))));
+}
+
+// Escolher motoboy: janela com um cartão por motoboy. Livres e mais perto primeiro; um toque designa.
+function janelaEscolher(d) {
+  dialogo(`Escolher motoboy — #${d.id} ${d.cliente}`, (dlg) => {
+    const ref = d.coleta_lat != null ? [d.coleta_lat, d.coleta_lon] : null;
+    const precisaBau = d.requisito === 'bau';
+    const lista = estado.motoboys.filter((m) => m.turno).map((m) => {
+      const t = m.turno;
+      const km = ref && t.lat != null ? kmEntre(ref, [t.lat, t.lon]) : null;
+      const parado = Boolean(t.almoco_ate) || t.status === 'sem_sinal';
+      const grupo = parado ? 2 : t.pendentes > 0 ? 1 : 0;
+      return { m, t, km, grupo, semBau: precisaBau && !m.tem_bau };
+    }).sort((a, b) => a.semBau - b.semBau || a.grupo - b.grupo || (a.km ?? 1e9) - (b.km ?? 1e9));
+    const escolher = (id) => { dlg.fechar(); designar(d, id); };
+    const cartao = ({ m, t, km, grupo, semBau }) => h('button', { class: `escolha g${grupo}${m.id === d.motoboy_id ? ' atual' : ''}`, onclick: () => escolher(m.id) },
+      h('div', { class: 'escolha-topo' }, h('b', null, m.nome),
+        h('span', { class: `selo g${grupo}` }, grupo === 0 ? 'LIVRE' : grupo === 1 ? `${t.pendentes} parada(s)` : t.almoco_ate ? 'ALMOÇO' : 'SEM SINAL')),
+      h('div', { class: 'escolha-sub' }, [km != null ? `${km.toFixed(1)} km da coleta` : 'sem posição', equipamento(m)].join(' · ')),
+      semBau && h('div', { class: 'escolha-aviso' }, 'Pedido precisa de baú: este não tem.'),
+      m.id === d.motoboy_id && h('div', { class: 'escolha-sub' }, 'Está com este pedido agora.'),
+      entregasDe(m));
+    return [
+      h('p', { class: 'nota' }, `Coleta: ${bairroCidade(d.coleta_endereco) || d.coleta_endereco}. Toque no motoboy para designar.`),
+      d.status === 'coletada' && h('p', { class: 'escolha-aviso' }, 'Atenção: a carga já foi coletada. O novo motoboy precisa pegar com o anterior.'),
+      lista.length ? h('div', { class: 'grade-escolha' }, lista.map(cartao)) : h('div', { class: 'vazio' }, 'Ninguém em turno agora. Convoque na aba Motoboys.'),
+      h('div', { class: 'linha fim' }, h('button', { onclick: dlg.fechar }, 'Voltar'),
+        h('button', { onclick: () => escolher(null) }, 'Automático (sistema escolhe)'))];
+  }, { largo: true });
 }
 
 function janelaFinalizar(d) {

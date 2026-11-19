@@ -153,3 +153,20 @@ details.cartao summary { font-weight: 600; color: var(--texto); padding: 0; }
   .cartao.saida { margin-left: 12px; }
   h2 { font-size: 17px; }
 }
+/* Escolher motoboy (janela) e entregas de cada um */
+.grade-escolha { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; margin: 10px 0 14px; }
+button.escolha { text-align: left; padding: 12px; border-radius: 10px; border: 2px solid var(--borda); background: var(--cartao); cursor: pointer; display: block; width: 100%; }
+button.escolha:hover { border-color: #002776; }
+button.escolha.g0 { border-color: #15803d; }
+button.escolha.g2 { opacity: .65; }
+button.escolha.atual { background: #eef2ff; }
+.escolha-topo { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 15px; }
+.selo { font-size: 11px; font-weight: 700; border-radius: 999px; padding: 2px 9px; white-space: nowrap; }
+.selo.g0 { background: #dcfce7; color: #15803d; }
+.selo.g1 { background: #fef3c7; color: #92400e; }
+.selo.g2 { background: #e7eaee; color: #374151; }
+.escolha-sub { color: var(--suave); font-size: 12.5px; margin-top: 4px; }
+.escolha-aviso { color: #b91c1c; font-size: 12.5px; font-weight: 600; margin-top: 4px; }
+.com-ele { margin: -3px 0 8px 10px; padding-left: 9px; border-left: 3px solid #D4A017; }
+button.escolha .com-ele { margin: 8px 0 0; }
+.linha-entrega { display: flex; gap: 6px; align-items: center; font-size: 12.5px; padding: 2px 0; }

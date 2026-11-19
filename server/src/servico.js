@@ -1335,11 +1335,14 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
 
   // ------------------------------------------------------- telas (leitura)
   function estadoMotoboy(turno) {
-    const m = q('SELECT nome, veiculo, repasse_base, repasse_km FROM motoboys WHERE id = ?').get(turno.motoboy_id);
+    const m = q('SELECT nome, veiculo, repasse_base, repasse_km, ve_valores FROM motoboys WHERE id = ?').get(turno.motoboy_id);
     const c = cfg();
     const avulso = turno.tipo === 'avulso';
+    // Conta do dono (ve_valores): vê em cada entrega o que o cliente paga e o repasse do avulso.
+    const dono = Boolean(m.ve_valores);
+    const valorCliente = (id) => (dono ? q('SELECT valor FROM demandas WHERE id = ?').get(id)?.valor ?? null : undefined);
     // A diária não recebe por entrega: o valor do repasse só aparece para o avulso.
-    const paga = (v) => (avulso ? v : null);
+    const paga = (v) => (avulso || dono ? v : null);
     const ofertas = q(`SELECT o.id, o.dist_km, d.id AS demanda_id, d.servico, d.descricao, d.coleta_endereco,
         d.entrega_endereco, d.km, d.repasse, d.repasse_manual, d.urgente, d.bonus_urgente, d.cliente, d.coleta_lat, d.coleta_lon, d.entrega_lat, d.entrega_lon
       FROM ofertas o JOIN demandas d ON d.id = o.demanda_id
@@ -1349,7 +1352,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
         const proprio = repasse_manual ? null : naRota ?? repasseProprio(m, o.km);
         const kmMais = naRota != null ? ultimoKmExtra : (o.dist_km || 0) + (o.km || 0);
         return {
-          ...o, coleta_lat, coleta_lon, entrega_lat, entrega_lon, na_rota: naRota != null,
+          ...o, coleta_lat, coleta_lon, entrega_lat, entrega_lon, na_rota: naRota != null, valor_cliente: valorCliente(o.demanda_id),
           tempo_min: Math.round((kmMais / VEL_KMH) * 60 + MIN_PARADA * (naRota != null ? 1 : 2)),
           repasse: paga(proprio != null ? reaisInteiros(proprio + (bonus_urgente || 0)) : o.repasse),
         };
@@ -1373,7 +1376,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       },
       rota_versao: turno.rota_versao,
       cerca_m: c.cercaM,
-      rota: rotaDoTurno(turno.id).map(({ ordem, ...p }) => ({ ...p, repasse: paga(p.repasse) })),
+      rota: rotaDoTurno(turno.id).map(({ ordem, ...p }) => ({ ...p, repasse: paga(p.repasse), valor_cliente: valorCliente(p.demanda_id) })),
     };
   }
 
