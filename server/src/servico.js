@@ -1057,6 +1057,14 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     if (!d) throw new Erro(404, 'nao_encontrado', 'Entrega não encontrada.');
     return d.id;
   }
+  // Central libera para o cliente ver o motoboy desde a saída (ex.: coleta longe, viagem longa).
+  function liberarRastreio(id, ator) {
+    const d = q('SELECT id, status FROM demandas WHERE id = ?').get(Number(id));
+    if (!d) throw new Erro(404, 'nao_encontrado', 'Demanda não encontrada.');
+    q('UPDATE demandas SET rastreio_livre = 1 WHERE id = ?').run(d.id);
+    auditar(ator, 'rastreio_cliente', `#${d.id}`);
+    return { ok: true };
+  }
   function fotoGravada(id) { q('UPDATE demandas SET foto_em = ? WHERE id = ?').run(agora(), id); }
   function finalizarDemanda(id, motivo, ator) {
     const d = q('SELECT * FROM demandas WHERE id = ?').get(id);
@@ -1488,7 +1496,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       // coleta e entrega são o mesmo lugar (endereço único: visita, notificação).
       const unico = d.coleta_lat != null && d.entrega_lat != null
         && distM({ lat: d.coleta_lat, lon: d.coleta_lon }, { lat: d.entrega_lat, lon: d.entrega_lon }) <= 150;
-      const ver = cfgBruta().rastreio_cliente === '1' && turno?.ult_lat != null && (d.status === 'coletada' || unico);
+      const ver = cfgBruta().rastreio_cliente === '1' && turno?.ult_lat != null && (d.status === 'coletada' || unico || Boolean(d.rastreio_livre));
       motoboy = {
         nome: m.nome.split(/\s+/)[0], veiculo: m.veiculo,
         lat: ver ? turno.ult_lat : null, lon: ver ? turno.ult_lon : null, ult_ts: ver ? turno.ult_ts : null,
@@ -1710,7 +1718,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     criarDemanda, criarDemandaExterna, definirLocais, cancelarDemanda, reatribuir, confirmarParada,
     despacharPendentes, estadoMotoboy, estadoAdmin, trilha, relatorio, rotina,
     importarWhatsapp, listarConversas, mensagensDaConversa, excluirConversa,
-    aoEvento, cotar, agendadaMotoboy, problemaMotoboy, finalizarDemanda, editarValor, fotoPermitida, fotoGravada, foraDoHorario, criarPedido, liberarDemanda, fecharPedido, definirContato, pedidoPublico, relatorioClientes, relatorioEntregas,
+    aoEvento, cotar, agendadaMotoboy, problemaMotoboy, finalizarDemanda, editarValor, liberarRastreio, fotoPermitida, fotoGravada, foraDoHorario, criarPedido, liberarDemanda, fecharPedido, definirContato, pedidoPublico, relatorioClientes, relatorioEntregas,
     listarServicos, salvarServico, listarClientes, salvarCliente, registrarPix, marcarPago,
     responderOferta, encerrarPeloMotoboy, modoPagamento,
     interno: { q, tx, cfgBruta, auditar, agora, exigirNaoBloqueado, registrarFalha },

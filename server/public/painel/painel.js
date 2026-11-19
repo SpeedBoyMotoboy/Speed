@@ -430,6 +430,10 @@ function desenharLateral() {
       d.status === 'aguardando' && !d.motoboy_id && d.repasse != null && h('button', { class: 'pequeno', onclick: () => compartilharDemanda(d) }, 'Compartilhar'),
       !['pago', 'pendente'].includes(d.pagamento) && h('button', { class: 'pequeno', onclick: () => janelaValor(d) }, 'Valor'),
       d.codigo && h('button', { class: 'pequeno', onclick: () => linkCliente(d) }, 'Link do cliente'),
+      d.codigo && ['aguardando', 'atribuida'].includes(d.status) && h('button', {
+        class: 'pequeno', title: 'O cliente passa a ver o motoboy no mapa desde agora (depois da coleta já é automático).',
+        onclick: () => localizacaoCliente(d),
+      }, d.rastreio_livre ? '📍 Reenviar localização' : '📍 Localização p/ cliente'),
       h('button', { class: 'pequeno', onclick: () => janelaFinalizar(d) }, 'Finalizar'),
       h('button', {
         class: 'pequeno perigo',
@@ -808,6 +812,19 @@ async function verFoto(d) {
       h('img', { src: r.foto, alt: 'Foto da entrega', class: 'foto-entrega' }),
       h('div', { class: 'linha fim' }, h('button', { onclick: dlg.fechar }, 'Fechar'))], { largo: true });
   } catch (e) { els.conexao.textContent = e.message; }
+}
+
+// Libera o mapa do motoboy para o cliente desde já e manda o link pelo WhatsApp.
+async function localizacaoCliente(d) {
+  const janela = window.open('', '_blank', 'noopener');
+  try { await api('POST', `/api/admin/demandas/${d.id}/rastreio`); } catch (e) { els.conexao.textContent = e.message; if (janela) janela.close(); return; }
+  const link = `https://www.speedboy.com.br/acompanhar/?c=${d.codigo}`;
+  const texto = `Olá! Aqui é a SpeedBoy. Você já pode acompanhar o motoboy em tempo real, no mapa, por este link: ${link}`;
+  try { navigator.clipboard?.writeText(link); } catch { /* sem área de transferência */ }
+  const tel = String(d.cliente_telefone || '').replace(/\D/g, '');
+  const url = `https://wa.me/${tel ? (tel.length <= 11 ? `55${tel}` : tel) : ''}?text=${encodeURIComponent(texto)}`;
+  if (janela) janela.location.href = url; else window.open(url, '_blank', 'noopener');
+  atualizar();
 }
 
 // Link de acompanhamento do pedido: copia e abre o WhatsApp do cliente com a mensagem pronta.

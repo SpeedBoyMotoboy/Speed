@@ -268,6 +268,7 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
     return { ok: true };
   });
   rota('PUT', '/api/admin/demandas/:id/valor', 'admin', ({ admin, corpo, p }) => servico.editarValor(p.id, corpo, ator(admin)));
+  rota('POST', '/api/admin/demandas/:id/rastreio', 'admin', ({ admin, p }) => servico.liberarRastreio(p.id, ator(admin)));
   rota('POST', '/api/admin/demandas/:id/cancelar', 'admin', ({ admin, p }) => {
     servico.cancelarDemanda(p.id, ator(admin));
     return { ok: true };
