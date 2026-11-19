@@ -307,19 +307,29 @@ function faixaSinal() {
   return h('div', { class: 'faixa ok' }, 'Localização ativa');
 }
 
-// Botão "Baixar app": só no navegador do Android, depois do login (no app instalado não aparece).
-// "Agora não" esconde por 7 dias neste aparelho.
+// App instalável pelo Chrome (o próprio Chrome cria e assina o app: sem aviso do Play Protect).
+// O cartão aparece no navegador do Android, depois do login. "Agora não" esconde por 7 dias.
 const CHAVE_APP_DEPOIS = 'speed_app_depois';
+let pedidoInstalar = null;
+const instalado = () => window.matchMedia?.('(display-mode: standalone)').matches || navigator.standalone === true;
+window.addEventListener('beforeinstallprompt', (ev) => { ev.preventDefault(); pedidoInstalar = ev; if (estado && !formAberto) desenharTurno(); });
+window.addEventListener('appinstalled', () => { pedidoInstalar = null; if (estado && !formAberto) desenharTurno(); });
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 function cartaoBaixarApp() {
-  if (nativo || !/android/i.test(navigator.userAgent)) return null;
+  if (nativo || instalado() || !/android/i.test(navigator.userAgent)) return null;
   let depois = 0;
   try { depois = Number(localStorage.getItem(CHAVE_APP_DEPOIS)) || 0; } catch { /* sem armazenamento */ }
   if (Date.now() < depois) return null;
   const cartao = h('div', { class: 'cartao baixar-app' },
     h('b', null, 'Instale o app Speedy Motoboy'),
-    h('div', { class: 'nota' }, 'Com o app, a localização segue com a tela apagada e o aviso de entrega nova chega na hora. No navegador, só com esta tela aberta.'),
+    h('div', { class: 'nota' }, 'Um toque e o ícone vai para a tela inicial. Abre em tela cheia, sem baixar arquivo.'),
     h('div', { class: 'botoes' },
-      h('a', { class: 'botao-link', href: '/app/speed-motoboy.apk', download: 'speedy-motoboy.apk' }, 'Baixar app (Android)'),
+      pedidoInstalar
+        ? h('button', {
+          type: 'button', class: 'primario grande',
+          onclick: async () => { const p = pedidoInstalar; pedidoInstalar = null; try { await p.prompt(); } catch { /* cancelou */ } desenharTurno(); },
+        }, 'Instalar app')
+        : h('div', { class: 'nota' }, 'No Chrome, toque nos 3 pontinhos (⋮) lá em cima e escolha "Instalar app" ou "Adicionar à tela inicial".'),
       h('button', {
         type: 'button',
         onclick: () => {
@@ -327,7 +337,7 @@ function cartaoBaixarApp() {
           cartao.remove();
         },
       }, 'Agora não')),
-    h('div', { class: 'nota' }, 'Ao abrir o arquivo, o Android pede para permitir instalar desta fonte: toque em Configurações e ative. Depois entre com o mesmo telefone e senha.'));
+    h('div', { class: 'nota' }, 'Deixe o app aberto na tela enquanto trabalha: é assim que a central vê onde você está.'));
   return cartao;
 }
 
