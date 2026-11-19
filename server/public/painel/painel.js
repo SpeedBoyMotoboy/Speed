@@ -684,23 +684,59 @@ function bairroCidade(endereco) {
   return [bairro, cidade].filter(Boolean).join(', ');
 }
 
-// Texto para recrutar motoboy no WhatsApp: trajeto (bairro e cidade), km e o que o motoboy recebe, + link do cadastro.
-// Sem cliente, telefone ou endereço completo.
+// Só o que descreve a mercadoria, tirado da descrição do pedido: sem nomes de quem coleta/recebe, loja,
+// NF/CNPJ, telefone, e-mail, endereço ou cobrança. O dono revisa antes de enviar.
+const TAMANHO_TXT = { g: 'Grande (até 40 cm)', gg: 'Gigante (mais de 40 cm)' };
+function mercadoria(descricao) {
+  const fora = /modalidade|tamanho:|cnpj|cpf|nota|\bnf\b|minuta|loja|coleta|coletar|entreg|pegar|levar|retirar n|despachar|confirmar|refer[eê]ncia|cobrar|parada \d|pix|pagamento|apresentar|devolver|recolh|📏|\(|@|https?:/i;
+  return String(descricao || '').replace(/\\/g, ' ').split(/\s*(?:·|\||\n)\s*/)
+    .map((x) => x.replace(/\s+/g, ' ').trim())
+    .filter((x) => x && !fora.test(x.replace(/\(\d+x\d+(x\d+)?\s*cm\)/gi, '')) && (x.replace(/\D/g, '').length < 8 || /\d+\s*x\s*\d+/i.test(x)))
+    .join(' · ').slice(0, 200);
+}
+
+// Recrutar motoboy no WhatsApp: trajeto (bairro e cidade), km, valor do motoboy, mercadoria e baú, + link do cadastro.
+// Abre uma janela para revisar antes; nunca leva cliente, telefone ou endereço completo.
 function compartilharDemanda(d) {
-  const de = bairroCidade(d.coleta_endereco);
-  const para = bairroCidade(d.entrega_endereco);
-  const cadastro = `${location.origin.replace('//despacho.', '//speedy.')}/cadastro/`;
-  const texto = [
-    '🛵 *Entrega disponível — SpeedBoy*', '',
-    (de || para) && `📍 ${de || 'Grande Vitória'} → ${para || 'Grande Vitória'}`,
-    d.km != null && `📏 ${String(d.km).replace('.', ',')} km`,
-    `💰 *${reais(d.repasse)}*`, '',
-    'Essa e muitas outras entregas estão disponíveis todos os dias no app Speedy.', '',
-    'Quer rodar com a SpeedBoy? Faça seu cadastro:', cadastro, '',
-    'Depois do cadastro, a SpeedBoy confere seus dados e libera seu acesso.',
-  ].filter((l) => l !== false && l !== null).join('\n');
-  try { navigator.clipboard?.writeText(texto); } catch { /* sem área de transferência */ }
-  window.open(`https://wa.me/?text=${encodeURIComponent(texto)}`, '_blank', 'noopener');
+  dialogo(`Compartilhar pedido #${d.id}`, (dlg) => {
+    const de = bairroCidade(d.coleta_endereco);
+    const para = bairroCidade(d.entrega_endereco);
+    const cadastro = `${location.origin.replace('//despacho.', '//speedy.')}/cadastro/`;
+    const merc = h('input', { maxlength: 200, value: mercadoria(d.descricao), placeholder: 'Ex.: caixa de 7 kg, 30x25x40 cm' });
+    const bau = h('input', { type: 'checkbox', checked: d.requisito === 'bau' || ['g', 'gg'].includes(d.tamanho) });
+    const previa = h('textarea', { rows: 13, readonly: true });
+    const texto = () => [
+      '🛵 *Entrega disponível — SpeedBoy*', '',
+      (de || para) && `📍 ${de || 'Grande Vitória'} → ${para || 'Grande Vitória'}`,
+      d.km != null && `📏 ${String(d.km).replace('.', ',')} km`,
+      merc.value.trim() && `📦 ${merc.value.trim()}`,
+      TAMANHO_TXT[d.tamanho] && `📐 Tamanho: ${TAMANHO_TXT[d.tamanho]}`,
+      bau.checked && '🧰 *Necessário baú*',
+      `💰 *${reais(d.repasse)}*`, '',
+      'Essa e muitas outras entregas estão disponíveis todos os dias no app Speedy.', '',
+      'Quer rodar com a SpeedBoy? Faça seu cadastro:', cadastro, '',
+      'Depois do cadastro, a SpeedBoy confere seus dados e libera seu acesso.',
+    ].filter((l) => typeof l === 'string').join('\n');
+    const atualizarPrevia = () => { previa.value = texto(); };
+    merc.addEventListener('input', atualizarPrevia);
+    bau.addEventListener('change', atualizarPrevia);
+    atualizarPrevia();
+    const ok = h('button', {
+      class: 'primario',
+      onclick: () => {
+        const t = texto();
+        try { navigator.clipboard?.writeText(t); } catch { /* sem área de transferência */ }
+        window.open(`https://wa.me/?text=${encodeURIComponent(t)}`, '_blank', 'noopener');
+        dlg.fechar();
+      },
+    }, 'Abrir no WhatsApp');
+    return [
+      h('p', { class: 'nota' }, 'Confira a mercadoria: não pode ter nome, telefone ou endereço de cliente.'),
+      h('label', null, 'Mercadoria'), merc,
+      h('label', { class: 'marcar' }, bau, ' Necessário baú'),
+      h('label', null, 'Mensagem'), previa,
+      h('div', { class: 'linha fim' }, h('button', { onclick: dlg.fechar }, 'Voltar'), ok)];
+  });
 }
 
 // Muda o valor do pedido (ex.: desconto) e o que o motoboy recebe. O motoboy não muda sozinho.
