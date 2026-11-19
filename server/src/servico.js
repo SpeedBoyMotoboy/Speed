@@ -1057,6 +1057,26 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     if (!d) throw new Erro(404, 'nao_encontrado', 'Entrega não encontrada.');
     return d.id;
   }
+  // Central corrige os dados do pedido (cliente, descrição, contatos, exigência) a qualquer momento antes de fechar.
+  function editarDados(id, dados, ator) {
+    const d = q('SELECT * FROM demandas WHERE id = ?').get(Number(id));
+    if (!d) throw new Erro(404, 'nao_encontrado', 'Demanda não encontrada.');
+    if (['entregue', 'cancelada'].includes(d.status)) throw new Erro(409, 'ja_finalizada', 'Demanda já finalizada.');
+    const cliente = dados?.cliente == null ? d.cliente : txt(dados.cliente, 120);
+    if (cliente.length < 2) throw new Erro(422, 'cliente_invalido', 'Informe o cliente.');
+    const requisito = dados?.requisito ?? d.requisito;
+    if (!REQUISITOS.includes(requisito)) throw new Erro(422, 'requisito_invalido', 'Requisito inválido.');
+    const descricao = dados?.descricao == null ? d.descricao : txt(dados.descricao, 1200);
+    const cc = dados?.coleta_contato == null ? d.coleta_contato : txt(dados.coleta_contato, 120);
+    const ec = dados?.entrega_contato == null ? d.entrega_contato : txt(dados.entrega_contato, 120);
+    tx(() => {
+      q('UPDATE demandas SET cliente = ?, requisito = ?, descricao = ?, coleta_contato = ?, entrega_contato = ? WHERE id = ?')
+        .run(cliente, requisito, descricao, cc, ec, d.id);
+      if (d.turno_id) q('UPDATE turnos SET rota_versao = rota_versao + 1 WHERE id = ?').run(d.turno_id);
+      auditar(ator, 'demanda_editada', `#${d.id}`);
+    });
+    return q('SELECT * FROM demandas WHERE id = ?').get(d.id);
+  }
   // Central libera para o cliente ver o motoboy desde a saída (ex.: coleta longe, viagem longa).
   function liberarRastreio(id, ator) {
     const d = q('SELECT id, status FROM demandas WHERE id = ?').get(Number(id));
@@ -1718,7 +1738,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     criarDemanda, criarDemandaExterna, definirLocais, cancelarDemanda, reatribuir, confirmarParada,
     despacharPendentes, estadoMotoboy, estadoAdmin, trilha, relatorio, rotina,
     importarWhatsapp, listarConversas, mensagensDaConversa, excluirConversa,
-    aoEvento, cotar, agendadaMotoboy, problemaMotoboy, finalizarDemanda, editarValor, liberarRastreio, fotoPermitida, fotoGravada, foraDoHorario, criarPedido, liberarDemanda, fecharPedido, definirContato, pedidoPublico, relatorioClientes, relatorioEntregas,
+    aoEvento, cotar, agendadaMotoboy, problemaMotoboy, finalizarDemanda, editarValor, editarDados, liberarRastreio, fotoPermitida, fotoGravada, foraDoHorario, criarPedido, liberarDemanda, fecharPedido, definirContato, pedidoPublico, relatorioClientes, relatorioEntregas,
     listarServicos, salvarServico, listarClientes, salvarCliente, registrarPix, marcarPago,
     responderOferta, encerrarPeloMotoboy, modoPagamento,
     interno: { q, tx, cfgBruta, auditar, agora, exigirNaoBloqueado, registrarFalha },

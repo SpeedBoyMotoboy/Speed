@@ -428,6 +428,14 @@ function desenharLateral() {
         ? h('button', { class: 'pequeno primario', onclick: () => janelaDemanda(d) }, 'Marcar no mapa')
         : h('button', { class: 'pequeno', onclick: () => janelaEscolher(d) }, d.motoboy_id ? 'Trocar motoboy' : 'Escolher motoboy'),
       d.status === 'aguardando' && !d.motoboy_id && d.repasse != null && h('button', { class: 'pequeno', onclick: () => compartilharDemanda(d) }, 'Compartilhar'),
+      d.status !== 'sem_local' && h('button', { class: 'pequeno', onclick: () => janelaDemanda(d) }, 'Editar'),
+      d.coleta_lat != null && h('button', {
+        class: 'pequeno', title: 'Outro pedido com a mesma coleta e o mesmo cliente: é só marcar o novo destino.',
+        onclick: () => janelaDemanda(null, {
+          titulo: `Nova entrega com a coleta do #${d.id}`, cliente: d.cliente, requisito: d.requisito, descricao: d.descricao, telefone: d.cliente_telefone,
+          coleta: { endereco: d.coleta_endereco, contato: d.coleta_contato, lat: d.coleta_lat, lon: d.coleta_lon },
+        }),
+      }, '+ Entrega'),
       !['pago', 'pendente'].includes(d.pagamento) && h('button', { class: 'pequeno', onclick: () => janelaValor(d) }, 'Valor'),
       d.codigo && h('button', { class: 'pequeno', onclick: () => linkCliente(d) }, 'Link do cliente'),
       d.codigo && ['aguardando', 'atribuida'].includes(d.status) && h('button', {
@@ -550,17 +558,17 @@ function janelaTrocar(d) {
 // `previa` preenche a partir de uma mensagem do WhatsApp: { cliente, descricao, mensagem_id }.
 function janelaDemanda(existente = null, previa = null) {
   const pontos = {
-    coleta: { lat: existente?.coleta_lat ?? null, lon: existente?.coleta_lon ?? null, marcador: null },
+    coleta: { lat: existente?.coleta_lat ?? previa?.coleta?.lat ?? null, lon: existente?.coleta_lon ?? previa?.coleta?.lon ?? null, marcador: null },
     entrega: { lat: existente?.entrega_lat ?? null, lon: existente?.entrega_lon ?? null, marcador: null },
   };
   let alvo = pontos.coleta.lat == null ? 'coleta' : 'entrega';
   let mini = null;
 
-  dialogo(existente ? `Demanda #${existente.id} — marcar locais` : 'Nova demanda', (dlg) => {
-    const cliente = h('input', { maxlength: 120, value: existente?.cliente || previa?.cliente || '', disabled: Boolean(existente) });
-    const requisito = h('select', { disabled: Boolean(existente) },
+  dialogo(existente ? `Editar demanda #${existente.id}` : previa?.titulo || 'Nova demanda', (dlg) => {
+    const cliente = h('input', { maxlength: 120, value: existente?.cliente || previa?.cliente || '' });
+    const requisito = h('select', null,
       Object.entries(ROTULO_REQUISITO).map(([v, r]) => h('option', { value: v, selected: (existente?.requisito ?? previa?.requisito) === v }, r)));
-    const descricao = h('input', { maxlength: 500, value: existente?.descricao || previa?.descricao?.replace(/\s*\n+\s*/g, ' · ').slice(0, 500) || '', disabled: Boolean(existente), placeholder: 'O que é, observações' });
+    const descricao = h('input', { maxlength: 500, value: existente?.descricao || previa?.descricao?.replace(/\s*\n+\s*/g, ' · ').slice(0, 500) || '', placeholder: 'O que é, observações' });
     const agendar = h('input', { type: 'datetime-local' });
     const tamanhoSel = h('select', null, [['', 'Normal (pequeno ou médio)'], ['g', 'G — até 40 cm (cobra a mais)'], ['gg', 'GG — mais de 40 cm (cobra a mais)']]
       .map(([v, r]) => h('option', { value: v }, r)));
@@ -584,7 +592,7 @@ function janelaDemanda(existente = null, previa = null) {
 
     const bloco = (qual, titulo) => {
       const endereco = h('input', { maxlength: 200, value: existente?.[`${qual}_endereco`] || previa?.[qual]?.endereco || '', placeholder: 'Rua, número, bairro' });
-      const contato = h('input', { maxlength: 120, value: existente?.[`${qual}_contato`] || previa?.[qual]?.contato || '', disabled: Boolean(existente), placeholder: 'Nome / telefone no local' });
+      const contato = h('input', { maxlength: 120, value: existente?.[`${qual}_contato`] || previa?.[qual]?.contato || '', placeholder: 'Nome / telefone no local' });
       const resultados = h('div', { class: 'resultados' });
       const situacao = h('span', { class: 'falta' }, 'Falta marcar no mapa');
       const buscar = h('button', {
@@ -620,15 +628,23 @@ function janelaDemanda(existente = null, previa = null) {
         });
         if (pontos.coleta.lat == null || pontos.entrega.lat == null) throw new Error('Marque coleta e entrega no mapa.');
         if (existente) {
-          await api('PUT', `/api/admin/demandas/${existente.id}/locais`, { coleta: ponto('coleta'), entrega: ponto('entrega') });
+          await api('PUT', `/api/admin/demandas/${existente.id}/dados`, {
+            cliente: cliente.value, requisito: requisito.value, descricao: descricao.value,
+            coleta_contato: campos.coleta.contato.value, entrega_contato: campos.entrega.contato.value,
+          });
+          const mudou = (qual) => campos[qual].endereco.value !== (existente[`${qual}_endereco`] || '')
+            || pontos[qual].lat !== existente[`${qual}_lat`] || pontos[qual].lon !== existente[`${qual}_lon`];
+          if (mudou('coleta') || mudou('entrega')) {
+            await api('PUT', `/api/admin/demandas/${existente.id}/locais`, { coleta: ponto('coleta'), entrega: ponto('entrega') });
+          }
         } else {
           await api('POST', '/api/admin/demandas', {
-            cliente: cliente.value, requisito: requisito.value, descricao: descricao.value, mensagem_id: previa?.mensagem_id, agendada_para: agendar.value || undefined, tamanho: tamanhoSel.value || undefined,
+            cliente: cliente.value, requisito: requisito.value, descricao: descricao.value, mensagem_id: previa?.mensagem_id, telefone: previa?.telefone || undefined, agendada_para: agendar.value || undefined, tamanho: tamanhoSel.value || undefined,
             coleta: ponto('coleta'), entrega: ponto('entrega'),
           });
         }
       }, salvar),
-    }, existente ? 'Salvar e despachar' : 'Criar e despachar');
+    }, existente ? 'Salvar' : 'Criar e despachar');
 
     // O mapa só mede o tamanho certo depois que a janela aparece.
     setTimeout(() => {
@@ -651,6 +667,7 @@ function janelaDemanda(existente = null, previa = null) {
         h('div', null, h('label', null, 'Cliente'), cliente),
         h('div', null, h('label', null, 'Exige'), requisito)),
       h('label', null, 'Descrição'), descricao,
+      existente && ['atribuida', 'coletada'].includes(existente.status) && h('p', { class: 'nota' }, 'Já tem motoboy: o endereço não muda mais por aqui. Para outro destino, use "+ Entrega" no pedido.'),
       !existente && h('label', null, 'Agendar para (vazio = agora)'), !existente && agendar,
       !existente && h('label', null, 'Tamanho da mercadoria'), !existente && tamanhoSel,
       h('div', { class: 'grade2' }, bloco('coleta', 'Coleta'), bloco('entrega', 'Entrega')),
