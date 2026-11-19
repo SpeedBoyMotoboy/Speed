@@ -27,6 +27,23 @@ function trocar(el, ...filhos) {
 }
 
 let token = localStorage.getItem(CHAVE_TOKEN);
+
+// Tema: claro (sol) ou escuro (noite). Sem escolha, segue o celular. A escolha fica guardada no aparelho.
+const CHAVE_TEMA = 'speed_tema';
+const temaAtual = () => localStorage.getItem(CHAVE_TEMA)
+  || (window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'escuro' : 'claro');
+function aplicarTema() {
+  const tema = temaAtual();
+  document.documentElement.dataset.tema = tema;
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', tema === 'escuro' ? '#1A1A1A' : '#333F22');
+}
+function botaoTema(redesenhar) {
+  return h('button', {
+    class: 'tema', 'aria-label': 'Trocar entre tema claro e escuro',
+    onclick: () => { localStorage.setItem(CHAVE_TEMA, temaAtual() === 'escuro' ? 'claro' : 'escuro'); aplicarTema(); redesenhar(); },
+  }, temaAtual() === 'escuro' ? 'Tema claro' : 'Tema escuro');
+}
+aplicarTema();
 let estado = null;
 let ciclo = null;
 let formAberto = false; // não redesenhar enquanto o motoboy digita
@@ -306,6 +323,7 @@ function desenharTurno() {
 
   trocar(raiz, 
     h('div', { class: 'topo' },
+      botaoTema(desenharTurno),
       h('div', { class: 'nome' }, motoboy.nome),
       h('div', { class: 'info' }, motoboy.tipo === 'avulso'
         ? `Online · ${rota.length} parada(s)`

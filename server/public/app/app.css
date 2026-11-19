@@ -1,7 +1,7 @@
 @font-face { font-family: Barlow; font-weight: 400; font-display: swap; src: url(/loja/barlow-400.woff2) format('woff2'); }
 @font-face { font-family: Barlow; font-weight: 600; font-display: swap; src: url(/loja/barlow-600.woff2) format('woff2'); }
 @font-face { font-family: Barlow; font-weight: 800; font-display: swap; src: url(/loja/barlow-800.woff2) format('woff2'); }
-:root { --marca: #001f6b; --destaque: #ff5400; --texto: #16181d; --suave: #5b6472; --borda: #d9dde3; --ok: #15803d; --erro: #b91c1c; --aviso: #b45309; --coleta: #001f6b; --entrega: #ff5400; }
+:root { --marca: #333F22; --acao: #002776; --destaque: #D4A017; --forte: #002776; --fundo: #f4f4ef; --cartao: #ffffff; --sutil: #eef0ea; --no-ouro: #1A1A1A; --texto: #1A1A1A; --suave: #5b6472; --borda: #d9dde3; --ok: #15803d; --erro: #b91c1c; --aviso: #b45309; --coleta: #002776; --entrega: #333F22; }
 * { box-sizing: border-box; }
 html, body { margin: 0; min-height: 100%; }
 body { font: 16px/1.4 Barlow, system-ui, -apple-system, Roboto, sans-serif; color: var(--texto); background: #faf8f3; -webkit-tap-highlight-color: transparent; }
@@ -86,3 +86,26 @@ button.leve { min-height: 40px; padding: 8px; font-weight: 600; font-size: 14px;
 .pino.coleta { background: var(--coleta); }
 .pino.entrega { background: var(--entrega); }
 .speedy { background: #eef2fb; border-left: 4px solid var(--marca); padding: 10px 12px; font-weight: 600; }
+
+/* 19/11: paleta oficial SpeedBoy + tema claro e escuro */
+body { background: var(--fundo); }
+button { background: var(--cartao); }
+button.primario { background: var(--acao); border-color: var(--acao); color: #fff; }
+input, textarea, .cartao, .termo { background: var(--cartao); color: var(--texto); }
+.info-botao, .speedy { background: var(--sutil); }
+.speedy { border-left-color: var(--destaque); }
+.etiqueta.oferta { background: var(--destaque); color: var(--no-ouro); }
+.tempo, .previsao { color: var(--forte); }
+.prazo { background: #b91c1c; color: #fff; }
+.topo { position: relative; }
+button.tema { position: absolute; right: 12px; top: calc(10px + env(safe-area-inset-top)); width: auto; min-height: 36px; padding: 6px 12px; font-size: 13px; font-weight: 600; background: transparent; color: #fff; border: 1px solid var(--destaque); border-radius: 999px; }
+:root[data-tema="escuro"] {
+  --texto: #f3f3f0; --suave: #b9bbb4; --borda: #44463f; --fundo: #1A1A1A; --cartao: #262724; --sutil: #33352f;
+  --forte: #D4A017; --ok: #4ade80; --erro: #f87171; --aviso: #fbbf24;
+}
+:root[data-tema="escuro"] button.primario, :root[data-tema="escuro"] button.coleta, :root[data-tema="escuro"] button.entrega,
+:root[data-tema="escuro"] .etiqueta.coleta, :root[data-tema="escuro"] .etiqueta.entrega, :root[data-tema="escuro"] .pino { border: 1px solid var(--destaque); }
+:root[data-tema="escuro"] .faixa.ok { background: #14331f; }
+:root[data-tema="escuro"] .faixa.ruim { background: #3f1717; }
+:root[data-tema="escuro"] .faixa.aviso { background: #3b2a0a; }
+:root[data-tema="escuro"] .etiqueta.rota { color: #10240f; }
