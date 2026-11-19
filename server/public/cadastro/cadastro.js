@@ -20,9 +20,6 @@ function telaFormulario() {
   veiculo.addEventListener('change', () => { const moto = veiculo.value === 'moto'; placa.hidden = !moto; rotuloPlaca.hidden = !moto; });
   const bau = h('input', { type: 'checkbox', id: 'bau' });
   const bag = h('input', { type: 'checkbox', id: 'bag' });
-  const tipo = h('select', { id: 'tipo' },
-    h('option', { value: 'avulso' }, 'Avulso: pego entregas quando eu puder'),
-    h('option', { value: 'diaria' }, 'Fixo: quero trabalhar por diária'));
   const indicacao = h('input', { id: 'indicacao', maxlength: 160, placeholder: 'Quem indicou ou em qual grupo você viu' });
   const erro = h('div', { class: 'erro', role: 'alert' });
   const enviar = h('button', { class: 'primario', type: 'submit' }, 'Enviar cadastro');
@@ -35,7 +32,7 @@ function telaFormulario() {
       try {
         await api('POST', '/api/publico/cadastro', {
           nome: nome.value, telefone: telefone.value, documento: documento.value, veiculo: veiculo.value, placa: placa.value,
-          tem_bau: bau.checked, tem_bag: bag.checked, tipo: tipo.value, indicacao: indicacao.value,
+          tem_bau: bau.checked, tem_bag: bag.checked, indicacao: indicacao.value,
         });
         telaEnviado(nome.value);
       } catch (e) {
@@ -51,7 +48,6 @@ function telaFormulario() {
   rotuloPlaca, placa,
   h('label', { class: 'marcar' }, bau, ' Tenho baú'),
   h('label', { class: 'marcar' }, bag, ' Tenho bag'),
-  h('label', { for: 'tipo' }, 'Como você quer trabalhar'), tipo,
   h('label', { for: 'indicacao' }, 'Indicação'), indicacao,
   erro, enviar);
 

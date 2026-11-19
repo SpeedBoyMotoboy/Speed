@@ -163,6 +163,15 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     if (ZONA_SUL.test(texto)) return true;
     return /vila velha/.test(texto) && p.lat != null && Number(p.lat) < -20.405;
   };
+  // Repasse próprio do motoboy avulso (definido no painel): base até os km incluídos + valor por km a mais.
+  // Sem valor próprio, devolve null e vale o repasse padrão da demanda.
+  function repasseProprio(m, km) {
+    if (!m || km == null || (m.repasse_base == null && m.repasse_km == null)) return null;
+    const c = cfgBruta();
+    const base = m.repasse_base ?? Number(c.repasse_base);
+    const porKm = m.repasse_km ?? Number(c.repasse_km);
+    return Math.round((base + Math.max(0, Number(km) - Number(c.preco_km_incluso)) * porKm) * 100) / 100;
+  }
   function cotar(coleta, entrega, { km: kmRota = null, servicoId = null, telefone = '' } = {}) {
     const servico = servicoId ? q('SELECT * FROM servicos WHERE id = ? AND ativo = 1').get(Number(servicoId)) || null : null;
     const nada = { km: null, valor: null, repasse: null, servico };
@@ -380,6 +389,14 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     if (novo || d.tem_bau !== undefined) m.tem_bau = d.tem_bau ? 1 : 0;
     if (novo || d.tem_bag !== undefined) m.tem_bag = d.tem_bag ? 1 : 0;
     if (d.ativo !== undefined) m.ativo = d.ativo ? 1 : 0;
+    // Valor próprio do motoboy (vazio = tabela padrão).
+    for (const k of ['diaria_valor', 'repasse_base', 'repasse_km']) {
+      if (d[k] === undefined) continue;
+      if (d[k] === '' || d[k] === null) { m[k] = null; continue; }
+      const n = Number(String(d[k]).replace(',', '.'));
+      if (!Number.isFinite(n) || n < 0 || n > 100000) throw new Erro(422, 'valor_invalido', 'Valor do motoboy inválido.');
+      m[k] = n;
+    }
     return m;
   }
   function telefoneLivre(telefone, excetoId = 0) {
@@ -394,6 +411,11 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       .run(m.nome, m.telefone, m.pin_hash, m.veiculo, m.tem_bau, m.tem_bag, agora(), m.tipo);
     auditar(ator, 'motoboy_criado', m.nome);
     q('UPDATE motoboys SET pin_claro = ? WHERE id = ?').run(m.pin_claro ?? null, Number(r.lastInsertRowid));
+    const proprios = ['diaria_valor', 'repasse_base', 'repasse_km'].filter((k) => k in m);
+    if (proprios.length) {
+      q(`UPDATE motoboys SET ${proprios.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`)
+        .run(...proprios.map((k) => m[k]), Number(r.lastInsertRowid));
+    }
     return Number(r.lastInsertRowid);
   }
 
@@ -817,7 +839,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       const serv = d.servico ? q('SELECT * FROM servicos WHERE nome = ?').get(d.servico) : null;
       const pct = serv?.repasse_pct ?? Number(c.repasse_pct);
       const repasse = Math.round(Math.max(Number(c.repasse_minimo), (valor * pct) / 100) * 100) / 100;
-      q('UPDATE demandas SET valor = ?, repasse = ? WHERE id = ?').run(Math.round(valor * 100) / 100, repasse, id);
+      q('UPDATE demandas SET valor = ?, repasse = ?, repasse_padrao = NULL WHERE id = ?').run(Math.round(valor * 100) / 100, repasse, id);
       auditar(ator, 'demanda_valor', `#${id} ${valor}`);
     }
     const r = liberarDemanda(id, ator);
@@ -883,7 +905,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     const segurar = d.pagamento === 'pendente' || cobrar;
     tx(() => {
       q(`UPDATE demandas SET coleta_endereco=?, coleta_lat=?, coleta_lon=?, entrega_endereco=?, entrega_lat=?,
-         entrega_lon=?, status='aguardando', km=?, valor=?, repasse=?, retida=?, fila_em=? WHERE id=?`)
+         entrega_lon=?, status='aguardando', km=?, valor=?, repasse=?, repasse_padrao=NULL, retida=?, fila_em=? WHERE id=?`)
         .run(coleta.endereco, coleta.lat, coleta.lon, entrega.endereco, entrega.lat, entrega.lon, km, novoValor, novoRepasse,
           segurar ? 1 : 0, agora(), id);
       auditar(ator, 'demanda_local', `#${id}`);
@@ -936,6 +958,13 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     q(`UPDATE demandas SET status = 'atribuida', motoboy_id = ?, turno_id = ?, atribuida_em = ?,
        coletada_em = NULL, coleta_dist_m = NULL, coleta_justificativa = NULL WHERE id = ?`)
       .run(turno.motoboy_id, turno.id, t, d.id);
+    {
+      const atual = q('SELECT repasse, repasse_padrao, km FROM demandas WHERE id = ?').get(d.id);
+      const padrao = atual.repasse_padrao ?? atual.repasse;
+      const mb = turno.tipo === 'avulso' ? q('SELECT repasse_base, repasse_km FROM motoboys WHERE id = ?').get(turno.motoboy_id) : null;
+      const proprio = repasseProprio(mb, atual.km);
+      q('UPDATE demandas SET repasse = ?, repasse_padrao = ? WHERE id = ?').run(proprio ?? padrao, proprio != null ? padrao : null, d.id);
+    }
     nova.forEach((p, i) => {
       const coluna = p.tipo === 'coleta' ? 'ordem_coleta' : 'ordem_entrega';
       q(`UPDATE demandas SET ${coluna} = ? WHERE id = ?`).run(i, p.demanda_id);
@@ -1113,7 +1142,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
 
   // ------------------------------------------------------- telas (leitura)
   function estadoMotoboy(turno) {
-    const m = q('SELECT nome, veiculo FROM motoboys WHERE id = ?').get(turno.motoboy_id);
+    const m = q('SELECT nome, veiculo, repasse_base, repasse_km FROM motoboys WHERE id = ?').get(turno.motoboy_id);
     const c = cfg();
     const avulso = turno.tipo === 'avulso';
     // A diária não recebe por entrega: o valor do repasse só aparece para o avulso.
@@ -1122,7 +1151,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
         d.entrega_endereco, d.km, d.repasse, d.urgente
       FROM ofertas o JOIN demandas d ON d.id = o.demanda_id
       WHERE o.turno_id = ? AND o.status = 'aberta' AND d.status = 'aguardando' AND d.retida = 0
-      ORDER BY o.id`).all(turno.id).map((o) => ({ ...o, repasse: paga(o.repasse) }));
+      ORDER BY o.id`).all(turno.id).map((o) => ({ ...o, repasse: paga(repasseProprio(m, o.km) ?? o.repasse) }));
     const feitas = avulso ? q(`SELECT id, servico, entrega_endereco, entregue_em, repasse FROM demandas
         WHERE turno_id = ? AND status = 'entregue' ORDER BY entregue_em DESC`).all(turno.id) : [];
     return {
@@ -1159,7 +1188,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
   function estadoAdmin() {
     const c = cfg();
     const hoje = inicioDoDia();
-    const motoboys = q('SELECT id, nome, telefone, veiculo, tem_bau, tem_bag, ativo, tipo, pin_claro, documento, placa FROM motoboys ORDER BY nome').all()
+    const motoboys = q('SELECT id, nome, telefone, veiculo, tem_bau, tem_bag, ativo, tipo, pin_claro, documento, placa, diaria_valor, repasse_base, repasse_km FROM motoboys ORDER BY nome').all()
       .map((m) => {
         const turno = turnoAtivoDoMotoboy(m.id);
         const conv = turno ? null : convocacaoValida(m.id);
@@ -1290,7 +1319,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     const c = cfgBruta();
     const porDiaria = Number(c.diaria_valor) + Number(c.almoco_valor);
     const linhas = q(`
-      SELECT m.id AS motoboy_id, m.nome,
+      SELECT m.id AS motoboy_id, m.nome, m.diaria_valor AS diaria_propria,
         COALESCE(SUM(t.tipo = 'diaria'), 0) AS diarias,
         (SELECT COALESCE(SUM(d.repasse), 0) FROM demandas d JOIN turnos t5 ON t5.id = d.turno_id
           WHERE t5.motoboy_id = m.id AND t5.tipo = 'avulso' AND d.status = 'entregue' AND t5.inicio >= ? AND t5.inicio < ?) AS repasses,
@@ -1315,7 +1344,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       min_parado: Math.round(l.ms_parado / MIN),
       alertas: l.alertas,
       repasses: Math.round(l.repasses * 100) / 100,
-      valor: Math.round((l.diarias * porDiaria + l.repasses) * 100) / 100,
+      valor: Math.round((l.diarias * (l.diaria_propria != null ? l.diaria_propria + Number(c.almoco_valor) : porDiaria) + l.repasses) * 100) / 100,
     }));
   }
   // Cada entrega concluída: quanto o cliente pagou, quanto vai para o motoboy avulso e o que fica.

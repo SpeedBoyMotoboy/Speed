@@ -674,11 +674,16 @@ function janelaMotoboy(m = null) {
     const bau = h('input', { type: 'checkbox', checked: m?.tem_bau });
     const bag = h('input', { type: 'checkbox', checked: m?.tem_bag });
     const ativo = h('input', { type: 'checkbox', checked: m ? m.ativo : true });
+    const valorTxt = (v) => (v == null ? '' : String(v).replace('.', ','));
+    const diariaP = h('input', { inputmode: 'decimal', placeholder: 'Padrão', value: valorTxt(m?.diaria_valor) });
+    const repBaseP = h('input', { inputmode: 'decimal', placeholder: 'Padrão', value: valorTxt(m?.repasse_base) });
+    const repKmP = h('input', { inputmode: 'decimal', placeholder: 'Padrão', value: valorTxt(m?.repasse_km) });
     const gerar = h('button', { type: 'button', onclick: () => { pin.value = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1000000).padStart(6, '0'); } }, 'Gerar');
     const ok = h('button', {
       class: 'primario',
       onclick: () => dlg.executar(() => {
-        const dados = { nome: nome.value, telefone: telefone.value, pin: pin.value, veiculo: veiculo.value, tipo: tipo.value, tem_bau: bau.checked, tem_bag: bag.checked, ativo: ativo.checked };
+        const dados = { nome: nome.value, telefone: telefone.value, pin: pin.value, veiculo: veiculo.value, tipo: tipo.value, tem_bau: bau.checked, tem_bag: bag.checked, ativo: ativo.checked,
+          diaria_valor: diariaP.value.trim(), repasse_base: repBaseP.value.trim(), repasse_km: repKmP.value.trim() };
         return m ? api('PUT', `/api/admin/motoboys/${m.id}`, dados) : api('POST', '/api/admin/motoboys', dados);
       }, ok),
     }, 'Salvar');
@@ -693,6 +698,14 @@ function janelaMotoboy(m = null) {
         h('div', null, h('label', null, 'Como trabalha'), tipo)),
       h('label', { class: 'marcar' }, bau, 'Tem baú'),
       h('label', { class: 'marcar' }, bag, 'Tem bag'),
+      h('h3', null, 'Valor deste motoboy'),
+      h('div', { class: 'nota' }, 'Vazio = tabela padrão (Configurações).'),
+      h('div', { class: 'grade2' },
+        h('div', null, h('label', null, 'Diária (R$)'), diariaP),
+        h('div', null, h('label', null, 'Avulso: valor até os km incluídos (R$)'), repBaseP)),
+      h('div', { class: 'grade2' },
+        h('div', null, h('label', null, 'Avulso: por km a mais (R$)'), repKmP),
+        h('div', null)),
       m && h('label', { class: 'marcar' }, ativo, 'Ativo (desmarcar bloqueia o login e encerra o turno)'),
       h('div', { class: 'linha fim' }, h('button', { onclick: dlg.fechar }, 'Voltar'), ok)];
   });
