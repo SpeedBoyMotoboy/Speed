@@ -2,6 +2,14 @@
 // ou, para teste, direto no navegador (aí o rastreio só funciona com a tela ligada).
 const raiz = document.getElementById('raiz');
 const nativo = window.SpeedNativo || null;
+// Pelo navegador (sem o app instalado da loja) o Android corta a localização com a tela apagada:
+// mantém a tela acesa enquanto a página estiver aberta.
+async function manterTelaAcesa() {
+  if (nativo || !navigator.wakeLock || document.visibilityState !== 'visible') return;
+  try { await navigator.wakeLock.request('screen'); } catch { /* aparelho não deixou: segue normal */ }
+}
+document.addEventListener('visibilitychange', manterTelaAcesa);
+manterTelaAcesa();
 const CHAVE_TOKEN = 'speed_token';
 const CHAVE_ROTA = 'speed_rota_versao';
 

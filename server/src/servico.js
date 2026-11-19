@@ -48,6 +48,7 @@ const CFG_NUM = {
   convocacao_auto_max: [0, 50], convocacao_auto_espera_min: [0, 120],
   urgente_prazo_min: [5, 600], robo_pausa_horas: [1, 168], repasse_pct: [0, 100], repasse_minimo: [0, 10000], repasse_base: [0, 10000], repasse_km: [0, 1000], oferta_raio_km: [0.5, 100],
   oferta_alerta_min: [1, 120], avulso_max_horas: [1, 24], pagamento_validade_min: [5, 1440],
+  urgente_km_max: [0, 10000], dono_motoboy_id: [0, 100000000], dono_espera_min: [0, 120], sem_lancamento_min: [0, 600],
 };
 const CFG_TXT = {
   cidade_base: 120, termo_texto: 8000, empresa_nome: 60, url_publica: 200, whats_url: 300, whats_instancia: 120,
@@ -61,7 +62,7 @@ const CFG_OPC = {
 };
 const CFG_HORA = ['atendimento_inicio', 'atendimento_fim'];
 const CFG_SECRETAS = ['api_chave_hash', 'whats_token', 'whats_app_secret', 'mp_token', 'ors_chave', 'ia_chave', 'google_chave'];
-const SEM_SINAL_AVULSO = 30 * MIN;
+const SEM_SINAL_AVULSO = 120 * MIN; // pelo navegador (sem o app) o sinal cai com a tela apagada: não derruba o turno tão cedo
 const VOLTA_OFERTA = 90_000; // a cada volta sem aceite o raio da oferta dobra (até 8x)
 
 const txt = (v, max) => String(v ?? '').trim().slice(0, max);
@@ -1077,6 +1078,10 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
   // Entrada automática (app de clientes, Make, WhatsApp): endereço em texto vira ponto no mapa.
   async function criarDemandaExterna(dados) {
     const v = validarDemanda(dados);
+    // Mesmo pedido mandado duas vezes pelo robô (mesmo cliente e mesma entrega em 10 min): devolve o que já existe.
+    const repetida = q(`SELECT * FROM demandas WHERE origem = 'api' AND status != 'cancelada' AND criada_em > ?
+        AND lower(cliente) = lower(?) AND entrega_endereco = ? ORDER BY id DESC`).get(agora() - 10 * MIN, v.cliente, v.entrega.endereco);
+    if (repetida) { auditar('api', 'demanda_repetida', `#${repetida.id} ${v.cliente}`); return repetida; }
     if (geocodificar) {
       for (const ponto of [v.coleta, v.entrega]) {
         if (ponto.lat != null) continue;
@@ -1116,15 +1121,15 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       despachar(id);
     });
   }
-  function cancelarDemanda(id, ator) {
+  function cancelarDemanda(id, ator, motivo = '') {
     const d = q('SELECT * FROM demandas WHERE id = ?').get(id);
     if (!d) throw new Erro(404, 'nao_encontrado', 'Demanda não encontrada.');
     if (['entregue', 'cancelada'].includes(d.status)) throw new Erro(409, 'ja_finalizada', 'Demanda já finalizada.');
     tx(() => {
-      q("UPDATE demandas SET status = 'cancelada', cancelada_em = ? WHERE id = ?").run(agora(), id);
+      q("UPDATE demandas SET status = 'cancelada', cancelada_em = ?, cancel_motivo = ? WHERE id = ?").run(agora(), txt(motivo, 200) || null, id);
       q("UPDATE ofertas SET status = 'encerrada', respondida_em = ? WHERE demanda_id = ? AND status = 'aberta'").run(agora(), id);
       if (d.turno_id) q('UPDATE turnos SET rota_versao = rota_versao + 1 WHERE id = ?').run(d.turno_id);
-      auditar(ator, 'demanda_cancelada', `#${id}`);
+      auditar(ator, 'demanda_cancelada', `#${id}${txt(motivo, 200) ? `: ${txt(motivo, 200)}` : ''}`);
       emitir('demanda_cancelada', { demanda: d });
     });
   }
@@ -1282,8 +1287,15 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     const desde = d.fila_em ?? d.criada_em;
     const raio = Number(b.oferta_raio_km) * 2 ** Math.min(3, Math.floor((t - desde) / VOLTA_OFERTA));
     let novas = 0;
-    for (const cand of candidatos()) {
+    // Conta de motoboy do dono: a entrega comum toca antes para os outros; só chega nele depois da espera.
+    const donoId = Number(b.dono_motoboy_id || 0);
+    const esperaDono = Number(b.dono_espera_min || 0) * MIN;
+    const todos = candidatos();
+    const noAr = (x) => !x.emAlmoco && x.turno.ult_lat != null && t - (x.turno.ult_contato ?? x.turno.inicio) <= c.semSinalMs;
+    const outroNoAr = donoId > 0 && todos.some((x) => x.motoboy.id !== donoId && noAr(x));
+    for (const cand of todos) {
       const { turno, motoboy } = cand;
+      if (!d.urgente && motoboy.id === donoId && outroNoAr && t - desde < esperaDono) continue;
       if (!d.urgente && turno.tipo !== 'avulso' && b.atribuir_auto === '1') continue;
       if (cand.emAlmoco || turno.ult_lat == null || t - (turno.ult_contato ?? turno.inicio) > c.semSinalMs) continue;
       if (!atende(motoboy, d, c) || abertasDoTurno(turno.id) >= c.capacidade) continue;
@@ -1550,6 +1562,24 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     return pendentes > 0 ? 'em_rota' : 'disponivel';
   }
 
+  // O que pede ação agora: carga parada com turno encerrado e pedido sem motoboy há tempo demais.
+  function avisosOperacao() {
+    const t = agora();
+    const b = cfgBruta();
+    const lista = [];
+    for (const d of q(`SELECT d.id, d.cliente, m.nome FROM demandas d JOIN turnos tu ON tu.id = d.turno_id
+        LEFT JOIN motoboys m ON m.id = d.motoboy_id WHERE d.status = 'coletada' AND tu.fim_real IS NOT NULL`).all()) {
+      lista.push(`Pedido #${d.id} (${d.cliente}) foi coletado e não entregue: o turno de ${d.nome || 'motoboy'} já encerrou.`);
+    }
+    for (const d of q("SELECT id, cliente, urgente, criada_em, fila_em, agendada_para FROM demandas WHERE status = 'aguardando' AND retida = 0").all()) {
+      if (d.agendada_para && t < d.agendada_para - ANTECEDENCIA) continue;
+      const min = Math.floor((t - (d.fila_em ?? d.criada_em)) / MIN);
+      if (min >= (d.urgente ? Number(b.oferta_alerta_min || 5) : 20)) {
+        lista.push(`Pedido #${d.id} (${d.cliente})${d.urgente ? ' URGENTE' : ''} está há ${min} min sem motoboy aceitar.`);
+      }
+    }
+    return lista;
+  }
   function estadoAdmin() {
     const c = cfg();
     const hoje = inicioDoDia();
@@ -1592,6 +1622,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       mapa: { lat: Number(cfgBruta().mapa_lat), lon: Number(cfgBruta().mapa_lon) },
       pendencias: [...(candidatos.length ? [`${candidatos.length} cadastro(s) de motoboy aguardando sua resposta (aba Motoboys).`] : []), ...pendencias(motoboys)],
       candidatos,
+      avisos: avisosOperacao(),
     };
   }
 
@@ -1726,6 +1757,22 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       .map((l) => ({ ...l, margem: l.valor == null ? null : Math.round((l.valor - l.repasse) * 100) / 100 }));
   }
 
+  // Fechamento do período: o que entrou, o que sai para motoboy e o que sobra (sem gasolina nem anúncio).
+  function fechamento(de, ate) {
+    const dono = Number(cfgBruta().dono_motoboy_id || 0);
+    const ent = relatorioEntregas(de, ate);
+    const faturado = ent.reduce((s, x) => s + (x.valor || 0), 0);
+    const repasses = ent.reduce((s, x) => s + x.repasse, 0);
+    const diarias = relatorio(de, ate).filter((l) => l.motoboy_id !== dono).reduce((s, l) => s + (l.valor - l.repasses), 0);
+    const canc = q("SELECT COUNT(*) AS n, COALESCE(SUM(valor), 0) AS v FROM demandas WHERE status = 'cancelada' AND cancelada_em >= ? AND cancelada_em < ?").get(de, ate);
+    const r2 = (v) => Math.round(v * 100) / 100;
+    return {
+      entregas: ent.length, faturado: r2(faturado), repasses: r2(repasses), diarias: r2(diarias), lucro: r2(faturado - repasses - diarias),
+      cancelados: canc.n, cancelado_valor: r2(canc.v),
+      em_aberto: q("SELECT COUNT(*) AS n FROM demandas WHERE status IN ('aguardando','atribuida','coletada') AND criada_em < ?").get(ate).n,
+      sem_foto: q("SELECT COUNT(*) AS n FROM demandas WHERE status = 'entregue' AND foto_em IS NULL AND entregue_em >= ? AND entregue_em < ?").get(de, ate).n,
+    };
+  }
   // Entregas concluídas no período, somadas por cliente (para cobrar).
   function relatorioClientes(de, ate) {
     return q(`SELECT cliente, cliente_telefone AS telefone, COUNT(*) AS entregas,
@@ -1830,6 +1877,24 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       if (t - contato > c.semSinalMs && (turno.tipo !== 'avulso' || abertasDoTurno(turno.id) > 0)) {
         abrirAlerta(turno, 'sem_sinal', 'Aparelho sem contato: app fechado, sem internet ou desligado.', contato);
       }
+      // Diária em turno há muito tempo sem nenhuma entrega no sistema: trabalho por fora não aparece no fechamento.
+      const limSem = Number(cfgBruta().sem_lancamento_min || 0) * MIN;
+      if (limSem && turno.tipo === 'diaria' && turno.motoboy_id !== Number(cfgBruta().dono_motoboy_id || 0)) {
+        const mexeu = q(`SELECT COUNT(*) AS n FROM demandas WHERE turno_id = ?
+            AND (status IN ('atribuida','coletada') OR COALESCE(entregue_em, coletada_em, atribuida_em, criada_em) > ?)`).get(turno.id, t - limSem).n;
+        if (mexeu) fecharAlerta(turno.id, 'sem_lancamento');
+        else if (t - turno.inicio > limSem && !emAlmoco(turno)) {
+          abrirAlerta(turno, 'sem_lancamento', `Em turno há mais de ${Math.round(limSem / MIN)} min sem entrega lançada no sistema.`);
+        }
+      }
+    }
+    // Entrega finalizada pelo motoboy e a foto não subiu em 20 min.
+    for (const d of q(`SELECT d.id, d.turno_id FROM demandas d WHERE d.status = 'entregue' AND d.foto_em IS NULL
+        AND d.recebedor IS NOT NULL AND d.turno_id IS NOT NULL AND d.entregue_em < ? AND d.entregue_em > ?
+        AND NOT EXISTS (SELECT 1 FROM alertas a WHERE a.tipo = 'sem_foto' AND a.turno_id = d.turno_id
+          AND a.detalhe LIKE '%#' || d.id || ' %')`).all(t - 20 * MIN, t - 12 * 60 * MIN)) {
+      const turno = q('SELECT * FROM turnos WHERE id = ?').get(d.turno_id);
+      if (turno) alertaPontual(turno, 'sem_foto', `Entrega #${d.id} finalizada sem foto.`);
     }
     convocarSozinho(t);
     q('DELETE FROM sessoes WHERE expira_em <= ?').run(t);
@@ -1844,7 +1909,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     garantirAdmin, loginAdmin, autenticarAdmin, sairAdmin, trocarSenhaAdmin,
     criarMotoboy, atualizarMotoboy, candidatar, decidirCandidato, convocar, cancelarConvocacao,
     loginMotoboy, autenticarMotoboy, almoco, encerrarTurno, registrarPosicoes,
-    criarDemanda, criarDemandaExterna, definirLocais, cancelarDemanda, reatribuir, confirmarParada,
+    criarDemanda, criarDemandaExterna, definirLocais, cancelarDemanda, fechamento, reatribuir, confirmarParada,
     despacharPendentes, estadoMotoboy, estadoAdmin, trilha, relatorio, rotina,
     importarWhatsapp, listarConversas, mensagensDaConversa, excluirConversa,
     aoEvento, cotar, agendadaMotoboy, problemaMotoboy, finalizarDemanda, editarValor, editarDados, liberarRastreio, fotoPermitida, fotoGravada, foraDoHorario, criarPedido, coletaFixa, gerarPixManual, liberarDemanda, fecharPedido, definirContato, pedidoPublico, relatorioClientes, relatorioEntregas,

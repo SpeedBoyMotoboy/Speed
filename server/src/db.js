@@ -288,6 +288,12 @@ export const CONFIG_PADRAO = {
   repasse_base: '0',
   repasse_km: '0',
   oferta_raio_km: '5',
+  // Urgente só até esta distância (0 = sem limite). Conta de motoboy do dono (0 = nenhuma) e quanto a entrega comum
+  // espera antes de tocar para ele. Diária em turno sem entrega lançada: avisa depois destes minutos (0 = não avisa).
+  urgente_km_max: '30',
+  dono_motoboy_id: '0',
+  dono_espera_min: '10',
+  sem_lancamento_min: '120',
   oferta_alerta_min: '5',
   avulso_max_horas: '12',
   // Pix pelo Mercado Pago (token secreto) e rota real pelas ruas (OpenRouteService, opcional).
@@ -317,7 +323,7 @@ const SERVICOS_PADRAO = [
 const COLUNAS_NOVAS = {
   demandas: {
     codigo: 'TEXT', cliente_telefone: "TEXT NOT NULL DEFAULT ''", valor: 'REAL', km: 'REAL',
-    retida: 'INTEGER NOT NULL DEFAULT 0',
+    retida: 'INTEGER NOT NULL DEFAULT 0', cancel_motivo: 'TEXT',
     urgente: 'INTEGER NOT NULL DEFAULT 0', servico: "TEXT NOT NULL DEFAULT ''", repasse: 'REAL', repasse_padrao: 'REAL', bonus_urgente: 'REAL', foto_em: 'INTEGER', rastreio_livre: 'INTEGER NOT NULL DEFAULT 0', repasse_manual: 'INTEGER NOT NULL DEFAULT 0', tamanho: "TEXT NOT NULL DEFAULT ''", tarifa_urgente: 'INTEGER NOT NULL DEFAULT 0', agendada_para: 'INTEGER', reservada_por: 'INTEGER',
     pagamento: "TEXT NOT NULL DEFAULT ''", pag_id: 'TEXT', pag_pix: 'TEXT', pag_qr: 'TEXT', pag_expira: 'INTEGER',
     pago_em: 'INTEGER', fila_em: 'INTEGER', comprovante_em: 'INTEGER', ia_ok: 'INTEGER', ia_obs: 'TEXT', email: "TEXT NOT NULL DEFAULT ''", sem_aceite_avisado: 'INTEGER NOT NULL DEFAULT 0', hora_tipo: "TEXT NOT NULL DEFAULT ''", hora_limite: 'INTEGER',

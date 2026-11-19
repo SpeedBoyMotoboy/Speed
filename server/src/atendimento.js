@@ -833,6 +833,11 @@ export function criarAtendimento({
     const km = await distancia(coleta, entrega);
     const tarifaUrgente = dados?.urgente === true; // só a chave "Entrega urgente" do site cobra a tarifa urgente
     const previa = servico.cotar(coleta, entrega, { km, servicoId: dados?.servico_id, telefone, urgente: tarifaUrgente, tamanho: dados?.tamanho });
+    // Corrida longa não entra como urgente: não dá para cumprir o prazo prometido.
+    const kmMaxUrgente = Number(c.urgente_km_max || 0);
+    if (tarifaUrgente && kmMaxUrgente && previa.km != null && previa.km > kmMaxUrgente) {
+      throw new Erro(422, 'urgente_longe', `Entrega urgente (em até ${c.urgente_prazo_min} min) só vale para corridas de até ${kmMaxUrgente} km. Para essa distância, peça como Normal.`);
+    }
     const fixo = telefone ? clienteFixo(telefone) : null;
     const email = txt(dados?.email, 120).toLowerCase();
     // Cliente fixo não paga na hora, mas precisa provar que é ele (qualquer um pode digitar o telefone dele).

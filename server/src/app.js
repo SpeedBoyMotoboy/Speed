@@ -272,8 +272,8 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
   rota('PUT', '/api/admin/demandas/:id/valor', 'admin', ({ admin, corpo, p }) => servico.editarValor(p.id, corpo, ator(admin)));
   rota('PUT', '/api/admin/demandas/:id/dados', 'admin', ({ admin, corpo, p }) => servico.editarDados(p.id, corpo, ator(admin)));
   rota('POST', '/api/admin/demandas/:id/rastreio', 'admin', ({ admin, p }) => servico.liberarRastreio(p.id, ator(admin)));
-  rota('POST', '/api/admin/demandas/:id/cancelar', 'admin', ({ admin, p }) => {
-    servico.cancelarDemanda(p.id, ator(admin));
+  rota('POST', '/api/admin/demandas/:id/cancelar', 'admin', ({ admin, corpo, p }) => {
+    servico.cancelarDemanda(p.id, ator(admin), corpo?.motivo);
     return { ok: true };
   });
   rota('GET', '/api/admin/geocode', 'admin', async ({ url }) => {
@@ -288,7 +288,7 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
     const de = Number(url.searchParams.get('de'));
     const ate = Number(url.searchParams.get('ate'));
     if (!Number.isFinite(de) || !Number.isFinite(ate) || ate <= de) throw new Erro(422, 'periodo_invalido', 'Período inválido.');
-    return { linhas: servico.relatorio(de, ate), clientes: servico.relatorioClientes(de, ate), entregas: servico.relatorioEntregas(de, ate) };
+    return { linhas: servico.relatorio(de, ate), clientes: servico.relatorioClientes(de, ate), entregas: servico.relatorioEntregas(de, ate), resumo: servico.fechamento(de, ate) };
   });
   rota('POST', '/api/admin/whatsapp', 'admin', ({ admin, corpo }) => servico.importarWhatsapp(corpo, ator(admin)), 30 * 1024 * 1024);
   rota('GET', '/api/admin/whatsapp', 'admin', () => ({ conversas: servico.listarConversas() }));

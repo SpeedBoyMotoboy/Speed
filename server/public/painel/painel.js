@@ -68,7 +68,7 @@ const ROTULO_STATUS = {
 const ROTULO_ALERTA = {
   problema: 'Problema na entrega', parado: 'Parado na rota', sem_sinal: 'Sem sinal', gps_falso: 'GPS falso', gps_desligado: 'GPS desligado',
   salto: 'Salto de posição', fora_do_local: 'Confirmou longe do local', troca_aparelho: 'Trocou de aparelho',
-  carga_pendente: 'Turno encerrado com carga',
+  carga_pendente: 'Turno encerrado com carga', sem_foto: 'Entrega sem foto', sem_lancamento: 'Em turno sem entrega lançada',
 };
 const ROTULO_REQUISITO = { qualquer: 'Qualquer', moto: 'Só moto', bau: 'Baú', bag: 'Bag' };
 const ROTULO_ORIGEM = { empresa: 'Empresa', site: 'Site', robo: 'WhatsApp', whatsapp: 'WhatsApp', api: 'API' };
@@ -445,8 +445,7 @@ function desenharLateral() {
       h('button', { class: 'pequeno', onclick: () => janelaFinalizar(d) }, 'Finalizar'),
       h('button', {
         class: 'pequeno perigo',
-        onclick: () => confirmar('Cancelar demanda', `Cancelar a demanda #${d.id} de ${d.cliente}?`, 'Cancelar demanda',
-          () => api('POST', `/api/admin/demandas/${d.id}/cancelar`)),
+        onclick: () => janelaCancelar(d),
       }, 'Cancelar')),
     escolhendoPara === d.id && !['entregue', 'cancelada'].includes(d.status) && listaMotoboys(d));
 
@@ -477,6 +476,9 @@ function desenharLateral() {
       h('div', null, h('b', null, fila.length + semLocal.length + retidas.length), h('span', null, 'aguardando'))),
     h('button', { class: 'primario', onclick: () => janelaDemanda() }, '+ Nova demanda'),
 
+    (estado.avisos || []).length > 0 && h('div', { class: 'cartao sugestao' },
+      h('strong', null, `Atenção agora (${estado.avisos.length})`),
+      h('ul', { class: 'lista' }, estado.avisos.map((t) => h('li', null, t)))),
     estado.pendencias.length > 0 && gaveta('pendencias', !estado.motoboys.length, { class: 'cartao sugestao' },
       h('summary', null, `Falta configurar (${estado.pendencias.length})`),
       h('ul', { class: 'lista' }, estado.pendencias.map((t) => h('li', null, t))),
@@ -792,20 +794,58 @@ function compartilharDemanda(d) {
   });
 }
 
+// Cancelar pede o motivo: sem ele não dá para saber por que o pedido se perdeu.
+function janelaCancelar(d) {
+  dialogo(`Cancelar a demanda #${d.id}`, (dlg) => {
+    const motivo = h('input', { maxlength: 200, placeholder: 'Ex.: cliente desistiu, não pagou o Pix, sem motoboy' });
+    const erro = h('div', { class: 'erro' });
+    const ok = h('button', {
+      class: 'primario perigo',
+      onclick: () => {
+        if (motivo.value.trim().length < 3) { erro.textContent = 'Escreva o motivo do cancelamento.'; return; }
+        dlg.executar(() => api('POST', `/api/admin/demandas/${d.id}/cancelar`, { motivo: motivo.value }), ok);
+      },
+    }, 'Cancelar demanda');
+    return [
+      h('p', { class: 'nota' }, `${d.cliente}. O motivo fica guardado no pedido.`),
+      h('label', null, 'Motivo do cancelamento'), motivo, erro,
+      h('div', { class: 'linha fim' }, h('button', { onclick: dlg.fechar }, 'Voltar'), ok)];
+  });
+}
+
 // Muda o valor do pedido (ex.: desconto) e o que o motoboy recebe. O motoboy não muda sozinho.
 function janelaValor(d) {
   dialogo(`Valor do pedido #${d.id}`, (dlg) => {
     const valor = h('input', { type: 'number', step: '0.01', min: '0', inputmode: 'decimal', value: d.valor ?? '' });
     const repasse = h('input', { type: 'number', step: '0.01', min: '0', inputmode: 'decimal', value: d.repasse ?? '' });
     const motivo = h('input', { maxlength: 200, placeholder: 'Ex.: desconto combinado com o cliente' });
+    // Mostra o que sobra para a empresa; ao mudar o valor, o repasse acompanha na mesma proporção.
+    const sobra = h('div', { class: 'nota' });
+    let mexeuRepasse = false;
+    const conta = () => {
+      const v = Number(valor.value);
+      const r = Number(repasse.value || 0);
+      if (!(v > 0)) { sobra.textContent = ''; return; }
+      const pct = Math.round(((v - r) / v) * 100);
+      sobra.textContent = `Sobra para a empresa: ${reais(v - r)} (${pct}%).${pct < 30 ? ' Atenção: menos de 30%.' : ''}`;
+      sobra.className = pct < 30 ? 'erro' : 'nota';
+    };
+    valor.addEventListener('input', () => {
+      if (!mexeuRepasse && d.valor > 0 && d.repasse != null && Number(valor.value) > 0) {
+        repasse.value = Math.floor((d.repasse * Number(valor.value)) / d.valor);
+      }
+      conta();
+    });
+    repasse.addEventListener('input', () => { mexeuRepasse = true; conta(); });
+    conta();
     const ok = h('button', {
       class: 'primario',
       onclick: () => dlg.executar(() => api('PUT', `/api/admin/demandas/${d.id}/valor`, { valor: valor.value, repasse: repasse.value, motivo: motivo.value }), ok),
     }, 'Salvar valor');
     return [
-      h('p', { class: 'nota' }, `${d.cliente}. O que o motoboy recebe não muda sozinho: ajuste abaixo se precisar.`),
+      h('p', { class: 'nota' }, `${d.cliente}. Ao mudar o valor, o repasse do motoboy acompanha na mesma proporção: ajuste abaixo se precisar.`),
       h('label', null, 'Cliente paga (R$)'), valor,
-      h('label', null, 'Motoboy recebe (R$)'), repasse,
+      h('label', null, 'Motoboy recebe (R$)'), repasse, sobra,
       h('label', null, 'Motivo (opcional)'), motivo,
       h('div', { class: 'linha fim' }, h('button', { onclick: dlg.fechar }, 'Voltar'), ok)];
   });
@@ -1266,16 +1306,27 @@ async function desenharIa(mensagem = '') {
 
 // -------------------------------------------------------------- relatório
 const diaLocal = (d) => `${d.getFullYear()}-${doisDig(d.getMonth() + 1)}-${doisDig(d.getDate())}`;
+function cartaoFechamento(r) {
+  const item = (rotulo, v) => h('div', null, h('div', { class: 'nota' }, rotulo), h('strong', null, v));
+  return h('div', { class: 'cartao' },
+    h('h3', null, 'Fechamento do período'),
+    h('div', { class: 'linha' },
+      item('Entregas', String(r.entregas)), item('Faturado', reais(r.faturado)), item('Repasse dos avulsos', reais(r.repasses)),
+      item('Diárias + almoço', reais(r.diarias)), item('Sobra', reais(r.lucro))),
+    h('p', { class: 'nota' }, `Cancelados: ${r.cancelados} (${reais(r.cancelado_valor)}). Em aberto agora: ${r.em_aberto}. Entregues sem foto: ${r.sem_foto}. Gasolina e anúncio não entram na conta.`));
+}
 function desenharRelatorio() {
   const hoje = new Date();
   const de = h('input', { type: 'date', value: diaLocal(new Date(hoje.getFullYear(), hoje.getMonth(), 1)) });
   const ate = h('input', { type: 'date', value: diaLocal(hoje) });
   const saida = h('div', null);
+  const topo = h('div', null);
   const gerar = async () => {
     const inicio = new Date(`${de.value}T00:00:00`).getTime();
     const fim = new Date(`${ate.value}T00:00:00`).getTime() + 24 * 3600 * 1000;
     try {
-      const { linhas, clientes, entregas } = await api('GET', `/api/admin/relatorio?de=${inicio}&ate=${fim}`);
+      const { linhas, clientes, entregas, resumo } = await api('GET', `/api/admin/relatorio?de=${inicio}&ate=${fim}`);
+      trocar(topo, resumo ? cartaoFechamento(resumo) : h('div', null));
       const colunas = [['nome', 'Motoboy'], ['diarias', 'Diárias'], ['horas', 'Horas'], ['entregas', 'Entregas'], ['km', 'Km'], ['min_parado', 'Min. parado em alerta'], ['alertas', 'Alertas'], ['repasses', 'Repasses'], ['valor', 'A pagar']];
       const dinheiro = (v) => (v == null ? '—' : reais(v));
       const baixarEntregas = () => {
@@ -1328,8 +1379,9 @@ function desenharRelatorio() {
     h('p', { class: 'nota' }, 'A pagar = diárias × (valor da diária + almoço) + repasses das entregas feitas como avulso.'),
     h('div', { class: 'linha' },
       h('div', null, h('label', null, 'De'), de), h('div', null, h('label', null, 'Até'), ate),
-      h('div', null, h('label', null, ' '), h('button', { class: 'primario', onclick: gerar }, 'Gerar'))),
-    h('div', { class: 'nota' }, ' '), saida);
+      h('div', null, h('label', null, ' '), h('button', { class: 'primario', onclick: gerar }, 'Gerar')),
+      h('div', null, h('label', null, '\u00a0'), h('button', { onclick: () => { de.value = diaLocal(new Date()); ate.value = de.value; gerar(); } }, 'Fechamento de hoje'))),
+    h('div', { class: 'nota' }, ' '), topo, saida);
   gerar();
 }
 
