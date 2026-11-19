@@ -27,6 +27,15 @@ function trocar(el, ...filhos) {
 }
 
 let token = localStorage.getItem(CHAVE_TOKEN);
+// App aberto pelo botão "Abrir o app" do navegador: chega com a sessão do login já feito (só dentro do app).
+{
+  const doLink = /[#&]t=([^&]+)/.exec(location.hash);
+  if (nativo && doLink) {
+    token = decodeURIComponent(doLink[1]);
+    localStorage.setItem(CHAVE_TOKEN, token);
+    history.replaceState(null, '', '/app/');
+  }
+}
 
 // Tema: claro (sol) ou escuro (noite). Sem escolha, segue o celular. A escolha fica guardada no aparelho.
 const CHAVE_TEMA = 'speed_tema';
@@ -166,7 +175,7 @@ async function telaLogin(mensagem = '') {
     trocar(pendencias, 
       itens.map(([nome, ok]) => h('div', { class: 'pendencia' }, nome, h('span', { class: ok ? 'sim' : 'nao' }, ok ? 'OK' : 'Falta'))),
       falta && h('div', { class: 'botoes' }, h('button', { type: 'button', onclick: () => nativo.pedirPermissoes() }, 'Liberar o que falta')));
-    entrar.disabled = !(i.permLocal && i.gpsLigado);
+    entrar.disabled = !(i.permLocal && i.gpsLigado && i.bateriaLivre);
   }
 
   const form = h('form', {
@@ -227,7 +236,39 @@ function encerrado() {
   telaLogin('Turno encerrado. Obrigado!');
 }
 
+// ── Foto da entrega: reduz no aparelho, guarda na fila e envia; sem internet, tenta de novo a cada atualização ──
+const CHAVE_FOTOS = 'speed_fotos';
+async function reduzirFoto(arquivo) {
+  const img = await createImageBitmap(arquivo);
+  const escala = Math.min(1, 1280 / Math.max(img.width, img.height));
+  const tela = document.createElement('canvas');
+  tela.width = Math.round(img.width * escala);
+  tela.height = Math.round(img.height * escala);
+  tela.getContext('2d').drawImage(img, 0, 0, tela.width, tela.height);
+  return tela.toDataURL('image/jpeg', 0.7);
+}
+function filaFotos() { try { return JSON.parse(localStorage.getItem(CHAVE_FOTOS) || '[]'); } catch { return []; } }
+function guardarFoto(demandaId, foto) {
+  try { localStorage.setItem(CHAVE_FOTOS, JSON.stringify([...filaFotos().filter((f) => f.id !== demandaId), { id: demandaId, foto }])); } catch { /* sem espaço: segue sem foto */ }
+}
+let enviandoFotos = false;
+async function enviarFotos() {
+  if (enviandoFotos || !token) return;
+  enviandoFotos = true;
+  try {
+    for (const f of filaFotos()) {
+      try {
+        await api('POST', '/api/motoboy/foto', { demanda_id: f.id, foto: f.foto });
+      } catch (e) {
+        if (!e.status || e.status >= 500 || e.status === 401) break; // sem internet ou sessão: tenta depois
+      }
+      try { localStorage.setItem(CHAVE_FOTOS, JSON.stringify(filaFotos().filter((x) => x.id !== f.id))); } catch { /* segue */ }
+    }
+  } finally { enviandoFotos = false; }
+}
+
 async function buscarEstado() {
+  enviarFotos();
   try {
     estado = await api('GET', '/api/motoboy/estado');
     estado.semConexao = false;
@@ -294,8 +335,31 @@ function desenharTurno() {
   const { turno, rota, motoboy, ofertas, ganhos } = estado;
   const [atual, ...proximas] = rota;
   const partes = [];
-  const baixar = cartaoBaixarApp();
-  if (baixar) partes.push(baixar);
+  // No app: sem tirar a economia de bateria o Android mata o rastreio. Só libera a tela depois de liberar.
+  if (nativo && infoNativo().bateriaLivre === false) {
+    trocar(raiz,
+      h('div', { class: 'topo' }, h('div', { class: 'nome' }, motoboy.nome), h('div', { class: 'info' }, 'Falta liberar a bateria')),
+      h('div', { class: 'conteudo' }, h('div', { class: 'cartao baixar-app' },
+        h('b', null, 'Tire a economia de bateria do app'),
+        h('div', { class: 'nota' }, 'Com a economia ligada, o celular desliga a localização e você aparece sem sinal. Toque no botão e escolha Permitir ou Sem restrições.'),
+        h('div', { class: 'botoes' }, h('button', { class: 'primario grande', onclick: () => nativo.pedirPermissoes() }, 'Liberar agora')))));
+    return;
+  }
+  // No Android o app é obrigatório: no navegador, depois do login, só aparece a tela de instalar.
+  if (!nativo && /android/i.test(navigator.userAgent)) {
+    const abrir = `intent://entrar?t=${encodeURIComponent(token)}#Intent;scheme=speedy;package=br.com.speedboy.motoboy;end`;
+    trocar(raiz,
+      h('div', { class: 'topo' }, h('div', { class: 'nome' }, motoboy.nome), h('div', { class: 'info' }, 'Falta instalar o app')),
+      h('div', { class: 'conteudo' }, h('div', { class: 'cartao baixar-app' },
+        h('b', null, 'Para trabalhar, instale o app Speedy Motoboy'),
+        h('div', { class: 'nota' }, 'Com o app, a localização segue com a tela apagada, o aviso de entrega chega na hora e a câmera abre para a foto da entrega.'),
+        h('div', { class: 'botoes' },
+          h('a', { class: 'botao-link', href: '/app/speed-motoboy.apk', download: 'speedy-motoboy.apk' }, '1. Baixar app (Android)'),
+          h('a', { class: 'botao-link claro', href: abrir }, '2. Já instalei: abrir o app')),
+        h('div', { class: 'nota' }, 'Ao abrir o arquivo baixado, o Android pede para permitir instalar desta fonte: toque em Configurações e ative. Depois volte aqui e toque no botão 2: o app abre já com o seu login.'),
+        h('div', { class: 'nota' }, 'Não conseguiu instalar? Chame a central da SpeedBoy no WhatsApp.'))));
+    return;
+  }
 
   if (turno.almoco_ate) {
     partes.push(h('div', { class: 'cartao livre' },
@@ -574,9 +638,30 @@ function cartaoParada(p) {
   function pedirRecebedor() {
     formAberto = true;
     const nome = h('input', { maxlength: 80, placeholder: 'Nome de quem recebeu' });
+    // Foto da entrega: obrigatória onde a câmera abre (navegador ou app novo). App antigo segue sem foto.
+    const podeFoto = !nativo || Boolean(infoNativo().camera);
+    let foto = null;
+    const aviso = h('div', { class: 'nota' }, 'Tire a foto da entrega (mercadoria entregue ou fachada).');
+    const arquivo = h('input', { type: 'file', accept: 'image/*', capture: 'environment', class: 'oculto' });
+    const tirar = h('button', { type: 'button', class: 'grande foto', onclick: () => arquivo.click() }, '📷 Tirar foto da entrega');
+    arquivo.addEventListener('change', async () => {
+      const f = arquivo.files && arquivo.files[0];
+      if (!f) return;
+      try {
+        foto = await reduzirFoto(f);
+        tirar.textContent = '✅ Foto tirada (toque para trocar)';
+        aviso.textContent = '';
+      } catch { aviso.textContent = 'Não consegui ler a foto. Tente de novo.'; }
+    });
+    const confirmar = () => {
+      if (podeFoto && !foto) { aviso.textContent = 'Falta a foto da entrega.'; aviso.className = 'erro'; return; }
+      if (foto) guardarFoto(p.demanda_id, foto);
+      enviar({ recebedor: nome.value });
+    };
     trocar(area, 
       h('label', null, 'Quem recebeu?'), nome,
-      h('button', { class: 'grande entrega', onclick: () => enviar({ recebedor: nome.value }) }, 'Confirmar entrega'),
+      podeFoto && tirar, podeFoto && arquivo, podeFoto && aviso,
+      h('button', { class: 'grande entrega', onclick: confirmar }, 'Confirmar entrega'),
       h('button', { onclick: botoesIniciais }, 'Voltar'));
     nome.focus();
   }

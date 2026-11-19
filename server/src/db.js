@@ -315,7 +315,7 @@ const COLUNAS_NOVAS = {
   demandas: {
     codigo: 'TEXT', cliente_telefone: "TEXT NOT NULL DEFAULT ''", valor: 'REAL', km: 'REAL',
     retida: 'INTEGER NOT NULL DEFAULT 0',
-    urgente: 'INTEGER NOT NULL DEFAULT 0', servico: "TEXT NOT NULL DEFAULT ''", repasse: 'REAL', repasse_padrao: 'REAL', bonus_urgente: 'REAL', repasse_manual: 'INTEGER NOT NULL DEFAULT 0', tamanho: "TEXT NOT NULL DEFAULT ''", tarifa_urgente: 'INTEGER NOT NULL DEFAULT 0', agendada_para: 'INTEGER', reservada_por: 'INTEGER',
+    urgente: 'INTEGER NOT NULL DEFAULT 0', servico: "TEXT NOT NULL DEFAULT ''", repasse: 'REAL', repasse_padrao: 'REAL', bonus_urgente: 'REAL', foto_em: 'INTEGER', repasse_manual: 'INTEGER NOT NULL DEFAULT 0', tamanho: "TEXT NOT NULL DEFAULT ''", tarifa_urgente: 'INTEGER NOT NULL DEFAULT 0', agendada_para: 'INTEGER', reservada_por: 'INTEGER',
     pagamento: "TEXT NOT NULL DEFAULT ''", pag_id: 'TEXT', pag_pix: 'TEXT', pag_qr: 'TEXT', pag_expira: 'INTEGER',
     pago_em: 'INTEGER', fila_em: 'INTEGER', comprovante_em: 'INTEGER', ia_ok: 'INTEGER', ia_obs: 'TEXT', email: "TEXT NOT NULL DEFAULT ''", sem_aceite_avisado: 'INTEGER NOT NULL DEFAULT 0',
   },

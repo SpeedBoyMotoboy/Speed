@@ -403,6 +403,9 @@ function desenharLateral() {
         : d.status === 'cancelada' ? `cancelada ${hora(d.cancelada_em)}`
           : d.status === 'coletada' ? `coletada ${hora(d.coletada_em)}`
             : `criada ${hora(d.criada_em)} (${ha(d.criada_em, agora)})`),
+    d.status === 'entregue' && h('div', { class: 'acoes' }, d.foto_em
+      ? h('button', { class: 'pequeno', onclick: () => verFoto(d) }, '📷 Ver foto da entrega')
+      : chip('Sem foto', 'aguardando')),
     d.ia_obs && h('div', { class: 'sub' }, `IA: ${d.ia_obs}`),
     d.cliente_telefone && h('div', { class: 'sub' }, `Cliente: ${telefoneFmt(d.cliente_telefone)}`),
     !['entregue', 'cancelada'].includes(d.status) && h('div', { class: 'acoes' },
@@ -794,6 +797,16 @@ function janelaEscolher(d) {
       h('div', { class: 'linha fim' }, h('button', { onclick: dlg.fechar }, 'Voltar'),
         h('button', { onclick: () => escolher(null) }, 'Automático (sistema escolhe)'))];
   }, { largo: true });
+}
+
+async function verFoto(d) {
+  try {
+    const r = await api('GET', `/api/admin/demandas/${d.id}/foto`);
+    dialogo(`Foto da entrega #${d.id} — ${d.cliente}`, (dlg) => [
+      h('p', { class: 'nota' }, `Entregue ${hora(d.entregue_em)} para ${d.recebedor || '—'}`),
+      h('img', { src: r.foto, alt: 'Foto da entrega', class: 'foto-entrega' }),
+      h('div', { class: 'linha fim' }, h('button', { onclick: dlg.fechar }, 'Fechar'))], { largo: true });
+  } catch (e) { els.conexao.textContent = e.message; }
 }
 
 function janelaFinalizar(d) {

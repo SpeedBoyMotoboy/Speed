@@ -156,6 +156,22 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
     servico.confirmarParada(turno, corpo);
     return servico.estadoMotoboy(servico.autenticarMotoboy(turno.token));
   });
+  const PASTA_FOTOS = path.join(process.env.DADOS_DIR || './dados', 'fotos');
+  rota('POST', '/api/motoboy/foto', 'motoboy', ({ turno, corpo }) => {
+    const id = servico.fotoPermitida(turno, corpo?.demanda_id);
+    const m = /^data:image\/jpeg;base64,([A-Za-z0-9+/=]+)$/.exec(String(corpo?.foto || ''));
+    const dados = m ? Buffer.from(m[1], 'base64') : null;
+    if (!dados || dados.length < 1000 || dados.length > 2 * 1024 * 1024 || dados[0] !== 0xff || dados[1] !== 0xd8) throw new Erro(422, 'foto_invalida', 'Foto inválida.');
+    fs.mkdirSync(PASTA_FOTOS, { recursive: true });
+    fs.writeFileSync(path.join(PASTA_FOTOS, `${id}.jpg`), dados);
+    servico.fotoGravada(id);
+    return { ok: true };
+  }, 3 * 1024 * 1024);
+  rota('GET', '/api/admin/demandas/:id/foto', 'admin', ({ p }) => {
+    const arq = path.join(PASTA_FOTOS, `${Number(p.id)}.jpg`);
+    if (!fs.existsSync(arq)) throw new Erro(404, 'sem_foto', 'Sem foto desta entrega.');
+    return { foto: `data:image/jpeg;base64,${fs.readFileSync(arq).toString('base64')}` };
+  });
   rota('POST', '/api/motoboy/oferta', 'motoboy', ({ turno, corpo }) => {
     servico.responderOferta(turno, corpo);
     return servico.estadoMotoboy(servico.autenticarMotoboy(turno.token));

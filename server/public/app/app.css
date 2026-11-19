@@ -113,3 +113,6 @@ button.tema { position: absolute; right: 12px; top: calc(10px + env(safe-area-in
 .cartao.baixar-app { border: 2px solid var(--destaque); }
 a.botao-link { display: flex; align-items: center; justify-content: center; min-height: 52px; padding: 14px; border-radius: 10px;
   background: var(--acao); color: #fff; font-weight: 800; text-decoration: none; }
+.oculto { display: none; }
+button.grande.foto { border: 2px dashed var(--destaque); background: var(--cartao); }
+a.botao-link.claro { background: var(--cartao); color: var(--texto); border: 2px solid var(--acao); }
