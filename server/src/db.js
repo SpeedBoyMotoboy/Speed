@@ -241,6 +241,10 @@ export const CONFIG_PADRAO = {
   preco_minimo: '0',
   // Acréscimo ao cliente quando a coleta ou a entrega cai na zona sul de Vila Velha (o motoboy não recebe).
   preco_zona_sul: '15',
+  // Tarifa urgente (chave do site): % a mais sobre o valor, com mínimo em R$; parte do extra que vai ao motoboy.
+  urgente_pct: '40',
+  urgente_min: '10',
+  urgente_repasse_pct: '70',
   // Pedido pelo site: 'painel' (admin aprova), 'whatsapp' (cliente confirma no WhatsApp) ou 'nenhuma'.
   pedidos_site: '1',
   site_confirmacao: 'painel',
@@ -300,7 +304,7 @@ const COLUNAS_NOVAS = {
   demandas: {
     codigo: 'TEXT', cliente_telefone: "TEXT NOT NULL DEFAULT ''", valor: 'REAL', km: 'REAL',
     retida: 'INTEGER NOT NULL DEFAULT 0',
-    urgente: 'INTEGER NOT NULL DEFAULT 0', servico: "TEXT NOT NULL DEFAULT ''", repasse: 'REAL', repasse_padrao: 'REAL',
+    urgente: 'INTEGER NOT NULL DEFAULT 0', servico: "TEXT NOT NULL DEFAULT ''", repasse: 'REAL', repasse_padrao: 'REAL', bonus_urgente: 'REAL',
     pagamento: "TEXT NOT NULL DEFAULT ''", pag_id: 'TEXT', pag_pix: 'TEXT', pag_qr: 'TEXT', pag_expira: 'INTEGER',
     pago_em: 'INTEGER', fila_em: 'INTEGER', comprovante_em: 'INTEGER', ia_ok: 'INTEGER', ia_obs: 'TEXT', email: "TEXT NOT NULL DEFAULT ''", sem_aceite_avisado: 'INTEGER NOT NULL DEFAULT 0',
   },

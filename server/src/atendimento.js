@@ -707,7 +707,8 @@ export function criarAtendimento({
     await acharNoMapa(entrega);
     if (!coleta.contato) coleta.contato = `${nome} ${telefone}`.trim();
     const km = await distancia(coleta, entrega);
-    const previa = servico.cotar(coleta, entrega, { km, servicoId: dados?.servico_id, telefone });
+    const tarifaUrgente = dados?.urgente === true; // só a chave "Entrega urgente" do site cobra a tarifa urgente
+    const previa = servico.cotar(coleta, entrega, { km, servicoId: dados?.servico_id, telefone, urgente: tarifaUrgente });
     const fixo = telefone ? clienteFixo(telefone) : null;
     const email = txt(dados?.email, 120).toLowerCase();
     // Cliente fixo não paga na hora, mas precisa provar que é ele (qualquer um pode digitar o telefone dele).
@@ -719,7 +720,7 @@ export function criarAtendimento({
     // A IA confere antes de cobrar: se a descrição é de outro tipo de serviço, o cliente vê o preço certo primeiro.
     const analise = await conferirIA({ coleta, entrega, km: previa.km, servicoId: previa.servico?.id, descricao: dados?.descricao });
     if (analise?.servico_id && analise.servico_id !== (previa.servico?.id ?? null)) {
-      const certo = servico.cotar(coleta, entrega, { km, servicoId: analise.servico_id, telefone });
+      const certo = servico.cotar(coleta, entrega, { km, servicoId: analise.servico_id, telefone, urgente: tarifaUrgente });
       throw new Erro(409, 'servico_diferente',
         `Pelo que você descreveu, o serviço é "${certo.servico.nome}". Atualizamos o valor: confira e confirme de novo.`,
         { servico_id: analise.servico_id, km: certo.km, valor: certo.valor });
@@ -727,7 +728,7 @@ export function criarAtendimento({
     if (analise && !analise.aprovado) modo = 'painel';
     const d = servico.criarPedido({
       cliente: fixo?.nome || nome, telefone, descricao: dados?.descricao, requisito: dados?.requisito ?? 'qualquer',
-      urgente: dados?.urgente !== false, servico_id: dados?.servico_id, km, email, coleta, entrega,
+      urgente: dados?.urgente !== false, tarifa_urgente: tarifaUrgente, servico_id: dados?.servico_id, km, email, coleta, entrega,
     }, 'site', { retida: modo !== 'nenhuma', pagamento: fixo ? 'faturado' : '', ia: analise });
     if (telefone) lembrarCliente(telefone, nome, coleta, email);
 

@@ -1221,6 +1221,8 @@ async function desenharConfig() {
       num('preco_base', 'Valor base (R$)', 0.01), num('preco_km_incluso', 'Km já incluídos no valor base', 0.5),
       num('preco_km', 'Valor por km a mais (R$)', 0.01), num('preco_minimo', 'Valor mínimo (R$)', 0.01),
       num('preco_zona_sul', 'Acréscimo zona sul de Vila Velha (R$)', 0.01),
+      num('urgente_pct', 'Urgente: % a mais', 1), num('urgente_min', 'Urgente: mínimo a mais (R$)', 0.01),
+      num('urgente_repasse_pct', 'Urgente: % do extra para o motoboy', 1),
       num('repasse_base', 'Motoboy avulso recebe: valor base (R$)', 0.01), num('repasse_km', 'Motoboy avulso: por km a mais (R$)', 0.01),
       num('urgente_prazo_min', 'Prazo prometido na página (min)'),
       texto('google_chave', c.google_chave_definida ? 'Chave do Google Maps (já salva; vazio mantém)' : 'Chave do Google Maps (acha endereço e loja pelo nome)', { type: 'password', autocomplete: 'off', value: '' }),

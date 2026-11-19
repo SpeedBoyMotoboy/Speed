@@ -292,3 +292,16 @@ test('avulso: rota da mesma coleta paga só o que a rota cresce', () => {
   const ganhos = s.estadoMotoboy(turno()).rota.filter((p) => p.tipo === 'entrega').map((p) => p.repasse).sort((a, b) => a - b);
   assert.deepEqual(ganhos, [extra, 15]);
 });
+
+test('tarifa urgente: +40% (mínimo R$ 10) e 70% do extra para o motoboy', () => {
+  const { s } = montar();
+  s.salvarConfig({ preco_base: '25', preco_km: '2', preco_minimo: '25', preco_km_incluso: '10', repasse_base: '15', repasse_km: '1.5' }, 'teste');
+  const normal = s.cotar(P(0), P(5), { km: 8 });
+  const urg = s.cotar(P(0), P(5), { km: 8, urgente: true });
+  assert.equal(normal.valor, 25);
+  assert.equal(urg.valor, 35);
+  assert.equal(urg.repasse, 22);
+  const longe = s.cotar(P(0), P(20), { km: 30, urgente: true });
+  assert.equal(longe.valor, 91);
+  assert.equal(longe.repasse, 63.2);
+});

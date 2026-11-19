@@ -33,7 +33,7 @@ const CFG_NUM = {
   bike_max_km: [0.5, 50], capacidade: [1, 20], retencao_dias: [7, 730],
   diaria_valor: [0, 100000], almoco_valor: [0, 100000], almoco_min: [10, 180],
   mapa_lat: [-90, 90], mapa_lon: [-180, 180],
-  preco_base: [0, 100000], preco_km_incluso: [0, 1000], preco_km: [0, 1000], preco_minimo: [0, 100000], preco_zona_sul: [0, 100000],
+  preco_base: [0, 100000], preco_km_incluso: [0, 1000], preco_km: [0, 1000], preco_minimo: [0, 100000], preco_zona_sul: [0, 100000], urgente_pct: [0, 500], urgente_min: [0, 10000], urgente_repasse_pct: [0, 100],
   convocacao_auto_max: [0, 50], convocacao_auto_espera_min: [0, 120],
   urgente_prazo_min: [5, 600], robo_pausa_horas: [1, 168], repasse_pct: [0, 100], repasse_minimo: [0, 10000], repasse_base: [0, 10000], repasse_km: [0, 1000], oferta_raio_km: [0.5, 100],
   oferta_alerta_min: [1, 120], avulso_max_horas: [1, 24], pagamento_validade_min: [5, 1440],
@@ -208,7 +208,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     const depois = custoRota(mb, kmEmLinha(coleta, [...grupo, { lat: d.entrega_lat, lon: d.entrega_lon }]));
     return Math.round(Math.max(0, depois - antes) * 100) / 100;
   }
-  function cotar(coleta, entrega, { km: kmRota = null, servicoId = null, telefone = '' } = {}) {
+  function cotar(coleta, entrega, { km: kmRota = null, servicoId = null, telefone = '', urgente = false } = {}) {
     const servico = servicoId ? q('SELECT * FROM servicos WHERE id = ? AND ativo = 1').get(Number(servicoId)) || null : null;
     const nada = { km: null, valor: null, repasse: null, servico };
     if (coleta?.lat == null || entrega?.lat == null) return nada;
@@ -223,6 +223,10 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     const fixo = telefone ? q('SELECT preco_pct FROM clientes WHERE telefone = ? AND faturado = 1').get(telefone) : null;
     if (fixo) valor *= fixo.preco_pct / 100;
     const zonaSul = naZonaSul(coleta) || naZonaSul(entrega);
+    // Tarifa urgente: % a mais (com mínimo), antes do acréscimo de região. Parte do extra vai ao motoboy.
+    const extraUrg = urgente ? Math.round(Math.max(Number(c.urgente_min || 0), (valor * Number(c.urgente_pct || 0)) / 100) * 100) / 100 : 0;
+    const bonus = Math.round(((extraUrg * Number(c.urgente_repasse_pct || 0)) / 100) * 100) / 100;
+    valor += extraUrg;
     if (zonaSul) valor += Number(c.preco_zona_sul || 0);
     valor = Math.round(valor * 100) / 100;
     const pct = servico?.repasse_pct ?? Number(c.repasse_pct);
@@ -232,8 +236,8 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     const bruto = repBase > 0
       ? repBase + Math.max(0, km - Number(c.preco_km_incluso)) * Number(c.repasse_km) + (adicional * pct) / 100
       : (valor * pct) / 100;
-    const repasse = Math.round(Math.max(Number(c.repasse_minimo), bruto) * 100) / 100;
-    return { km, valor, repasse, servico, zona_sul: zonaSul };
+    const repasse = Math.round((Math.max(Number(c.repasse_minimo), bruto) + bonus) * 100) / 100;
+    return { km, valor, repasse, servico, zona_sul: zonaSul, urgente_extra: extraUrg, bonus };
   }
 
   // ------------------------------------------- tipos de serviço e clientes fixos
@@ -799,7 +803,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     return {
       cliente, requisito, descricao: txt(d?.descricao, 1200),
       telefone: normalizarTelefone(d?.cliente_telefone ?? d?.telefone),
-      urgente: d?.urgente ? 1 : 0, servicoId: d?.servico_id ? Number(d.servico_id) : null,
+      urgente: d?.urgente ? 1 : 0, tarifaUrgente: d?.tarifa_urgente === true, servicoId: d?.servico_id ? Number(d.servico_id) : null,
       km: Number.isFinite(Number(d?.km)) && Number(d?.km) > 0 ? Number(d.km) : null, email: txt(d?.email, 120),
       coleta: lerPonto(d?.coleta, 'coleta'), entrega: lerPonto(d?.entrega, 'entrega'),
     };
@@ -807,7 +811,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
   // `retida`: fica parada (sem despacho) até o admin aprovar ou o cliente confirmar.
   function inserirDemanda(v, origem, ator, { retida = false, pagamento = '', ia = null } = {}) {
     const completo = v.coleta.lat != null && v.entrega.lat != null;
-    const { km, valor, repasse, servico } = cotar(v.coleta, v.entrega, { km: v.km, servicoId: v.servicoId, telefone: v.telefone });
+    const { km, valor, repasse, servico, bonus } = cotar(v.coleta, v.entrega, { km: v.km, servicoId: v.servicoId, telefone: v.telefone, urgente: v.tarifaUrgente });
     const r = q(`INSERT INTO demandas (cliente, descricao, requisito, origem,
         coleta_endereco, coleta_lat, coleta_lon, coleta_contato,
         entrega_endereco, entrega_lat, entrega_lon, entrega_contato, status, criada_em,
@@ -821,6 +825,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
         v.urgente, servico?.nome || '', repasse, pagamento, v.email, agora(),
         ia ? (ia.aprovado ? 1 : 0) : null, ia ? txt(ia.aprovado ? ia.resumo : ia.motivos.join(' · '), 500) : null);
     const id = Number(r.lastInsertRowid);
+    if (bonus) q('UPDATE demandas SET bonus_urgente = ? WHERE id = ?').run(bonus, id);
     auditar(ator, 'demanda_criada', `#${id} ${v.cliente}`);
     emitir('demanda_criada', { demanda: q('SELECT * FROM demandas WHERE id = ?').get(id) });
     if (completo && !retida) despachar(id);
@@ -995,10 +1000,11 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
        coletada_em = NULL, coleta_dist_m = NULL, coleta_justificativa = NULL WHERE id = ?`)
       .run(turno.motoboy_id, turno.id, t, d.id);
     {
-      const atual = q('SELECT id, repasse, repasse_padrao, km, coleta_lat, coleta_lon, entrega_lat, entrega_lon FROM demandas WHERE id = ?').get(d.id);
+      const atual = q('SELECT id, repasse, repasse_padrao, bonus_urgente, km, coleta_lat, coleta_lon, entrega_lat, entrega_lon FROM demandas WHERE id = ?').get(d.id);
       const padrao = atual.repasse_padrao ?? atual.repasse;
       const mb = turno.tipo === 'avulso' ? q('SELECT repasse_base, repasse_km FROM motoboys WHERE id = ?').get(turno.motoboy_id) : null;
-      const proprio = mb ? (repasseNaRota(turno, atual, mb) ?? repasseProprio(mb, atual.km)) : null;
+      const semBonus = mb ? (repasseNaRota(turno, atual, mb) ?? repasseProprio(mb, atual.km)) : null;
+      const proprio = semBonus == null ? null : Math.round((semBonus + (atual.bonus_urgente || 0)) * 100) / 100;
       q('UPDATE demandas SET repasse = ?, repasse_padrao = ? WHERE id = ?').run(proprio ?? padrao, proprio != null ? padrao : null, d.id);
     }
     nova.forEach((p, i) => {
@@ -1184,12 +1190,13 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     // A diária não recebe por entrega: o valor do repasse só aparece para o avulso.
     const paga = (v) => (avulso ? v : null);
     const ofertas = q(`SELECT o.id, o.dist_km, d.id AS demanda_id, d.servico, d.descricao, d.coleta_endereco,
-        d.entrega_endereco, d.km, d.repasse, d.urgente, d.coleta_lat, d.coleta_lon, d.entrega_lat, d.entrega_lon
+        d.entrega_endereco, d.km, d.repasse, d.urgente, d.bonus_urgente, d.coleta_lat, d.coleta_lon, d.entrega_lat, d.entrega_lon
       FROM ofertas o JOIN demandas d ON d.id = o.demanda_id
       WHERE o.turno_id = ? AND o.status = 'aberta' AND d.status = 'aguardando' AND d.retida = 0
-      ORDER BY o.id`).all(turno.id).map(({ coleta_lat, coleta_lon, entrega_lat, entrega_lon, ...o }) => {
+      ORDER BY o.id`).all(turno.id).map(({ coleta_lat, coleta_lon, entrega_lat, entrega_lon, bonus_urgente, ...o }) => {
         const naRota = repasseNaRota(turno, { id: o.demanda_id, coleta_lat, coleta_lon, entrega_lat, entrega_lon }, m);
-        return { ...o, na_rota: naRota != null, repasse: paga(naRota ?? repasseProprio(m, o.km) ?? o.repasse) };
+        const proprio = naRota ?? repasseProprio(m, o.km);
+        return { ...o, na_rota: naRota != null, repasse: paga(proprio != null ? Math.round((proprio + (bonus_urgente || 0)) * 100) / 100 : o.repasse) };
       });
     const feitas = avulso ? q(`SELECT id, servico, entrega_endereco, entregue_em, repasse FROM demandas
         WHERE turno_id = ? AND status = 'entregue' ORDER BY entregue_em DESC`).all(turno.id) : [];
