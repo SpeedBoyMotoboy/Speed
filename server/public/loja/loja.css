@@ -24,3 +24,4 @@ button.mais { width: 58px; height: 58px; border-radius: 50%; padding: 0; backgro
 .linha-end .cresce { flex: 1; }
 .linha-end > b { white-space: nowrap; }
 .secao { margin-top: 1.2rem; }
+.regras { margin: .4rem 0 0; padding-left: 1.2rem; font-size: .92rem; color: var(--suave); } .regras li { margin: .3rem 0; }

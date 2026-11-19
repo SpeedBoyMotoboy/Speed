@@ -9,6 +9,15 @@ let info = { empresa: 'SpeedBoy', ativo: true, fechado: '', mapa: { lat: -20.335
 let paradas = []; // dados digitados de cada entrega
 let cotadas = null; // [{ coleta, entrega, km, valor, zona_sul }] na mesma ordem das paradas
 
+// Regras que a loja aceita no cadastro. Mudou o texto: aumente a versão para pedir o aceite de novo.
+const REGRAS_VERSAO = 1;
+const REGRAS = [
+  'Toda entrega precisa ser lançada aqui no sistema antes de sair com o motoboy. Cada entrega recebe um número de pedido.',
+  'Entrega entregue ao motoboy sem lançamento no sistema é de responsabilidade da loja: a SpeedBoy não responde por atraso, dano, extravio ou qualquer problema nela.',
+  'O motoboy é orientado a não sair com entrega que não esteja no sistema.',
+  'Informe quando a entrega for frágil, para o motoboy ser avisado.',
+];
+
 const TAMANHOS = [
   ['pequeno', 'Pequeno — cabe na mochila', 'qualquer'],
   ['medio', 'Médio — até 20 cm', 'qualquer'],
@@ -88,6 +97,7 @@ function telaLoja(mensagem = '') {
   const querNf = h('input', { id: 'quernf', type: 'checkbox', checked: loja?.nf !== false });
   const cnpj = campo('cnpj', 'CNPJ para a nota fiscal', { inputmode: 'numeric', maxlength: 18, placeholder: '00.000.000/0000-00', value: loja?.nf?.cnpj || '' });
   const emailNf = campo('emailnf', 'E-mail para receber a nota (opcional)', { type: 'email', inputmode: 'email', maxlength: 120, value: loja?.nf?.email || '' });
+  const aceite = h('input', { id: 'aceite', type: 'checkbox', checked: Boolean(loja?.aceite) });
   const blocoNf = h('div', { hidden: !querNf.checked }, cnpj.nos, emailNf.nos);
   querNf.addEventListener('change', () => { blocoNf.hidden = !querNf.checked; });
   const erro = h('div', { class: 'erro', role: 'alert' }, mensagem);
@@ -98,6 +108,7 @@ function telaLoja(mensagem = '') {
       if (nome.el.value.trim().length < 2) { erro.textContent = 'Informe o nome da loja.'; return; }
       if (telefone.el.value.replace(/\D/g, '').length < 10) { erro.textContent = 'Informe o WhatsApp com DDD.'; return; }
       if (saida.el.value.trim().length < 6) { erro.textContent = 'Escreva o endereço de saída com rua, número e bairro.'; return; }
+      if (!aceite.checked) { erro.textContent = 'Para continuar, marque que leu e aceita as regras.'; aceite.focus(); return; }
       let nf = false;
       if (querNf.checked) {
         const c = cnpj.el.value.replace(/\D/g, '');
@@ -109,7 +120,7 @@ function telaLoja(mensagem = '') {
       const mudou = saida.el.value.trim() !== (loja?.coleta?.endereco || '');
       loja = {
         nome: nome.el.value.trim(), telefone: telefone.el.value.trim(), fixa: fixa.checked,
-        falar: falar.el.value.trim(), retirar: retirar.el.value.trim(), nf,
+        falar: falar.el.value.trim(), retirar: retirar.el.value.trim(), nf, aceite: REGRAS_VERSAO,
         coleta: mudou ? { endereco: saida.el.value.trim() } : loja.coleta,
       };
       gravar(loja);
@@ -123,6 +134,9 @@ function telaLoja(mensagem = '') {
   h('h2', { class: 'secao' }, 'Nota fiscal'),
   h('label', { class: 'marcar', for: 'quernf' }, querNf, 'Precisa de nota fiscal das entregas'),
   blocoNf,
+  h('h2', { class: 'secao' }, 'Regras'),
+  h('ul', { class: 'regras' }, REGRAS.map((r) => h('li', null, r))),
+  h('label', { class: 'marcar', for: 'aceite' }, aceite, 'Li e aceito as regras'),
   h('button', { class: 'primario', type: 'submit' }, 'Salvar e continuar'), erro);
   moldura(h('h1', null, loja ? 'Dados da loja e coleta' : 'Primeiro acesso'),
     h('p', { class: 'nota' }, 'Preencha só uma vez. Fica guardado neste aparelho.'), form);
@@ -146,10 +160,11 @@ function cartaoParada(p, i, total, aoRemover) {
   const tam = h('select', { id: n('tam') }, TAMANHOS.map(([v, t]) => h('option', { value: v }, t)));
   tam.value = p.tamanho || 'pequeno';
   const troca = h('input', { id: n('troca'), type: 'checkbox', checked: Boolean(p.troca) });
+  const fragil = h('input', { id: n('fragil'), type: 'checkbox', checked: Boolean(p.fragil) });
   const ler = () => Object.assign(p, {
     endereco: end.el.value.trim(), compl: f.compl.el.value.trim(), refer: f.refer.el.value.trim(),
     recebe: f.recebe.el.value.trim(), tel: f.tel.el.value.trim(), instr: f.instr.el.value.trim(),
-    ate: f.ate.el.value, cobrar: f.cobrar.el.value.trim(), tamanho: tam.value, troca: troca.checked,
+    ate: f.ate.el.value, cobrar: f.cobrar.el.value.trim(), tamanho: tam.value, troca: troca.checked, fragil: fragil.checked,
   });
   const no = h('div', { class: 'cartao' },
     h('div', { class: 'cab-parada' }, h('h2', null, total > 1 ? `Entrega ${i + 1}` : 'Entrega'),
@@ -157,6 +172,7 @@ function cartaoParada(p, i, total, aoRemover) {
     h('label', { for: n('end') }, 'Endereço de entrega'), end.nos,
     f.compl.nos, f.refer.nos, f.recebe.nos, f.tel.nos, f.instr.nos, f.ate.nos,
     h('label', { for: n('tam') }, 'Tamanho da mercadoria'), tam,
+    h('label', { class: 'marcar', for: n('fragil') }, fragil, 'Frágil — motoboy avisado para ter cuidado'),
     h('label', { class: 'marcar', for: n('troca') }, troca, 'Troca / ida e volta (motoboy traz algo de volta para a loja)'),
     f.cobrar.nos);
   return { no, ler, foco: () => end.el.focus({ preventScroll: true }) };
@@ -300,6 +316,7 @@ function montarPedido(i) {
     p.ate && `⏰ Entregar até ${p.ate}`,
     p.troca && '🔁 TROCA / IDA E VOLTA: trazer de volta para a loja',
     p.cobrar && `💵 COBRAR NA ENTREGA: ${p.cobrar}`,
+    p.fragil && '⚠️ FRÁGIL: cuidado no transporte',
     `📏 ${nomeTam}`,
     loja.retirar && `🏬 Coleta: ${loja.retirar}`,
     p.refer && `📍 Referência: ${p.refer}`,
@@ -343,7 +360,7 @@ if (!info.ativo) {
   moldura(h('h1', null, 'Pedidos pelo site indisponíveis'), h('p', { class: 'nota' }, 'Fale com a gente pelo WhatsApp.'));
 } else if (info.fechado) {
   moldura(h('h1', null, 'Estamos fechados agora'), h('p', { class: 'nota' }, `Nosso horário de atendimento: ${info.fechado}.`));
-} else if (!loja?.coleta?.endereco || !loja.falar || loja.nf === undefined) {
+} else if (!loja?.coleta?.endereco || !loja.falar || loja.nf === undefined || loja.aceite !== REGRAS_VERSAO) {
   telaLoja();
 } else {
   telaEntregas();
