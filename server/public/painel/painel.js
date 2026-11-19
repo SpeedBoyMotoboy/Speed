@@ -1559,6 +1559,7 @@ async function desenharConfig() {
       opcao('robo_ativo', 'Robô atende e monta o pedido sozinho'),
       opcao('avisos_cliente', 'Avisar o cliente a cada etapa'),
       opcao('convocacao_obrigatoria', 'Motoboy de diária só entra se for convocado'),
+      opcao('atribuir_auto', 'Mandar a demanda direto para o motoboy de diária (desligado: toca para todos e quem aceitar leva)'),
       opcao('convocacao_auto', 'Convocar motoboy sozinho quando faltar gente'),
       num('convocacao_auto_max', 'Máx. de convocações automáticas por dia'),
       num('convocacao_auto_espera_min', 'Demanda esperando há (min) para convocar')),

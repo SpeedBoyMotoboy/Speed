@@ -47,7 +47,7 @@ const CFG_TXT = {
 const SIM_NAO = ['0', '1'];
 const CFG_OPC = {
   pedidos_site: SIM_NAO, rastreio_cliente: SIM_NAO, robo_ativo: SIM_NAO, avisos_cliente: SIM_NAO,
-  convocacao_auto: SIM_NAO, convocacao_obrigatoria: SIM_NAO, site_confirmacao: ['painel', 'whatsapp', 'pagamento', 'pix', 'nenhuma'], whats_provedor: PROVEDORES,
+  convocacao_auto: SIM_NAO, atribuir_auto: SIM_NAO, convocacao_obrigatoria: SIM_NAO, site_confirmacao: ['painel', 'whatsapp', 'pagamento', 'pix', 'nenhuma'], whats_provedor: PROVEDORES,
   ia_ativa: SIM_NAO, ia_modelo: MODELOS_IA, pix_tipo: TIPOS_CHAVE,
 };
 const CFG_HORA = ['atendimento_inicio', 'atendimento_fim'];
@@ -1250,7 +1250,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     let novas = 0;
     for (const cand of candidatos()) {
       const { turno, motoboy } = cand;
-      if (!d.urgente && turno.tipo !== 'avulso') continue;
+      if (!d.urgente && turno.tipo !== 'avulso' && b.atribuir_auto === '1') continue;
       if (cand.emAlmoco || turno.ult_lat == null || t - (turno.ult_contato ?? turno.inicio) > c.semSinalMs) continue;
       if (!atende(motoboy, d, c) || abertasDoTurno(turno.id) >= c.capacidade) continue;
       const dist = distRuaKm({ lat: turno.ult_lat, lon: turno.ult_lon }, { lat: d.coleta_lat, lon: d.coleta_lon });
@@ -1273,7 +1273,8 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     const d = q("SELECT * FROM demandas WHERE id = ? AND status = 'aguardando' AND retida = 0").get(demandaId);
     if (!d) return false;
     if (d.agendada_para && agora() < d.agendada_para - ANTECEDENCIA) return false; // agendada: só no quadro, para reserva
-    if (!d.urgente) {
+    // Atribuição automática desligada: a demanda toca na tela de todos e quem aceitar leva.
+    if (!d.urgente && cfgBruta().atribuir_auto === '1') {
       const escolhido = escolherMotoboy(d, candidatos().filter((x) => x.turno.tipo === 'diaria'), cfg());
       if (escolhido) {
         atribuir(d, escolhido.turno);

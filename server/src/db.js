@@ -275,6 +275,8 @@ export const CONFIG_PADRAO = {
   avisos_cliente: '1',
   admin_telefone: '',
   convocacao_auto: '0',
+  // '1' = demanda normal vai direto para o motoboy de diária mais perto; '0' = todo mundo recebe a oferta e quem aceitar leva.
+  atribuir_auto: '1',
   // Diária só entra no dia em que for convocada? '0' = entra quando quiser (como o avulso, mas com turno fixo).
   convocacao_obrigatoria: '0',
   convocacao_auto_max: '3',
