@@ -360,7 +360,7 @@ test('central finaliza a entrega com motivo', () => {
   assert.throws(() => s.finalizarDemanda(id, '', 'admin:teste'), /finalizada/);
 });
 
-const TABELA = { preco_base: '25', preco_km: '2', preco_minimo: '25', preco_km_incluso: '10', repasse_base: '15', repasse_km: '1.5' };
+const TABELA = { preco_base: '25', preco_km: '2', preco_minimo: '25', preco_km_incluso: '10', repasse_base: '15', repasse_km: '1.5', tam_g_pct: '20', tam_gg_pct: '40' };
 
 test('tamanho G/GG: % a mais sobre o base, 60% do extra ao motoboy, soma com a urgente', () => {
   const { s } = montar();

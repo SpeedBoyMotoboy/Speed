@@ -246,8 +246,8 @@ export const CONFIG_PADRAO = {
   urgente_min: '10',
   urgente_repasse_pct: '70',
   // Tamanho da mercadoria: % a mais para G (até 40 cm) e GG (mais de 40 cm); parte do extra que vai ao motoboy.
-  tam_g_pct: '20',
-  tam_gg_pct: '40',
+  tam_g_pct: '10',
+  tam_gg_pct: '20',
   tam_repasse_pct: '60',
   // Corrida longa (coleta → entrega): acima de cada limite, o km inteiro paga o valor da faixa;
   // o motoboy avulso leva um % do valor total da corrida.
