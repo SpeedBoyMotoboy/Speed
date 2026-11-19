@@ -269,3 +269,26 @@ test('entrada automática: endereço em texto vira ponto; sem resultado fica par
   assert.equal(s.chaveApiValida(chave), true);
   assert.equal(s.chaveApiValida('errada-errada-errada-errada'), false);
 });
+
+test('avulso: rota da mesma coleta paga só o que a rota cresce', () => {
+  const { s, novoMotoboy, posicao, demanda } = montar();
+  s.salvarConfig({ preco_base: '25', preco_km: '2', preco_minimo: '25', repasse_base: '15', repasse_km: '1.5', preco_km_incluso: '10' }, 'teste');
+  novoMotoboy('Bia', '11999990009', { tipo: 'avulso' });
+  const { token } = s.loginMotoboy({ telefone: '11999990009', pin: '123456', aceito_termo: true, dispositivo: 'b', origem: 'app' }, '1.1.1.1');
+  const turno = () => s.autenticarMotoboy(token);
+  posicao(token, P(0));
+  const id = (x) => (typeof x === 'object' ? x.id : x);
+  const d1 = id(demanda(0, 5));
+  const o1 = s.estadoMotoboy(turno()).ofertas.find((o) => o.demanda_id === d1);
+  assert.equal(o1.na_rota, false);
+  s.responderOferta(turno(), { oferta_id: o1.id, acao: 'aceitar' });
+  const d2 = id(demanda(0, 8));
+  const o2 = s.estadoMotoboy(turno()).ofertas.find((o) => o.demanda_id === d2);
+  // rota coleta→5→8: 10,8 km = R$ 16,20; só a primeira (6,75 km) = R$ 15. A segunda soma R$ 1,20.
+  assert.equal(o2.na_rota, true);
+  assert.ok(Math.abs(o2.repasse - 1.2) < 0.1, `extra da rota ${o2.repasse}`);
+  const extra = o2.repasse;
+  s.responderOferta(turno(), { oferta_id: o2.id, acao: 'aceitar' });
+  const ganhos = s.estadoMotoboy(turno()).rota.filter((p) => p.tipo === 'entrega').map((p) => p.repasse).sort((a, b) => a - b);
+  assert.deepEqual(ganhos, [extra, 15]);
+});

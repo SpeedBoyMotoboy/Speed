@@ -172,6 +172,42 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     const porKm = m.repasse_km ?? Number(c.repasse_km);
     return Math.round((base + Math.max(0, Number(km) - Number(c.preco_km_incluso)) * porKm) * 100) / 100;
   }
+  // Rota da mesma coleta (motoboy avulso): ganha pelo km total da rota, coleta → entregas em linha
+  // (sempre a entrega mais perta de onde ele está). Entrega que entra numa rota aberta paga só o que a rota cresce.
+  const COLETA_MESMA_M = 150;
+  function kmEmLinha(origem, destinos) {
+    let atual = origem;
+    let km = 0;
+    const resto = [...destinos];
+    while (resto.length) {
+      let i = 0;
+      let melhor = Infinity;
+      resto.forEach((p, j) => { const x = distRuaKm(atual, p); if (x < melhor) { melhor = x; i = j; } });
+      km += melhor;
+      atual = resto.splice(i, 1)[0];
+    }
+    return km;
+  }
+  function custoRota(mb, km) {
+    const c = cfgBruta();
+    const base = mb?.repasse_base ?? Number(c.repasse_base);
+    const porKm = mb?.repasse_km ?? Number(c.repasse_km);
+    return base + Math.max(0, km - Number(c.preco_km_incluso)) * porKm;
+  }
+  // d: demanda (id, coleta_lat/lon, entrega_lat/lon). Sem rota aberta da mesma coleta, devolve null.
+  function repasseNaRota(turno, d, mb) {
+    if (!turno || turno.tipo !== 'avulso' || d.coleta_lat == null || d.entrega_lat == null) return null;
+    if (!Number(cfgBruta().repasse_base) && mb?.repasse_base == null) return null; // sem tabela de repasse
+    const coleta = { lat: d.coleta_lat, lon: d.coleta_lon };
+    const grupo = q(`SELECT coleta_lat, coleta_lon, entrega_lat AS lat, entrega_lon AS lon FROM demandas
+        WHERE turno_id = ? AND id <> ? AND status = 'atribuida' AND coleta_lat IS NOT NULL AND entrega_lat IS NOT NULL`)
+      .all(turno.id, d.id)
+      .filter((g) => distM(coleta, { lat: g.coleta_lat, lon: g.coleta_lon }) <= COLETA_MESMA_M);
+    if (!grupo.length) return null;
+    const antes = custoRota(mb, kmEmLinha(coleta, grupo));
+    const depois = custoRota(mb, kmEmLinha(coleta, [...grupo, { lat: d.entrega_lat, lon: d.entrega_lon }]));
+    return Math.round(Math.max(0, depois - antes) * 100) / 100;
+  }
   function cotar(coleta, entrega, { km: kmRota = null, servicoId = null, telefone = '' } = {}) {
     const servico = servicoId ? q('SELECT * FROM servicos WHERE id = ? AND ativo = 1').get(Number(servicoId)) || null : null;
     const nada = { km: null, valor: null, repasse: null, servico };
@@ -959,10 +995,10 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
        coletada_em = NULL, coleta_dist_m = NULL, coleta_justificativa = NULL WHERE id = ?`)
       .run(turno.motoboy_id, turno.id, t, d.id);
     {
-      const atual = q('SELECT repasse, repasse_padrao, km FROM demandas WHERE id = ?').get(d.id);
+      const atual = q('SELECT id, repasse, repasse_padrao, km, coleta_lat, coleta_lon, entrega_lat, entrega_lon FROM demandas WHERE id = ?').get(d.id);
       const padrao = atual.repasse_padrao ?? atual.repasse;
       const mb = turno.tipo === 'avulso' ? q('SELECT repasse_base, repasse_km FROM motoboys WHERE id = ?').get(turno.motoboy_id) : null;
-      const proprio = repasseProprio(mb, atual.km);
+      const proprio = mb ? (repasseNaRota(turno, atual, mb) ?? repasseProprio(mb, atual.km)) : null;
       q('UPDATE demandas SET repasse = ?, repasse_padrao = ? WHERE id = ?').run(proprio ?? padrao, proprio != null ? padrao : null, d.id);
     }
     nova.forEach((p, i) => {
@@ -1148,10 +1184,13 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     // A diária não recebe por entrega: o valor do repasse só aparece para o avulso.
     const paga = (v) => (avulso ? v : null);
     const ofertas = q(`SELECT o.id, o.dist_km, d.id AS demanda_id, d.servico, d.descricao, d.coleta_endereco,
-        d.entrega_endereco, d.km, d.repasse, d.urgente
+        d.entrega_endereco, d.km, d.repasse, d.urgente, d.coleta_lat, d.coleta_lon, d.entrega_lat, d.entrega_lon
       FROM ofertas o JOIN demandas d ON d.id = o.demanda_id
       WHERE o.turno_id = ? AND o.status = 'aberta' AND d.status = 'aguardando' AND d.retida = 0
-      ORDER BY o.id`).all(turno.id).map((o) => ({ ...o, repasse: paga(repasseProprio(m, o.km) ?? o.repasse) }));
+      ORDER BY o.id`).all(turno.id).map(({ coleta_lat, coleta_lon, entrega_lat, entrega_lon, ...o }) => {
+        const naRota = repasseNaRota(turno, { id: o.demanda_id, coleta_lat, coleta_lon, entrega_lat, entrega_lon }, m);
+        return { ...o, na_rota: naRota != null, repasse: paga(naRota ?? repasseProprio(m, o.km) ?? o.repasse) };
+      });
     const feitas = avulso ? q(`SELECT id, servico, entrega_endereco, entregue_em, repasse FROM demandas
         WHERE turno_id = ? AND status = 'entregue' ORDER BY entregue_em DESC`).all(turno.id) : [];
     return {
