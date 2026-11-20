@@ -127,6 +127,7 @@ function desenhar(p) {
         `${p.motoboy.nome} (${p.motoboy.veiculo === 'bike' ? 'bike' : 'moto'}) está com o seu pedido.`,
         p.paradas_antes > 0 ? ` Ele tem ${p.paradas_antes} parada(s) antes da sua.` : '',
       ].join('')
+        : p.acima_teto && !p.pix ? 'Estamos confirmando o valor da entrega. O Pix aparece aqui em instantes.'
         : p.pix?.comprovante ? 'Comprovante recebido. Estamos conferindo o pagamento para liberar o motoboy.'
           : p.pix?.manual ? `Pague ${reais(p.valor)} por Pix e envie o comprovante para liberar o motoboy.`
             : p.pix ? `Pague ${reais(p.valor)} por Pix até ${hora(p.pix.expira)} para liberar o motoboy.`

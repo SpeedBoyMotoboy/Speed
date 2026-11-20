@@ -165,8 +165,7 @@ function cartaoEnvio(b, i, total) {
   const tam = h('select', { id: n('tam') }, TAMANHOS.map(([v, t]) => h('option', { value: v }, t)));
   tam.value = b.tamanho || 'pequeno';
   const hor = campoHorario(b, n);
-  const paga = h('input', { type: 'checkbox', id: n('paga'), checked: Boolean(b.cliente_paga) });
-  b.ler = () => Object.assign(b, { recebe: quem.value.trim(), endereco: end.el.value.trim(), fone: fone.value.trim(), oque: oque.value.trim(), tamanho: tam.value, cliente_paga: paga.checked }, hor.ler());
+  b.ler = () => Object.assign(b, { recebe: quem.value.trim(), endereco: end.el.value.trim(), fone: fone.value.trim(), oque: oque.value.trim(), tamanho: tam.value }, hor.ler());
   return h('div', { class: 'cartao' },
     h('div', { class: 'cab-parada' }, h('b', null, total > 1 ? `Entrega ${i + 1}` : 'Entrega'),
       total > 1 && h('button', { type: 'button', class: 'pequeno', onclick: () => { envios.forEach((x) => x.ler()); envios.splice(i, 1); telaLoja(); } }, 'Remover')),
@@ -174,12 +173,129 @@ function cartaoEnvio(b, i, total) {
     h('label', { for: n('end') }, 'Endereço de entrega (com número e apartamento)'), end.nos,
     h('label', { for: n('fone') }, 'Telefone de quem recebe'), fone,
     h('label', { for: n('oque') }, 'O que vai'), oque,
-    h('label', { for: n('tam') }, 'Tamanho'), tam, hor.nos,
-    h('label', { class: 'marcar' }, paga, ' O cliente final paga o frete (Pix antes da entrega)'),
-    h('div', { class: 'nota' }, 'Marcado: você recebe um link para mandar ao cliente. Ele paga por Pix e o motoboy só sai depois do pagamento conferido. Desmarcado: entra no fechamento da loja.'));
+    h('label', { for: n('tam') }, 'Tamanho'), tam, hor.nos);
+}
+
+// ── Entrega paga pelo cliente: a loja diz as mercadorias e manda um link; o cliente completa e paga ──
+let clientePaga = false; // começa sempre desmarcado
+let convites = [];
+const TAM_VOL = [['p', 'P', 'cabe na mão'], ['m', 'M', 'caixa de sapato'], ['g', 'G', 'até 40 cm'], ['gg', 'GG', 'mais de 40 cm']];
+
+function contadorVolumes(b) {
+  b.volumes = b.volumes || { p: 0, m: 0, g: 0, gg: 0 };
+  const resumo = h('div', { class: 'nota' });
+  const atualizar = () => {
+    const total = TAM_VOL.reduce((s, [k]) => s + b.volumes[k], 0);
+    const maior = [...TAM_VOL].reverse().find(([k]) => b.volumes[k] > 0);
+    resumo.textContent = total ? `Total: ${total} volume(s) · maior: ${maior[1]}` : 'Toque no + do tamanho de cada mercadoria.';
+  };
+  const linhas = TAM_VOL.map(([k, t, dica]) => {
+    const n = h('b', { class: 'qtd' }, String(b.volumes[k]));
+    const mudar = (d) => { b.volumes[k] = Math.max(0, Math.min(99, b.volumes[k] + d)); n.textContent = String(b.volumes[k]); atualizar(); };
+    return h('div', { class: 'contador' },
+      h('span', { class: 'cresce' }, h('b', null, t), ' ', h('span', { class: 'nota' }, `(${dica})`)),
+      h('button', { type: 'button', class: 'pequeno', 'aria-label': `menos ${t}`, onclick: () => mudar(-1) }, '–'), n,
+      h('button', { type: 'button', class: 'pequeno', 'aria-label': `mais ${t}`, onclick: () => mudar(1) }, '+'));
+  });
+  atualizar();
+  return [h('label', null, 'Quantas mercadorias?'), ...linhas, resumo];
+}
+
+function cartaoConvite(b, i, total) {
+  const n = (x) => `c${i}-${x}`;
+  const quem = h('input', { id: n('quem'), maxlength: 80, list: 'lista-dest', placeholder: 'Se souber', value: b.recebe || '' });
+  const end = campoEndereco(n('end'), b.endereco);
+  const fone = h('input', { id: n('fone'), maxlength: 30, inputmode: 'tel', placeholder: 'Se souber', value: b.fone || '' });
+  const oque = h('input', { id: n('oque'), maxlength: 300, placeholder: 'Ex.: 1 edredom e 2 almofadas (opcional)', value: b.oque || '' });
+  b.ler = () => Object.assign(b, { recebe: quem.value.trim(), endereco: end.el.value.trim(), fone: fone.value.trim(), oque: oque.value.trim() });
+  return h('div', { class: 'cartao' },
+    h('div', { class: 'cab-parada' }, h('b', null, total > 1 ? `Cliente ${i + 1}` : 'Cliente'),
+      total > 1 && h('button', { type: 'button', class: 'pequeno', onclick: () => { convites.forEach((x) => x.ler()); convites.splice(i, 1); telaLoja(); } }, 'Remover')),
+    ...contadorVolumes(b),
+    h('label', { for: n('oque') }, 'O que vai'), oque,
+    h('div', { class: 'nota' }, 'Se souber os dados do cliente, já preencha. Se não, deixe em branco: ele mesmo preenche no link.'),
+    h('label', { for: n('quem') }, 'Nome do cliente'), quem,
+    h('label', { for: n('end') }, 'Endereço de entrega'), end.nos,
+    h('label', { for: n('fone') }, 'WhatsApp do cliente'), fone);
+}
+
+function telaLinks(feitos) {
+  moldura(
+    h('h1', null, feitos.length > 1 ? `${feitos.length} links prontos` : 'Link pronto'),
+    h('p', { class: 'nota' }, 'Mande para o cliente. Ele completa os dados, escolhe na rota ou urgente, vê o valor e paga por Pix. O motoboy só busca depois do pagamento confirmado.'),
+    feitos.map((f, i) => {
+      const texto = `Olá! Seu pedido está pronto. Para combinar a entrega com a SpeedBoy, é só abrir este link, conferir o endereço e escolher como prefere receber: ${f.link}`;
+      const copiar = h('button', { type: 'button', class: 'primario', onclick: async () => { try { await navigator.clipboard.writeText(f.link); copiar.textContent = 'Link copiado ✓'; } catch { /* copia manual */ } } }, 'Copiar link');
+      const zap = f.fone ? `https://wa.me/55${f.fone.replace(/\D/g, '').replace(/^55/, '')}?text=${encodeURIComponent(texto)}` : `https://wa.me/?text=${encodeURIComponent(texto)}`;
+      return h('div', { class: 'aviso-quarta' },
+        h('b', null, `${feitos.length > 1 ? `Cliente ${i + 1}` : 'Cliente'}${f.recebe ? ` · ${f.recebe}` : ''} · ${f.volumes}`),
+        h('input', { readonly: true, value: f.link, onfocus: (ev) => ev.target.select() }),
+        h('div', { class: 'botoes' }, copiar, h('a', { class: 'botao', target: '_blank', rel: 'noopener noreferrer', href: zap }, 'Mandar pelo WhatsApp')));
+    }),
+    h('button', { type: 'button', class: 'primario', onclick: () => { clientePaga = false; telaLoja(); } }, 'Fazer outra entrega'));
+}
+
+function interruptorClientePaga() {
+  const caixa = h('input', { type: 'checkbox', id: 'cliente-paga', checked: clientePaga });
+  caixa.onchange = () => {
+    if (clientePaga) convites.forEach((b) => b.ler?.()); else envios.forEach((b) => b.ler?.());
+    clientePaga = caixa.checked;
+    telaLoja();
+  };
+  return h('label', { class: 'marcar destaque' }, caixa, h('b', null, ' Entrega paga pelo cliente'));
+}
+
+function telaConvite(mensagem = '') {
+  if (!convites.length) convites.push({});
+  const quem = h('input', { id: 'quem', maxlength: 80, placeholder: 'Seu nome', value: lerJson(CHAVE_NOME, '') });
+  const erro = h('div', { class: 'erro', role: 'alert' }, mensagem);
+  const gerar = h('button', { type: 'submit', class: 'primario' }, convites.length > 1 ? 'Gerar links para os clientes' : 'Gerar link para o cliente');
+  const lista = h('datalist', { id: 'lista-dest' }, Object.keys(destinos()).map((f) => h('option', { value: f })));
+  const form = h('form', {
+    onsubmit: async (ev) => {
+      ev.preventDefault();
+      erro.textContent = '';
+      convites.forEach((b) => b.ler());
+      const vazio = convites.findIndex((b) => !Object.values(b.volumes || {}).some((x) => x > 0));
+      if (vazio >= 0) { erro.textContent = `Toque no + do tamanho das mercadorias (cliente ${vazio + 1}).`; return; }
+      if (quem.value.trim().length < 2) { erro.textContent = 'Informe seu nome.'; quem.focus(); return; }
+      gravarJson(CHAVE_NOME, quem.value.trim());
+      gerar.disabled = true;
+      gerar.textContent = 'Gerando…';
+      const feitos = [];
+      try {
+        for (const b of convites) {
+          const r = await api('POST', '/api/publico/empresa/convites', {
+            k: chave, autoriza: quem.value.trim(), volumes: b.volumes, oque: b.oque, recebe: b.recebe, fone: b.fone, endereco: b.endereco,
+          });
+          feitos.push({ ...r, link: r.link.startsWith('http') ? r.link : `${location.origin}${r.link}`, recebe: b.recebe, fone: b.fone });
+        }
+        convites = [];
+        telaLinks(feitos);
+      } catch (e) {
+        erro.textContent = feitos.length ? `${feitos.length} link(s) gerado(s). Os outros deram erro: ${e.message}` : e.message;
+        gerar.disabled = false;
+        gerar.textContent = 'Gerar link para o cliente';
+      }
+    },
+  },
+  h('h1', null, 'Nova entrega'),
+  h('div', { class: 'cartao' },
+    interruptorClientePaga(),
+    h('div', { class: 'nota' }, 'O motoboy busca em:'), h('b', null, empresa.coleta?.endereco || '—'),
+    h('div', { class: 'nota' }, 'O cliente recebe um link, completa os dados, escolhe na rota ou urgente e paga por Pix. Não entra no fechamento da loja.')),
+  convites.map((b, i, l) => cartaoConvite(b, i, l.length)),
+  h('div', { class: 'linha-mais', role: 'button', tabindex: 0, onclick: () => { convites.forEach((b) => b.ler()); convites.push({}); telaLoja(); } },
+    h('span', { class: 'mais' }, '+'), 'Outro cliente'),
+  h('div', { class: 'cartao' },
+    h('label', { for: 'quem' }, 'Quem está pedindo'), quem,
+    erro, gerar),
+  lista);
+  moldura(form);
 }
 
 function telaLoja(mensagem = '') {
+  if (clientePaga) return telaConvite(mensagem);
   if (!envios.length) envios.push({});
   const quem = h('input', { id: 'quem', maxlength: 80, placeholder: 'Seu nome', value: lerJson(CHAVE_NOME, '') });
   const erro = h('div', { class: 'erro', role: 'alert' }, mensagem);
@@ -206,7 +322,7 @@ function telaLoja(mensagem = '') {
         for (const b of envios) {
           feitos.push(await api('POST', '/api/publico/empresa/pedidos', {
             k: chave, recebe: b.recebe, fone: b.fone, oque: b.oque, tamanho: b.tamanho, autoriza: quem.value.trim(), ...corpoHorario(b),
-            entrega: { endereco: b.endereco }, cliente_paga: b.cliente_paga === true,
+            entrega: { endereco: b.endereco },
           }));
         }
         envios = [];
@@ -220,6 +336,7 @@ function telaLoja(mensagem = '') {
   },
   h('h1', null, 'Nova entrega'),
   h('div', { class: 'cartao' },
+    interruptorClientePaga(),
     h('div', { class: 'nota' }, 'O motoboy busca em:'), h('b', null, empresa.coleta?.endereco || '—'),
     h('div', { class: 'nota' }, `Cada entrega recebe um número e entra no fechamento ${empresa.fechamento === 'semanal' ? 'semanal' : 'do mês'} da ${empresa.nome}. Quem recebe não paga nada.`),
     h('button', { type: 'button', class: 'pequeno', onclick: () => telaEntregas() }, 'Ver minhas entregas e total')),

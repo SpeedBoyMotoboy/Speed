@@ -405,6 +405,113 @@ export function criarAtendimento({
     avisarAdmin(linhas.filter(Boolean).join('\n'));
   }
 
+  // -------------------------- Convite: a loja manda um link e o cliente final preenche e paga o frete
+  // A loja diz as mercadorias (e, se souber, o endereço). O cliente completa, escolhe rota ou urgente, vê o valor
+  // e paga por Pix. O pedido nasce retido e só sai depois do pagamento conferido.
+  function lerConvite(c) {
+    const codigo = txt(c, 40);
+    const cv = codigo.length >= 10 ? q('SELECT * FROM convites WHERE codigo = ?').get(codigo) : null;
+    if (!cv) throw new Erro(404, 'link_invalido', 'Este link não está mais disponível. Fale com a loja, por favor.');
+    const cli = q('SELECT * FROM clientes WHERE id = ? AND faturado = 1').get(cv.cliente_id);
+    const cf = cli ? coletaFixa(cli) : null;
+    if (!cli || !cf) throw new Erro(404, 'link_invalido', 'Este link não está mais disponível. Fale com a loja, por favor.');
+    return { cv, cli, cf, volumes: JSON.parse(cv.volumes || '{}') };
+  }
+  function criarConvite(dados, ip) {
+    limitar(`convite:${ip}`, 60, 60 * MIN);
+    const cli = empresaDaChave(dados?.k);
+    if (!coletaFixa(cli)) throw new Erro(422, 'sem_coleta', 'Esta opção é para lojas com endereço de retirada cadastrado. Fale com a SpeedBoy.');
+    if (!cfgBruta().pix_chave) throw new Erro(422, 'sem_pix', 'O pagamento pelo cliente ainda não está disponível. Fale com a SpeedBoy.');
+    const volumes = servico.lerVolumes(dados?.volumes);
+    if (!volumes) throw new Erro(422, 'sem_volumes', 'Diga quantas mercadorias vão (toque no + do tamanho).');
+    const autoriza = txt(dados?.autoriza, 80);
+    if (autoriza.length < 2) throw new Erro(422, 'nome_invalido', 'Informe seu nome (quem está pedindo).');
+    const codigo = crypto.randomBytes(9).toString('base64url');
+    q(`INSERT INTO convites (codigo, cliente_id, volumes, oque, recebe, fone, endereco, autoriza, criado_em) VALUES (?,?,?,?,?,?,?,?,?)`)
+      .run(codigo, cli.id, JSON.stringify(volumes), txt(dados?.oque, 300), txt(dados?.recebe, 80), txt(dados?.fone, 30), txt(dados?.endereco, 200), autoriza, agora());
+    return { codigo, link: `${base()}/convite/?c=${codigo}`, volumes: servico.textoVolumes(volumes) };
+  }
+  function convitePublico(c) {
+    const { cv, cli, cf, volumes } = lerConvite(c);
+    if (cv.demanda_id) {
+      const d = q('SELECT codigo FROM demandas WHERE id = ?').get(cv.demanda_id);
+      return { feito: true, pedido: d?.codigo || null };
+    }
+    const k = cfgBruta();
+    return {
+      loja: cli.nome, coleta: txt(cf.endereco, 200), volumes, volumes_texto: servico.textoVolumes(volumes), oque: cv.oque,
+      recebe: cv.recebe, fone: cv.fone, endereco: cv.endereco,
+      urgente: { pct: Number(k.urgente_pct || 0), min: Number(k.urgente_min || 0), prazo_min: Number(k.urgente_prazo_min || 0) },
+    };
+  }
+  async function cotarConvite(dados, ip) {
+    limitar(`cotar:${ip}`, 30, 15 * MIN);
+    const { cv, cli, cf, volumes } = lerConvite(dados?.c);
+    if (cv.demanda_id) throw new Erro(409, 'ja_feito', 'Este pedido já foi feito.');
+    const coleta = await pontoDaLoja(cli, cf);
+    const entrega = lerPontoPublico(dados?.entrega);
+    if (entrega.endereco.length < 6) throw new Erro(422, 'endereco_invalido', 'Escreva o endereço com rua, número e bairro, por favor.');
+    await acharNoMapa(entrega);
+    if (entrega.lat == null) throw new Erro(422, 'endereco_nao_achado', 'Não encontramos esse endereço no mapa. Confira a rua, o número e o bairro, por favor.');
+    const km = await distancia(coleta, entrega);
+    const rota = servico.cotar(coleta, entrega, { km, volumes });
+    const urg = servico.cotar(coleta, entrega, { km, volumes, urgente: true });
+    return { entrega, km: rota.km, valor_rota: rota.valor, valor_urgente: urg.valor, acima_teto: Boolean(rota.acima_teto), longa: Boolean(rota.longa) };
+  }
+  async function pedidoConvite(dados, ip) {
+    limitar(`pedir:${ip}`, 8, 60 * MIN);
+    const { cv, cli, cf, volumes } = lerConvite(dados?.c);
+    if (cv.demanda_id) {
+      const d = q('SELECT codigo FROM demandas WHERE id = ?').get(cv.demanda_id);
+      return { codigo: d?.codigo, repetido: true };
+    }
+    const recebe = txt(dados?.recebe, 80);
+    if (recebe.length < 2) throw new Erro(422, 'recebedor_invalido', 'Diga o nome de quem vai receber, por favor.');
+    const fone = normalizarTelefone(dados?.fone);
+    if (!fone) throw new Erro(422, 'telefone_invalido', 'Informe um WhatsApp com DDD para o motoboy falar com quem recebe.');
+    const doc = docFiscal(dados?.nf_doc);
+    const nfNome = txt(dados?.nf_nome, 80);
+    if (!doc) throw new Erro(422, 'doc_invalido', 'Confira o CPF ou CNPJ para a nota fiscal, por favor.');
+    if (nfNome.length < 3) throw new Erro(422, 'nome_invalido', 'Informe o nome completo para a nota fiscal, por favor.');
+    const urgente = dados?.urgente === true;
+    const como = txt(dados?.instrucoes, 300);
+    const entrega = lerPontoPublico(dados?.entrega);
+    if (entrega.endereco.length < 6) throw new Erro(422, 'endereco_invalido', 'Escreva o endereço com rua, número e bairro, por favor.');
+    await acharNoMapa(entrega);
+    if (entrega.lat == null) throw new Erro(422, 'endereco_nao_achado', 'Não encontramos esse endereço no mapa. Confira a rua, o número e o bairro, por favor.');
+    entrega.contato = `${recebe} · ${fone}`;
+    const coleta = await pontoDaLoja(cli, cf);
+    const km = await distancia(coleta, entrega);
+    const grande = volumes.g > 0 || volumes.gg > 0;
+    const descricao = [
+      `🏬 Cliente da ${cli.nome}`, cf.obs && txt(cf.obs, 200), `📦 Volumes: ${servico.textoVolumes(volumes)}`, cv.oque && `📦 ${cv.oque}`,
+      cv.autoriza && `✅ Pedido por ${cv.autoriza} (${cli.nome}).`, como && `📍 Na entrega: ${como}`,
+      '💳 Frete pago pelo cliente final por Pix (antes da coleta): não cobrar na entrega.',
+    ].filter(Boolean).join(' · ');
+    const d = servico.criarPedido({
+      cliente: cli.nome, telefone: cli.telefone, descricao, requisito: grande ? 'bau' : 'qualquer', volumes,
+      urgente, tarifa_urgente: urgente, km, coleta, entrega, tabela_publica: true,
+    }, 'empresa', { retida: true, pagamento: '' });
+    q('UPDATE demandas SET paga_final = 1 WHERE id = ?').run(d.id);
+    servico.gravarNota(d.id, doc, nfNome);
+    q('UPDATE convites SET demanda_id = ? WHERE id = ?').run(d.id, cv.id);
+    q('UPDATE clientes SET pedidos = pedidos + 1 WHERE id = ?').run(cli.id);
+    const novo = q('SELECT * FROM demandas WHERE id = ?').get(d.id);
+    if (novo.valor != null && !novo.acima_teto) {
+      const c = cfgBruta();
+      const codigo = brCode({ chave: c.pix_chave, nome: c.pix_nome || c.empresa_nome, cidade: c.pix_cidade, valor: novo.valor, txid: `PEDIDO${d.id}` });
+      servico.registrarPix(d.id, { pagId: '', pix: codigo, qr: '', expira: agora() + 24 * 60 * MIN });
+    }
+    avisarAdmin([
+      `🏬💰 Cliente da ${cli.nome} pediu a entrega #${d.id}${urgente ? ' ⚡URGENTE' : ''} — frete pago por ele${novo.valor != null ? ` (${reais(novo.valor)})` : ''}.`,
+      `📦 ${servico.textoVolumes(volumes)} · 🏁 ${novo.entrega_endereco} (${entrega.contato})`,
+      `🧾 Nota: ${nfNome} · ${doc.length === 11 ? 'CPF' : 'CNPJ'} ${docFmt(doc)}`,
+      novo.acima_teto ? `⚠️ Muitos volumes grandes (passou do teto). Confirme o valor no painel (Fechar pedido): o Pix vai para o cliente depois.`
+        : 'Retida até o Pix cair e o comprovante conferir. Libera sozinha.',
+    ].join('\n'));
+    return { codigo: d.codigo, valor: novo.valor, acima_teto: Boolean(novo.acima_teto) };
+  }
+
   // ------------------------------------- Pix conferido sozinho (aviso do banco + comprovante)
   // Regra: o pedido só é liberado quando as DUAS coisas existem: o comprovante enviado para aquele pedido
   // e um Pix do mesmo valor que caiu na conta (aviso do banco lido no celular do dono). Cada Pix vale para um pedido só.
@@ -835,6 +942,7 @@ export function criarAtendimento({
     const d = servico.criarPedido({
       cliente: cli.nome, telefone: cli.telefone, descricao, requisito: grande ? 'bau' : 'qualquer', tamanho: dados?.tamanho,
       urgente: false, km, email: cli.email, coleta, entrega, hora_tipo: dados?.hora_tipo, hora: dados?.hora, agendada_para: dados?.agendada_para,
+      tabela_publica: clientePaga,
     }, 'empresa', { retida: clientePaga ? true : !cli.libera_direto, pagamento: clientePaga ? '' : 'faturado' });
     q('UPDATE clientes SET pedidos = pedidos + 1 WHERE id = ?').run(cli.id);
     if (clientePaga) {
@@ -1129,7 +1237,7 @@ export function criarAtendimento({
   return {
     avisarDono: (texto) => { try { avisarAdmin(texto); } catch { /* aviso é cortesia */ } },
     definirOrigem, receber, segredoConfere, webhookAutorizado, despacharSaida, rotina,
-    limitarPublico, infoPublica, sugerirPublico, cotarPublico, pedidoSite, pedidoVivo, empresaPublica, lojaPublica, pedidoEmpresa, entregasEmpresa, webhookPagamento, expirarPagamentos, receberPix, comprovantePublico, notaPublica,
+    limitarPublico, infoPublica, sugerirPublico, cotarPublico, pedidoSite, pedidoVivo, empresaPublica, lojaPublica, pedidoEmpresa, entregasEmpresa, webhookPagamento, expirarPagamentos, receberPix, comprovantePublico, notaPublica, criarConvite, convitePublico, cotarConvite, pedidoConvite,
     resumo, responder, modoConversa, testar, testarIA, analisarArquivos, analisarConversa, listarAnalises,
   };
 }

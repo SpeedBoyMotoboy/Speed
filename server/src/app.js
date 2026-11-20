@@ -202,6 +202,10 @@ export function criarApp({ servico, atendimento, geocodificar, vigia = null, con
     if (!m || m[2].length < 1300 || m[2].length > 4.1 * 1024 * 1024) throw new Erro(422, 'arquivo_invalido', 'Envie a foto ou o PDF do comprovante (até 3 MB).');
     return atendimento.comprovantePublico(corpo?.codigo, { mime: m[1], base64: m[2] }, ip);
   }, 5 * 1024 * 1024);
+  rota('POST', '/api/publico/empresa/convites', 'publico', ({ corpo, ip }) => atendimento.criarConvite(corpo, ip));
+  rota('GET', '/api/publico/convite', 'publico', ({ url }) => atendimento.convitePublico(url.searchParams.get('c')));
+  rota('POST', '/api/publico/convite/cotar', 'publico', ({ corpo, ip }) => atendimento.cotarConvite(corpo, ip));
+  rota('POST', '/api/publico/convite/pedido', 'publico', ({ corpo, ip }) => atendimento.pedidoConvite(corpo, ip));
   rota('POST', '/api/publico/pedidos/nota', 'publico', ({ corpo, ip }) => atendimento.notaPublica(corpo?.codigo, corpo, ip));
   // Aviso do banco vindo da Ponte (mesmo servidor): vale a chave de API ou o segredo interno no cabeçalho.
   rota('POST', '/api/entrada/pix-recebido', 'publico', ({ corpo, req }) => {

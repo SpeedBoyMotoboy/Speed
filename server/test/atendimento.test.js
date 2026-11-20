@@ -1194,3 +1194,54 @@ test('loja marca "cliente final paga": pedido retido, Pix na página, libera só
   assert.equal(a.receberPix({ valor: r2.valor, pagador: 'Paula Reis', ts: Date.now() + 60000 }).liberado, r2.id);
   assert.equal(demandas().find((x) => x.id === r2.id).pagamento, 'pago');
 });
+
+test('convite: loja diz as mercadorias, cliente final completa, vê rota/urgente, paga; G e GG somam com teto', async () => {
+  const { s, a, demandas } = montar();
+  s.salvarConfig({ pix_tipo: 'telefone', pix_chave: '27999165959', pix_nome: 'SpeedBoy', pix_cidade: 'Serra', preco_base: '25', preco_km_incluso: '10', preco_km: '2' }, 'teste');
+  s.salvarCliente({ nome: 'Enxoval Bom', telefone: '11955551234', faturado: true, loja_endereco: 'Rua da Coleta, 10, Centro', libera_direto: true, preco_fixo: 40 }, 'teste');
+  const cli = s.listarClientes().find((c) => c.nome === 'Enxoval Bom');
+
+  assert.throws(() => a.criarConvite({ k: cli.chave, autoriza: 'Marina' }, 'ip'), { codigo: 'sem_volumes' });
+  const cv = a.criarConvite({ k: cli.chave, autoriza: 'Marina', volumes: { m: 2, g: 2 }, oque: 'Edredom e almofadas' }, 'ip');
+  assert.match(cv.link, /\/convite\/\?c=/);
+  assert.equal(cv.volumes, '2 M + 2 G');
+  const pub = a.convitePublico(cv.codigo);
+  assert.equal(pub.loja, 'Enxoval Bom');
+  assert.equal(pub.coleta, 'Rua da Coleta, 10, Centro');
+  assert.equal(pub.volumes_texto, '2 M + 2 G');
+
+  // Preço público (a loja tem preço fixo próprio, mas quem paga é o cliente): base 25, 2 G = +20%.
+  const cot = await a.cotarConvite({ c: cv.codigo, entrega: { endereco: 'Rua da Entrega, 20, Centro' } }, 'ip');
+  assert.equal(cot.valor_rota, 30);
+  assert.equal(cot.valor_urgente, 40); // urgente +20% (mín. R$ 10) sobre a base + 20% do tamanho
+  assert.equal(cot.acima_teto, false);
+
+  await assert.rejects(a.pedidoConvite({ c: cv.codigo, entrega: { endereco: 'Rua da Entrega, 20, Centro' }, recebe: 'Paula', fone: '11966660002', nf_doc: '123', nf_nome: 'Paula Reis' }, 'ip'), { codigo: 'doc_invalido' });
+  const r = await a.pedidoConvite({ c: cv.codigo, entrega: { endereco: 'Rua da Entrega, 20, Centro' }, recebe: 'Paula', fone: '11966660002',
+    nf_doc: '529.982.247-25', nf_nome: 'Paula Reis', instrucoes: 'Deixar na portaria' }, 'ip');
+  const d = demandas().find((x) => x.codigo === r.codigo);
+  assert.equal(d.valor, 30);
+  assert.equal(d.retida, 1);
+  assert.equal(d.paga_final, 1);
+  assert.equal(d.requisito, 'bau');
+  assert.match(d.descricao, /Volumes: 2 M \+ 2 G/);
+  assert.match(d.descricao, /portaria/);
+  assert.equal(d.nf_doc, '52998224725');
+  assert.ok(s.pedidoPublico(r.codigo).pix, 'Pix pronto na página do pedido');
+  assert.deepEqual(a.convitePublico(cv.codigo), { feito: true, pedido: r.codigo }, 'o link vira o acompanhamento');
+  assert.equal((await a.pedidoConvite({ c: cv.codigo }, 'ip')).repetido, true, 'não cria duas vezes');
+  assert.equal(a.entregasEmpresa(cli.chave, 'semana').quantidade, 0, 'fora da conta da loja');
+
+  // Muitos volumes grandes: passa do teto (+60%), cobra no teto e espera o dono confirmar antes do Pix.
+  const cv2 = a.criarConvite({ k: cli.chave, autoriza: 'Marina', volumes: { gg: 4 } }, 'ip');
+  const cot2 = await a.cotarConvite({ c: cv2.codigo, entrega: { endereco: 'Rua da Entrega, 20, Centro' } }, 'ip');
+  assert.equal(cot2.valor_rota, 40);
+  assert.equal(cot2.acima_teto, true);
+  const r2 = await a.pedidoConvite({ c: cv2.codigo, entrega: { endereco: 'Rua da Entrega, 20, Centro' }, recebe: 'Ana', fone: '11966660003', nf_doc: '529.982.247-25', nf_nome: 'Ana Souza', urgente: true }, 'ip');
+  const d2 = demandas().find((x) => x.codigo === r2.codigo);
+  assert.equal(s.pedidoPublico(r2.codigo).pix, null, 'sem Pix até o dono confirmar');
+  assert.equal(s.pedidoPublico(r2.codigo).acima_teto, true);
+  s.fecharPedido(d2.id, 55, 'admin:teste');
+  assert.ok(s.pedidoPublico(r2.codigo).pix, 'depois de confirmar, o Pix aparece');
+  assert.equal(demandas().find((x) => x.id === d2.id).retida, 1, 'continua retido até pagar');
+});

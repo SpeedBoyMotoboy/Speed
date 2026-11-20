@@ -190,6 +190,19 @@ CREATE TABLE IF NOT EXISTS candidatos (
   criado_em INTEGER NOT NULL,
   decidido_em INTEGER
 );
+CREATE TABLE IF NOT EXISTS convites (
+  id INTEGER PRIMARY KEY,
+  codigo TEXT NOT NULL UNIQUE,
+  cliente_id INTEGER NOT NULL,
+  volumes TEXT NOT NULL DEFAULT '{}',
+  oque TEXT NOT NULL DEFAULT '',
+  recebe TEXT NOT NULL DEFAULT '',
+  fone TEXT NOT NULL DEFAULT '',
+  endereco TEXT NOT NULL DEFAULT '',
+  autoriza TEXT NOT NULL DEFAULT '',
+  criado_em INTEGER NOT NULL,
+  demanda_id INTEGER
+);
 CREATE TABLE IF NOT EXISTS pix_recebidos (
   id INTEGER PRIMARY KEY,
   ts INTEGER NOT NULL,
@@ -257,6 +270,7 @@ export const CONFIG_PADRAO = {
   // Tamanho da mercadoria: % a mais para G (até 40 cm) e GG (mais de 40 cm); parte do extra que vai ao motoboy.
   tam_g_pct: '10',
   tam_gg_pct: '20',
+  tam_teto_pct: '60',
   tam_repasse_pct: '60',
   // Corrida longa (coleta → entrega): até o 1º limite vale a tabela normal; cada km acima dele paga o valor
   // da faixa (suave, sem salto);
@@ -334,7 +348,7 @@ const COLUNAS_NOVAS = {
     codigo: 'TEXT', cliente_telefone: "TEXT NOT NULL DEFAULT ''", valor: 'REAL', km: 'REAL',
     retida: 'INTEGER NOT NULL DEFAULT 0', cancel_motivo: 'TEXT',
     urgente: 'INTEGER NOT NULL DEFAULT 0', servico: "TEXT NOT NULL DEFAULT ''", repasse: 'REAL', repasse_padrao: 'REAL', bonus_urgente: 'REAL', foto_em: 'INTEGER', rastreio_livre: 'INTEGER NOT NULL DEFAULT 0', repasse_manual: 'INTEGER NOT NULL DEFAULT 0', tamanho: "TEXT NOT NULL DEFAULT ''", tarifa_urgente: 'INTEGER NOT NULL DEFAULT 0', agendada_para: 'INTEGER', reservada_por: 'INTEGER',
-    pagamento: "TEXT NOT NULL DEFAULT ''", nf_doc: "TEXT NOT NULL DEFAULT ''", nf_nome: "TEXT NOT NULL DEFAULT ''", fachada_em: 'INTEGER', paga_final: 'INTEGER NOT NULL DEFAULT 0', comp_valor: 'REAL', comp_pagador: 'TEXT', pag_id: 'TEXT', pag_pix: 'TEXT', pag_qr: 'TEXT', pag_expira: 'INTEGER',
+    pagamento: "TEXT NOT NULL DEFAULT ''", nf_doc: "TEXT NOT NULL DEFAULT ''", nf_nome: "TEXT NOT NULL DEFAULT ''", fachada_em: 'INTEGER', paga_final: 'INTEGER NOT NULL DEFAULT 0', volumes: 'TEXT', acima_teto: 'INTEGER NOT NULL DEFAULT 0', comp_valor: 'REAL', comp_pagador: 'TEXT', pag_id: 'TEXT', pag_pix: 'TEXT', pag_qr: 'TEXT', pag_expira: 'INTEGER',
     pago_em: 'INTEGER', fila_em: 'INTEGER', comprovante_em: 'INTEGER', ia_ok: 'INTEGER', ia_obs: 'TEXT', email: "TEXT NOT NULL DEFAULT ''", sem_aceite_avisado: 'INTEGER NOT NULL DEFAULT 0', hora_tipo: "TEXT NOT NULL DEFAULT ''", hora_limite: 'INTEGER',
   },
   motoboys: { tipo: "TEXT NOT NULL DEFAULT 'diaria'", pin_claro: 'TEXT', documento: "TEXT NOT NULL DEFAULT ''", placa: "TEXT NOT NULL DEFAULT ''", diaria_valor: 'REAL', repasse_base: 'REAL', repasse_km: 'REAL', ve_valores: 'INTEGER NOT NULL DEFAULT 0', reserva_bloqueio_ate: 'INTEGER',
