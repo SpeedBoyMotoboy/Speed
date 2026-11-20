@@ -196,6 +196,14 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
     servico.fachadaGravada(id);
     return { ok: true };
   }, 3 * 1024 * 1024);
+  // Comprovante do Pix enviado pela página do pedido: foto (jpeg/png) ou PDF, até 3 MB.
+  rota('POST', '/api/publico/pedidos/comprovante', 'publico', ({ corpo, ip }) => {
+    const m = /^data:(image\/jpeg|image\/png|application\/pdf);base64,([A-Za-z0-9+/=]+)$/.exec(String(corpo?.arquivo || ''));
+    if (!m || m[2].length < 1300 || m[2].length > 4.1 * 1024 * 1024) throw new Erro(422, 'arquivo_invalido', 'Envie a foto ou o PDF do comprovante (até 3 MB).');
+    return atendimento.comprovantePublico(corpo?.codigo, { mime: m[1], base64: m[2] }, ip);
+  }, 5 * 1024 * 1024);
+  rota('POST', '/api/publico/pedidos/nota', 'publico', ({ corpo, ip }) => atendimento.notaPublica(corpo?.codigo, corpo, ip));
+  rota('POST', '/api/entrada/pix-recebido', 'api', ({ corpo }) => atendimento.receberPix(corpo));
   rota('GET', '/api/motoboy/fachada/:id', 'motoboy', ({ turno, p }) => verFachada(servico.fachadaDoMotoboy(turno, p.id)));
   rota('GET', '/api/admin/demandas/:id/fachada', 'admin', ({ p }) => verFachada(p.id));
   rota('GET', '/api/admin/demandas/:id/foto', 'admin', ({ p }) => {

@@ -1143,3 +1143,54 @@ test('link do cliente da loja: exige quem recebe e nota fiscal; instruções e f
   s.cancelarDemanda(d.id, 'teste', 'teste');
   assert.throws(() => s.fachadaPermitida(r.codigo), { codigo: 'encerrado' });
 });
+
+test('loja marca "cliente final paga": pedido retido, Pix na página, libera só com aviso do banco + comprovante', async () => {
+  const { s, a, demandas } = montar();
+  s.salvarConfig({ pix_tipo: 'telefone', pix_chave: '27999165959', pix_nome: 'SpeedBoy', pix_cidade: 'Serra' }, 'teste');
+  s.salvarCliente({ nome: 'Enxoval Bom', telefone: '11955551234', faturado: true, loja_endereco: 'Rua da Coleta, 10, Centro', libera_direto: true }, 'teste');
+  const cli = s.listarClientes().find((c) => c.nome === 'Enxoval Bom');
+  const base = { k: cli.chave, recebe: 'Paula', fone: '11966660002', autoriza: 'Marina', entrega: { endereco: 'Rua da Entrega, 20, Centro' } };
+
+  // Sem a caixinha: como sempre, entra na conta da loja e já vai para os motoboys.
+  const normal = await a.pedidoEmpresa(base, 'ip1');
+  assert.equal(demandas().find((d) => d.id === normal.id).pagamento, 'faturado');
+  assert.equal(demandas().find((d) => d.id === normal.id).retida, 0);
+
+  // Com a caixinha: retido, com Pix, fora da conta da loja.
+  const r = await a.pedidoEmpresa({ ...base, cliente_paga: true }, 'ip1');
+  assert.equal(r.cliente_paga, true);
+  let d = demandas().find((x) => x.id === r.id);
+  assert.equal(d.retida, 1);
+  assert.equal(d.pagamento, 'pendente');
+  assert.match(d.descricao, /pago pelo cliente final/);
+  const pub = s.pedidoPublico(r.codigo);
+  assert.equal(pub.pix.manual, true);
+  assert.match(pub.pix.codigo, /PEDIDO/);
+  assert.equal(pub.falta_nota, true);
+  const conta = a.entregasEmpresa(cli.chave, 'semana');
+  assert.equal(conta.quantidade, 1, 'só a entrega normal entra na conta da loja');
+  assert.equal(conta.total, normal.valor);
+
+  // Nota fiscal do cliente final.
+  assert.throws(() => a.notaPublica(r.codigo, { nf_doc: '111', nf_nome: 'Paula Reis' }, 'ip2'), { codigo: 'doc_invalido' });
+  a.notaPublica(r.codigo, { nf_doc: '529.982.247-25', nf_nome: 'Paula Reis' }, 'ip2');
+  assert.equal(s.pedidoPublico(r.codigo).falta_nota, false);
+
+  // Só o aviso do banco, sem comprovante: não libera.
+  assert.equal(a.receberPix({ valor: d.valor, pagador: 'Paula Reis' }).liberado, null);
+  assert.equal(demandas().find((x) => x.id === r.id).retida, 1);
+  // Chegou o comprovante: agora as duas coisas existem e libera sozinho.
+  const arq = { mime: 'image/jpeg', base64: 'QUJD' };
+  assert.equal((await a.comprovantePublico(r.codigo, arq, 'ip2')).liberado, true);
+  d = demandas().find((x) => x.id === r.id);
+  assert.equal(d.pagamento, 'pago');
+  assert.equal(d.retida, 0);
+
+  // Ordem inversa: comprovante primeiro não libera; quando o banco avisa, libera. O mesmo Pix não vale duas vezes.
+  const r2 = await a.pedidoEmpresa({ ...base, cliente_paga: true }, 'ip1');
+  assert.equal((await a.comprovantePublico(r2.codigo, arq, 'ip2')).liberado, false, 'o Pix do primeiro pedido já foi usado');
+  assert.equal(demandas().find((x) => x.id === r2.id).retida, 1);
+  assert.equal(a.receberPix({ valor: 999, pagador: 'Outro' }).liberado, null, 'valor diferente não libera');
+  assert.equal(a.receberPix({ valor: r2.valor, pagador: 'Paula Reis', ts: Date.now() + 60000 }).liberado, r2.id);
+  assert.equal(demandas().find((x) => x.id === r2.id).pagamento, 'pago');
+});

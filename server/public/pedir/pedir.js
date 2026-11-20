@@ -230,7 +230,7 @@ function telaPix(r) {
     },
   }, 'Copiar código Pix');
   const qr = r.pix.qr
-    ? h('img', { class: 'qr', alt: 'QR code do Pix', width: 220, height: 220, src: `data:image/png;base64,${r.pix.qr}` })
+    ? h('img', { class: 'qr', alt: 'QR code do Pix', width: 220, height: 220, src: r.pix.qr.startsWith("data:") ? r.pix.qr : `data:image/png;base64,${r.pix.qr}` })
     : desenharQr(r.pix.codigo);
   const manual = Boolean(r.pix.manual);
   pedido = null;

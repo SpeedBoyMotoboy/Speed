@@ -165,7 +165,8 @@ function cartaoEnvio(b, i, total) {
   const tam = h('select', { id: n('tam') }, TAMANHOS.map(([v, t]) => h('option', { value: v }, t)));
   tam.value = b.tamanho || 'pequeno';
   const hor = campoHorario(b, n);
-  b.ler = () => Object.assign(b, { recebe: quem.value.trim(), endereco: end.el.value.trim(), fone: fone.value.trim(), oque: oque.value.trim(), tamanho: tam.value }, hor.ler());
+  const paga = h('input', { type: 'checkbox', id: n('paga'), checked: Boolean(b.cliente_paga) });
+  b.ler = () => Object.assign(b, { recebe: quem.value.trim(), endereco: end.el.value.trim(), fone: fone.value.trim(), oque: oque.value.trim(), tamanho: tam.value, cliente_paga: paga.checked }, hor.ler());
   return h('div', { class: 'cartao' },
     h('div', { class: 'cab-parada' }, h('b', null, total > 1 ? `Entrega ${i + 1}` : 'Entrega'),
       total > 1 && h('button', { type: 'button', class: 'pequeno', onclick: () => { envios.forEach((x) => x.ler()); envios.splice(i, 1); telaLoja(); } }, 'Remover')),
@@ -173,7 +174,9 @@ function cartaoEnvio(b, i, total) {
     h('label', { for: n('end') }, 'Endereço de entrega (com número e apartamento)'), end.nos,
     h('label', { for: n('fone') }, 'Telefone de quem recebe'), fone,
     h('label', { for: n('oque') }, 'O que vai'), oque,
-    h('label', { for: n('tam') }, 'Tamanho'), tam, hor.nos);
+    h('label', { for: n('tam') }, 'Tamanho'), tam, hor.nos,
+    h('label', { class: 'marcar' }, paga, ' O cliente final paga o frete (Pix antes da entrega)'),
+    h('div', { class: 'nota' }, 'Marcado: você recebe um link para mandar ao cliente. Ele paga por Pix e o motoboy só sai depois do pagamento conferido. Desmarcado: entra no fechamento da loja.'));
 }
 
 function telaLoja(mensagem = '') {
@@ -203,7 +206,7 @@ function telaLoja(mensagem = '') {
         for (const b of envios) {
           feitos.push(await api('POST', '/api/publico/empresa/pedidos', {
             k: chave, recebe: b.recebe, fone: b.fone, oque: b.oque, tamanho: b.tamanho, autoriza: quem.value.trim(), ...corpoHorario(b),
-            entrega: { endereco: b.endereco },
+            entrega: { endereco: b.endereco }, cliente_paga: b.cliente_paga === true,
           }));
         }
         envios = [];
@@ -267,7 +270,7 @@ async function telaEntregas(periodo = '') {
     r.entregas.length
       ? r.entregas.map((e) => h('div', { class: 'cartao' },
         h('div', { class: 'linha-end' }, h('b', null, `#${e.id}`), h('span', { class: 'cresce' }, quando(e.criado_em)),
-          h('b', null, e.valor != null ? reais(e.valor) : '—')),
+          h('b', null, e.cliente_paga ? 'cliente paga' : e.valor != null ? reais(e.valor) : '—')),
         h('div', null, loja ? `🏁 ${e.para || '—'}` : `📦 ${e.de || '—'}`),
         e.quem && h('div', { class: 'nota' }, e.quem),
         h('div', { class: 'linha-end' }, h('span', { class: 'cresce nota' }, e.retida ? 'Em análise' : SITUACAO[e.status] || e.status),
@@ -284,10 +287,22 @@ function telaPronto(feitos, modo = '') {
   moldura(
     h('h1', null, feitos.length > 1 ? `${feitos.length} ${nome[1]} enviadas` : `${nome[2]} #${feitos[0].id} enviada`),
     h('div', { class: 'cartao' },
-      h('p', null, ehLoja ? 'Recebemos! O motoboy já está sendo chamado.' : 'Recebemos! O motoboy já está sendo chamado. Na hora da retirada, ele informa o nome dele no fornecedor.'),
+      h('p', null, feitos.every((f) => f.cliente_paga) ? 'Recebemos! Agora mande o link de pagamento para o cliente.'
+        : ehLoja ? 'Recebemos! O motoboy já está sendo chamado.' : 'Recebemos! O motoboy já está sendo chamado. Na hora da retirada, ele informa o nome dele no fornecedor.'),
+      feitos.filter((f) => f.cliente_paga).map((f) => {
+        const link = `${location.origin}/acompanhar/?c=${encodeURIComponent(f.codigo)}`;
+        const texto = `Olá! Segue o link para pagar o frete da sua entrega${f.valor != null ? ` (${reais(f.valor)})` : ''} por Pix. O motoboy sai assim que o pagamento for conferido: ${link}`;
+        const copiar = h('button', { type: 'button', class: 'primario', onclick: async () => { try { await navigator.clipboard.writeText(link); copiar.textContent = 'Link copiado ✓'; } catch { /* copia manual */ } } }, 'Copiar link de pagamento');
+        return h('div', { class: 'aviso-quarta' },
+          h('b', null, `Entrega #${f.id}: o cliente paga${f.valor != null ? ` ${reais(f.valor)}` : ''}`),
+          h('div', null, f.valor != null ? 'Mande este link para o cliente. O motoboy só é chamado depois do Pix conferido.' : 'Não achamos o endereço no mapa. A SpeedBoy confere e o valor aparece neste mesmo link.'),
+          h('input', { readonly: true, value: link, onfocus: (ev) => ev.target.select() }),
+          h('div', { class: 'botoes' }, copiar,
+            h('a', { class: 'botao', target: '_blank', rel: 'noopener noreferrer', href: `https://wa.me/?text=${encodeURIComponent(texto)}` }, 'Mandar pelo WhatsApp')));
+      }),
       feitos.map((f) => h('div', { class: 'linha-end' },
         h('b', null, `#${f.id}`),
-        h('span', { class: 'cresce' }, [f.km != null ? km(f.km) : '', f.valor != null ? reais(f.valor) : ''].filter(Boolean).join(' · ') || 'valor na fatura'),
+        h('span', { class: 'cresce' }, [f.km != null ? km(f.km) : '', f.valor != null ? reais(f.valor) : ''].filter(Boolean).join(' · ') || (f.cliente_paga ? 'valor a confirmar' : 'valor na fatura')),
         h('a', { class: 'botao', href: `/acompanhar/?c=${encodeURIComponent(f.codigo)}` }, 'Acompanhar'))),
       h('button', { type: 'button', class: 'primario', onclick: () => (ehLoja ? telaLoja() : telaBuscas()) }, ehLoja ? 'Fazer outra entrega' : 'Fazer outra busca'),
       h('button', { type: 'button', onclick: () => telaEntregas() }, 'Ver minhas entregas e total')));
