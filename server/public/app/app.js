@@ -602,7 +602,25 @@ function blocoInfo(p) {
       h('a', { class: 'info-botao', href: `https://wa.me/${f55}`, target: '_blank', rel: 'noopener' }, '💬 WhatsApp')),
     obs.length > 0 && h('div', { class: 'info-obs' },
       h('div', { class: 'info-rot' }, 'Observações'),
-      ...obs.map((s) => h('div', { class: 'info-item' }, `• ${s}`))));
+      ...obs.map((s) => h('div', { class: 'info-item' }, `• ${s}`))),
+    p.fachada && botaoFachada(p.demanda_id));
+}
+// Foto da fachada que o cliente mandou: abre na hora, dentro do cartão.
+function botaoFachada(demandaId) {
+  const lugar = h('div', { class: 'fachada' });
+  const botao = h('button', {
+    type: 'button', class: 'leve',
+    onclick: async () => {
+      botao.disabled = true;
+      botao.textContent = 'Carregando a foto…';
+      try {
+        const r = await api('GET', `/api/motoboy/fachada/${demandaId}`);
+        trocar(lugar, h('img', { src: r.foto, alt: 'Fachada do local de entrega', class: 'foto-fachada' }));
+      } catch { botao.disabled = false; botao.textContent = '🏠 Ver foto da fachada (tente de novo)'; }
+    },
+  }, '🏠 Ver foto da fachada');
+  trocar(lugar, botao);
+  return lugar;
 }
 
 function cartaoParada(p) {

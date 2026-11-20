@@ -1,5 +1,5 @@
 // Entrega urgente: o cliente informa coleta, entrega e o tipo de serviço, vê o valor, paga o Pix e acompanha.
-import { h, trocar, api, reais, km, hora, camadaBase, icone, desenharQr, botaoComprovante } from '/site/base.js';
+import { h, trocar, api, reais, km, hora, camadaBase, icone, desenharQr, botaoComprovante, reduzirFoto, botaoSalvarApp } from '/site/base.js';
 
 const L = window.L;
 const raiz = document.getElementById('raiz');
@@ -128,6 +128,16 @@ function telaConfirmar() {
     h('option', { value: 'bau' }, 'Precisa de baú (volume maior)'),
     h('option', { value: 'bag' }, 'Precisa de bag térmica (comida)'));
   const isca = h('input', { name: 'site', tabindex: '-1', autocomplete: 'off' });
+  // Link da loja: quem recebe (pode ser outra pessoa), como entregar, foto da fachada e dados da nota.
+  const outraPessoa = h('input', { type: 'checkbox', id: 'outra' });
+  const recebeNome = h('input', { id: 'recebe_nome', maxlength: 80, autocomplete: 'off', placeholder: 'Nome de quem recebe' });
+  const recebeFone = h('input', { id: 'recebe_fone', type: 'tel', inputmode: 'tel', autocomplete: 'off', placeholder: '(27) 99999-0000' });
+  const blocoOutra = h('div', { hidden: true }, h('label', { for: 'recebe_nome' }, 'Nome de quem recebe'), recebeNome, h('label', { for: 'recebe_fone' }, 'Telefone de quem recebe'), recebeFone);
+  outraPessoa.addEventListener('change', () => { blocoOutra.hidden = !outraPessoa.checked; recebeNome.required = outraPessoa.checked; recebeFone.required = outraPessoa.checked; });
+  const instrucoes = h('textarea', { id: 'instrucoes', rows: 3, maxlength: 300, placeholder: 'Ex.: deixar na portaria com o Sr. João. Apto 302, bloco B. Casa de portão azul.' });
+  const fachada = h('input', { id: 'fachada', type: 'file', accept: 'image/*' });
+  const nfDoc = h('input', { id: 'nf_doc', inputmode: 'numeric', maxlength: 18, required: Boolean(loja), placeholder: 'Só os números', value: guardado.nf_doc || '' });
+  const nfNome = h('input', { id: 'nf_nome', maxlength: 120, required: Boolean(loja), placeholder: 'Nome completo ou razão social', value: guardado.nf_nome || '' });
   const erro = h('div', { class: 'erro', role: 'alert' });
   const enviar = h('button', { class: 'primario', type: 'submit' }, info.pagamento ? 'Pagar com Pix' : 'Confirmar pedido');
 
@@ -141,9 +151,17 @@ function telaConfirmar() {
         const r = await api('POST', '/api/publico/pedidos', {
           nome: nome.value, telefone: telefone.value, email: email.value, descricao: descricao.value, requisito: requisito.value,
           servico_id: servicoId, site: isca.value,
-          ...(loja ? { loja: codLoja } : { coleta: pedido.coleta }), entrega: { ...pedido.entrega, contato: contato.value },
+          ...(loja
+            ? { loja: codLoja, recebe_nome: outraPessoa.checked ? recebeNome.value : '', recebe_fone: outraPessoa.checked ? recebeFone.value : '', instrucoes: instrucoes.value, nf_doc: nfDoc.value, nf_nome: nfNome.value }
+            : { coleta: pedido.coleta }),
+          entrega: { ...pedido.entrega, contato: loja ? '' : contato.value },
         });
-        try { localStorage.setItem('speed_cliente', JSON.stringify({ nome: nome.value, telefone: telefone.value, email: email.value, coleta: loja ? (guardado.coleta || '') : pedido.coleta.endereco })); } catch { /* sem armazenamento */ }
+        try { localStorage.setItem('speed_cliente', JSON.stringify({ nome: nome.value, telefone: telefone.value, email: email.value, coleta: loja ? (guardado.coleta || '') : pedido.coleta.endereco, nf_doc: loja ? nfDoc.value : (guardado.nf_doc || ''), nf_nome: loja ? nfNome.value : (guardado.nf_nome || '') })); } catch { /* sem armazenamento */ }
+        // A foto da fachada vai depois do pedido criado; se falhar, o pedido segue e o motoboy usa as instruções.
+        if (loja && fachada.files && fachada.files[0]) {
+          enviar.textContent = 'Enviando a foto…';
+          try { await api('POST', '/api/publico/pedidos/fachada', { codigo: r.codigo, foto: await reduzirFoto(fachada.files[0]) }); } catch { /* segue sem foto */ }
+        }
         if (r.pix) telaPix(r); else telaPronto(r);
       } catch (e) {
         // A conferência viu que a descrição é de outro tipo de serviço: mostra o valor certo e pede novo clique.
@@ -164,7 +182,16 @@ function telaConfirmar() {
   info.pede_email && [h('label', { for: 'email' }, 'Seu e-mail (para o comprovante do Pix)'), email],
   h('label', { for: 'descricao' }, loja ? 'O que você comprou? (a loja separa mais rápido)' : 'Descreva o serviço'), descricao,
   h('label', { for: 'requisito' }, 'Tamanho'), requisito,
-  h('label', { for: 'contato' }, loja ? 'Outra pessoa vai receber? Nome e telefone (opcional)' : 'Quem recebe na entrega? (opcional)'), contato,
+  !loja && [h('label', { for: 'contato' }, 'Quem recebe na entrega? (opcional)'), contato],
+  loja && [
+    h('h2', null, 'Na entrega'),
+    h('label', { class: 'marcar' }, outraPessoa, 'Outra pessoa vai receber'), blocoOutra,
+    h('label', { for: 'instrucoes' }, 'Como o motoboy entrega? (portaria, apartamento, com quem deixar)'), instrucoes,
+    h('label', { for: 'fachada' }, 'Foto da fachada (opcional, ajuda o motoboy a achar)'), fachada,
+    h('h2', null, 'Nota fiscal do frete'),
+    h('p', { class: 'nota' }, 'A nota sai no seu nome. Informe CPF ou CNPJ.'),
+    h('label', { for: 'nf_doc' }, 'CPF ou CNPJ'), nfDoc,
+    h('label', { for: 'nf_nome' }, 'Nome completo ou razão social'), nfNome],
   h('div', { class: 'isca', 'aria-hidden': 'true' }, isca),
   enviar, erro);
 
@@ -220,7 +247,8 @@ function telaPix(r) {
         botaoComprovante(info.whatsapp, r.id, r.valor)],
       aviso,
       !manual && h('p', { class: 'nota' }, `O código vale até ${hora(r.pix.expira)}. Sem pagamento, o pedido é cancelado sozinho.`),
-      h('a', { class: 'botao', href: `/acompanhar/?c=${encodeURIComponent(r.codigo)}` }, 'Acompanhar o pedido')));
+      h('a', { class: 'botao', href: `/acompanhar/?c=${encodeURIComponent(r.codigo)}` }, 'Acompanhar o pedido'),
+      loja && botaoSalvarApp()));
 
   const conferir = async () => {
     try {
@@ -245,9 +273,14 @@ function telaPronto(r) {
       h('p', null, proximo),
       r.valor != null && h('div', { class: 'preco' }, h('span', { class: 'nota' }, 'Valor'), h('b', null, reais(r.valor))),
       h('a', { class: 'botao primario', href: `/acompanhar/?c=${encodeURIComponent(r.codigo)}` }, 'Acompanhar o pedido'),
-      h('button', { type: 'button', class: 'leve', onclick: () => telaEnderecos() }, 'Fazer outro pedido')));
+      loja ? [
+        h('p', { class: 'nota' }, 'Precisa de motoboy para outra coisa? Documento, compra, entrega: a SpeedBoy busca e leva.'),
+        h('a', { class: 'botao', href: '/pedir/' }, 'Chamar a SpeedBoy'),
+        botaoSalvarApp(),
+      ] : h('button', { type: 'button', class: 'leve', onclick: () => telaEnderecos() }, 'Fazer outro pedido')));
 }
 
+try { navigator.serviceWorker?.register('sw.js').catch(() => {}); } catch { /* sem suporte */ }
 try { info = await api('GET', '/api/publico/info'); } catch { /* usa o padrão */ }
 let linkRuim = '';
 if (codLoja) {

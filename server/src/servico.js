@@ -1226,6 +1226,21 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     auditar(ator, 'rastreio_cliente', `#${d.id}`);
     return { ok: true };
   }
+  // Foto da fachada enviada por quem pediu: vale enquanto o pedido está aberto, por até 1 dia, pelo código do link.
+  function fachadaPermitida(codigo) {
+    const d = typeof codigo === 'string' && codigo.length >= 8 ? q('SELECT * FROM demandas WHERE codigo = ?').get(codigo) : null;
+    if (!d) throw new Erro(404, 'nao_encontrado', 'Pedido não encontrado.');
+    if (['entregue', 'cancelada'].includes(d.status) || agora() - d.criada_em > 86400e3) throw new Erro(409, 'encerrado', 'Este pedido já foi encerrado.');
+    return d.id;
+  }
+  function fachadaGravada(id) { q('UPDATE demandas SET fachada_em = ? WHERE id = ?').run(agora(), id); }
+  // Motoboy só vê a fachada de entrega que está na rota dele.
+  function fachadaDoMotoboy(turno, demandaId) {
+    const d = q("SELECT id, fachada_em FROM demandas WHERE id = ? AND turno_id = ? AND status IN ('atribuida','coletada')").get(Number(demandaId), turno.id);
+    if (!d || !d.fachada_em) throw new Erro(404, 'sem_fachada', 'Sem foto da fachada.');
+    return d.id;
+  }
+  function gravarNota(id, doc, nome) { q('UPDATE demandas SET nf_doc = ?, nf_nome = ? WHERE id = ?').run(doc, nome, id); }
   function fotoGravada(id) { q('UPDATE demandas SET foto_em = ? WHERE id = ?').run(agora(), id); }
   function finalizarDemanda(id, motivo, ator) {
     const d = q('SELECT * FROM demandas WHERE id = ?').get(id);
@@ -1257,6 +1272,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     repasse: d.repasse,
     agendada_para: d.agendada_para ?? null,
     coleta_contato: d.coleta_contato,
+    fachada: tipo === 'entrega' && Boolean(d.fachada_em),
     ordem: tipo === 'coleta' ? d.ordem_coleta : d.ordem_entrega,
   });
   function rotaDoTurno(turnoId) {
@@ -1684,7 +1700,10 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     const linhas = q(`SELECT id, codigo, status, retida, entregue_em FROM demandas
       WHERE cliente_telefone = ? AND status <> 'cancelada' AND (status <> 'entregue' OR entregue_em >= ?)
       ORDER BY id DESC LIMIT 3`).all(telefone, agora() - 2 * 3600e3);
-    return { pedidos: linhas.map((d) => ({ id: d.id, status: d.status, aguardando_aprovacao: Boolean(d.retida), link: `${base}/acompanhar/?c=${d.codigo}` })) };
+    // Quem é da equipe não é cliente: o robô não oferece link, Pix nem proposta para motoboy.
+    const ultimos = telefone.slice(-8);
+    const motoboy = q('SELECT id, telefone FROM motoboys').all().some((m) => String(m.telefone || '').replace(/\D/g, '').slice(-8) === ultimos);
+    return { motoboy, pedidos: linhas.map((d) => ({ id: d.id, status: d.status, aguardando_aprovacao: Boolean(d.retida), link: `${base}/acompanhar/?c=${d.codigo}` })) };
   }
   function pedidoPublico(codigo) {
     const d = typeof codigo === 'string' && codigo.length >= 8
@@ -1956,7 +1975,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     criarDemanda, criarDemandaExterna, definirLocais, cancelarDemanda, fechamento, reatribuir, confirmarParada,
     despacharPendentes, estadoMotoboy, estadoAdmin, trilha, relatorio, rotina,
     importarWhatsapp, listarConversas, mensagensDaConversa, excluirConversa,
-    aoEvento, cotar, pedidosDoContato, agendadaMotoboy, problemaMotoboy, finalizarDemanda, editarValor, editarDados, liberarRastreio, fotoPermitida, fotoGravada, foraDoHorario, criarPedido, coletaFixa, gerarPixManual, liberarDemanda, fecharPedido, definirContato, pedidoPublico, relatorioClientes, relatorioEntregas,
+    aoEvento, cotar, pedidosDoContato, fachadaPermitida, fachadaGravada, fachadaDoMotoboy, gravarNota, agendadaMotoboy, problemaMotoboy, finalizarDemanda, editarValor, editarDados, liberarRastreio, fotoPermitida, fotoGravada, foraDoHorario, criarPedido, coletaFixa, gerarPixManual, liberarDemanda, fecharPedido, definirContato, pedidoPublico, relatorioClientes, relatorioEntregas,
     listarServicos, salvarServico, listarClientes, salvarCliente, registrarPix, marcarPago,
     responderOferta, encerrarPeloMotoboy, modoPagamento,
     interno: { q, tx, cfgBruta, auditar, agora, exigirNaoBloqueado, registrarFalha },

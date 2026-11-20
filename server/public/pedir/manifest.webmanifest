@@ -1,0 +1,16 @@
+{
+  "name": "SpeedBoy Motoboy",
+  "short_name": "SpeedBoy",
+  "description": "Chame um motoboy da SpeedBoy",
+  "start_url": "/pedir/",
+  "scope": "/pedir/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#ffffff",
+  "theme_color": "#002776",
+  "lang": "pt-BR",
+  "icons": [
+    { "src": "icone-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icone-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

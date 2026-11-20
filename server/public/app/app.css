@@ -123,3 +123,6 @@ a.botao-link.claro { background: var(--cartao); color: var(--texto); border: 2px
 /* Login com um toque: conta lembrada neste aparelho */
 .conta-lembrada { text-align: center; font-size: 17px; margin: 6px 0 2px; }
 .conta-lembrada b { font-weight: 700; }
+
+/* Foto da fachada enviada pelo cliente */
+.foto-fachada { width: 100%; border-radius: 10px; margin-top: 8px; display: block; }

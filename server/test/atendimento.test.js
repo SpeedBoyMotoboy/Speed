@@ -1072,7 +1072,7 @@ test('link do cliente da loja: retirada é sempre a loja, o cliente só diz onde
   await assert.rejects(a.cotarPublico({ loja: 'nao-existe-123', entrega: { endereco: 'Rua da Entrega, 20, Centro' } }, 'ip'), { codigo: 'link_invalido' });
 
   const r = await a.pedidoSite({ loja: cli.chave_cliente, nome: 'Paula Reis', telefone: '(11) 96666-0002', descricao: '2 jogos de lençol',
-    coleta: { endereco: 'Rua Falsa, 999' }, entrega: cot.entrega }, 'ip');
+    nf_doc: '529.982.247-25', nf_nome: 'Paula Reis', coleta: { endereco: 'Rua Falsa, 999' }, entrega: cot.entrega }, 'ip');
   const d = demandas()[0];
   assert.equal(d.coleta_endereco, 'Rua da Coleta, 10, Centro');
   assert.equal(d.coleta_contato, 'Marina');
@@ -1095,7 +1095,7 @@ test('link do cliente da loja: retirada é sempre a loja, o cliente só diz onde
 test('robô: pedidos em andamento de um telefone, com o link de acompanhamento', async () => {
   const { s, a, relogio } = montar();
   assert.throws(() => s.pedidosDoContato('123'), { codigo: 'telefone_invalido' });
-  assert.deepEqual(s.pedidosDoContato('5511966660002'), { pedidos: [] });
+  assert.deepEqual(s.pedidosDoContato('5511966660002'), { motoboy: false, pedidos: [] });
   const r = await a.pedidoSite({ nome: 'Bruno', telefone: '(11) 96666-0002', descricao: 'Envelope', coleta: { endereco: 'Rua da Coleta, 10, Centro' }, entrega: { endereco: 'Rua da Entrega, 20, Centro' } }, 'ip');
   const { pedidos } = s.pedidosDoContato('5511966660002'); // o WhatsApp manda com DDI
   assert.equal(pedidos.length, 1);
@@ -1103,8 +1103,43 @@ test('robô: pedidos em andamento de um telefone, com o link de acompanhamento',
   assert.equal(pedidos[0].link, `https://speed.exemplo/acompanhar/?c=${r.codigo}`);
   assert.equal(pedidos[0].aguardando_aprovacao, true);
   assert.deepEqual(Object.keys(pedidos[0]).sort(), ['aguardando_aprovacao', 'id', 'link', 'status'], 'sem endereço nem valor');
-  assert.deepEqual(s.pedidosDoContato('11955550000'), { pedidos: [] }, 'outro telefone não vê');
+  assert.deepEqual(s.pedidosDoContato('11955550000'), { motoboy: false, pedidos: [] }, 'outro telefone não vê');
   s.cancelarDemanda(r.id, 'teste', 'teste');
-  assert.deepEqual(s.pedidosDoContato('11966660002'), { pedidos: [] }, 'cancelado some');
+  assert.deepEqual(s.pedidosDoContato('11966660002'), { motoboy: false, pedidos: [] }, 'cancelado some');
+  s.criarMotoboy({ nome: 'Leo Moto', telefone: '27999001122', pin: '123456', veiculo: 'moto', tem_bag: true, tipo: 'avulso' }, 'teste');
+  assert.equal(s.pedidosDoContato('5527999001122').motoboy, true, 'motoboy é reconhecido pelo telefone com DDI');
   relogio.t += 60_000;
+});
+
+test('link do cliente da loja: exige quem recebe e nota fiscal; instruções e fachada chegam ao motoboy', async () => {
+  const { s, a, demandas, enviadas } = montar();
+  s.salvarCliente({ nome: 'Enxoval Bom', telefone: '11955551234', faturado: true, loja_endereco: 'Rua da Coleta, 10, Centro', loja_contato: 'Marina' }, 'teste');
+  const l = s.listarClientes().find((c) => c.nome === 'Enxoval Bom').chave_cliente;
+  const base = { loja: l, nome: 'Paula Reis', telefone: '(11) 96666-0002', descricao: 'Lençol', entrega: { endereco: 'Rua da Entrega, 20, Centro' } };
+  await assert.rejects(a.pedidoSite(base, 'ip'), { codigo: 'nf_invalida' });
+  await assert.rejects(a.pedidoSite({ ...base, nf_doc: '111.111.111-11', nf_nome: 'Paula Reis' }, 'ip'), { codigo: 'nf_invalida' });
+  await assert.rejects(a.pedidoSite({ ...base, nf_doc: '529.982.247-25', nf_nome: 'P' }, 'ip'), { codigo: 'nf_nome' });
+  const r = await a.pedidoSite({ ...base, nf_doc: '529.982.247-25', nf_nome: 'Paula Reis Lima', recebe_nome: 'Tia Rosa', recebe_fone: '(11) 95555-4444',
+    instrucoes: 'Deixar na portaria com o Sr. João, apto 302' }, 'ip');
+  const d = demandas()[0];
+  assert.equal(d.nf_doc, '52998224725');
+  assert.equal(d.nf_nome, 'Paula Reis Lima');
+  assert.match(d.entrega_contato, /Tia Rosa/);
+  assert.match(d.entrega_contato, /5555/);
+  assert.match(d.descricao, /📍 Na entrega: Deixar na portaria com o Sr\. João, apto 302/);
+  await a.despacharSaida();
+  assert.ok(enviadas.some((m) => /Nota do frete #\d+ .*Paula Reis Lima · CPF 529\.982\.247-25/.test(m.texto)), 'responsável recebe os dados da nota');
+  // CNPJ também vale; sem "outra pessoa", quem recebe é quem pediu.
+  await a.pedidoSite({ ...base, telefone: '(11) 96666-0003', nf_doc: '46.178.859/0001-96', nf_nome: 'SpeedBoy Motoboy' }, 'ip');
+  const d2 = demandas().find((x) => x.id !== d.id);
+  assert.equal(d2.nf_doc, '46178859000196');
+  assert.match(d2.entrega_contato, /Paula Reis/);
+  // Fachada: pelo código do pedido, enquanto está aberto; o motoboy só vê a da rota dele.
+  assert.equal(s.fachadaPermitida(r.codigo), d.id);
+  assert.throws(() => s.fachadaPermitida('nao-existe-123'), { codigo: 'nao_encontrado' });
+  s.fachadaGravada(d.id);
+  assert.ok(demandas().find((x) => x.id === d.id).fachada_em);
+  assert.throws(() => s.fachadaDoMotoboy({ id: 999 }, d.id), { codigo: 'sem_fachada' });
+  s.cancelarDemanda(d.id, 'teste', 'teste');
+  assert.throws(() => s.fachadaPermitida(r.codigo), { codigo: 'encerrado' });
 });

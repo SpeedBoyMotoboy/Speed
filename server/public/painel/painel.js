@@ -408,6 +408,8 @@ function desenharLateral() {
       : chip('Sem foto', 'aguardando')),
     d.ia_obs && h('div', { class: 'sub' }, `IA: ${d.ia_obs}`),
     d.cliente_telefone && h('div', { class: 'sub' }, `Cliente: ${telefoneFmt(d.cliente_telefone)}`),
+    d.nf_doc && h('div', { class: 'sub' }, `🧾 Nota: ${d.nf_nome} · ${d.nf_doc.length === 11 ? 'CPF' : 'CNPJ'} ${d.nf_doc}`),
+    d.fachada_em && h('div', { class: 'acoes' }, h('button', { class: 'pequeno', onclick: () => verFachada(d) }, '🏠 Ver fachada')),
     !['entregue', 'cancelada'].includes(d.status) && h('div', { class: 'acoes' },
       d.pagamento === 'pendente' && h('button', {
         class: 'pequeno primario',
@@ -895,6 +897,16 @@ async function verFoto(d) {
     dialogo(`Foto da entrega #${d.id} — ${d.cliente}`, (dlg) => [
       h('p', { class: 'nota' }, `Entregue ${hora(d.entregue_em)} para ${d.recebedor || '—'}`),
       h('img', { src: r.foto, alt: 'Foto da entrega', class: 'foto-entrega' }),
+      h('div', { class: 'linha fim' }, h('button', { onclick: dlg.fechar }, 'Fechar'))], { largo: true });
+  } catch (e) { els.conexao.textContent = e.message; }
+}
+
+async function verFachada(d) {
+  try {
+    const r = await api('GET', `/api/admin/demandas/${d.id}/fachada`);
+    dialogo(`Fachada da entrega #${d.id} — ${d.cliente}`, (dlg) => [
+      h('p', { class: 'nota' }, d.entrega_endereco),
+      h('img', { src: r.foto, alt: 'Fachada do local de entrega', class: 'foto-entrega' }),
       h('div', { class: 'linha fim' }, h('button', { onclick: dlg.fechar }, 'Fechar'))], { largo: true });
   } catch (e) { els.conexao.textContent = e.message; }
 }
