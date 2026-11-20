@@ -12,6 +12,7 @@ document.addEventListener('visibilitychange', manterTelaAcesa);
 manterTelaAcesa();
 const CHAVE_TOKEN = 'speed_token';
 const CHAVE_ROTA = 'speed_rota_versao';
+const CHAVE_PIN = 'speed_pin'; // senha guardada só neste aparelho, para entrar com um toque
 
 function h(tag, attrs, ...filhos) {
   const el = document.createElement(tag);
@@ -163,8 +164,11 @@ async function telaLogin(mensagem = '') {
   let termo = { texto: 'Não foi possível carregar o termo. Verifique a internet.', versao: '' };
   try { termo = await api('GET', '/api/termo'); } catch { /* mostra o aviso acima */ }
 
-  const telefone = h('input', { inputmode: 'tel', autocomplete: 'username', placeholder: '(11) 99999-0000', value: localStorage.getItem('speed_telefone') || '' });
-  const pin = h('input', { type: 'password', inputmode: 'numeric', maxlength: 6, autocomplete: 'current-password', placeholder: '6 números' });
+  // A senha fica guardada neste aparelho depois do primeiro login: na volta é um toque só.
+  const lembrado = { telefone: localStorage.getItem('speed_telefone') || '', pin: localStorage.getItem(CHAVE_PIN) || '' };
+  let rapido = Boolean(lembrado.telefone && lembrado.pin);
+  const telefone = h('input', { inputmode: 'tel', autocomplete: 'username', placeholder: '(27) 99999-0000', value: lembrado.telefone });
+  const pin = h('input', { type: 'password', inputmode: 'numeric', maxlength: 6, autocomplete: 'current-password', placeholder: '6 números', value: lembrado.pin });
   const aceito = h('input', { type: 'checkbox', checked: true });
   const erro = h('div', { class: 'erro', role: 'alert' }, mensagem);
   const entrar = h('button', { class: 'primario grande', type: 'submit' }, 'Iniciar turno');
@@ -202,6 +206,7 @@ async function telaLogin(mensagem = '') {
         token = r.token;
         localStorage.setItem(CHAVE_TOKEN, token);
         localStorage.setItem('speed_telefone', telefone.value);
+        localStorage.setItem(CHAVE_PIN, pin.value);
         localStorage.removeItem(CHAVE_ROTA);
         clearInterval(conferencia);
         if (nativo) nativo.iniciarTurno(token, r.fim_previsto);
@@ -209,18 +214,34 @@ async function telaLogin(mensagem = '') {
       } catch (e) {
         erro.textContent = e.message;
         entrar.disabled = false;
+        // Senha guardada não vale mais (trocaram no painel): mostra os campos para digitar a nova.
+        if (rapido && e.status === 401) {
+          localStorage.removeItem(CHAVE_PIN);
+          rapido = false;
+          pin.value = '';
+          campos.hidden = false;
+          conta.hidden = true;
+        }
       }
     },
-  },
-  h('label', null, 'Telefone com DDD'), telefone,
-  h('label', null, 'Senha'), pin,
-  h('label', { class: 'marcar' }, aceito, 'Aceito os termos'),
-  h('details', { class: 'ver-termo' }, h('summary', null, 'Ver termos'), h('div', { class: 'termo', tabindex: 0 }, termo.texto)),
-  erro, h('div', { class: 'botoes' }, entrar));
+  });
+  const campos = h('div', { hidden: rapido },
+    h('label', null, 'Telefone com DDD'), telefone,
+    h('label', null, 'Senha'), pin);
+  const conta = h('div', { class: 'conta-lembrada', hidden: !rapido },
+    h('div', null, 'Entrar como ', h('b', null, lembrado.telefone)),
+    h('button', {
+      type: 'button', class: 'leve',
+      onclick: () => { localStorage.removeItem(CHAVE_PIN); rapido = false; pin.value = ''; campos.hidden = false; conta.hidden = true; telefone.focus(); },
+    }, 'Usar outra conta'));
+  form.append(conta, campos,
+    h('label', { class: 'marcar' }, aceito, 'Aceito os termos'),
+    h('details', { class: 'ver-termo' }, h('summary', null, 'Ver termos'), h('div', { class: 'termo', tabindex: 0 }, termo.texto)),
+    erro, h('div', { class: 'botoes' }, entrar));
 
-  trocar(raiz, 
+  trocar(raiz,
     h('div', { class: 'topo' }, h('div', { class: 'nome' }, 'Speed ', h('span', null, 'Motoboy')),
-      h('div', { class: 'info' }, 'Diária: o login só funciona no dia da convocação. Avulso: entre quando quiser.')),
+      h('div', { class: 'info' }, 'Toque em Iniciar turno para começar.')),
     h('div', { class: 'conteudo' }, pendencias, form));
   conferir();
   if (nativo) conferencia = setInterval(conferir, 2000);
@@ -396,16 +417,16 @@ function desenharTurno() {
           h('span', { class: `etiqueta ${p.tipo}` }, p.tipo === 'coleta' ? 'COLETA' : 'ENTREGA'),
           h('div', null, h('div', null, p.endereco), h('div', { class: 'detalhe' }, p.cliente))))));
     }
-  } else if (!turno.almoco_ate) {
+  } else if (!turno.almoco_ate && !ofertas.length) {
     partes.push(h('div', { class: 'cartao livre' },
-      h('h2', null, ofertas.length ? 'Escolha uma entrega no quadro abaixo' : 'Sem demanda no momento'),
+      h('h2', null, 'Sem demanda no momento'),
       h('p', { class: 'nota' }, 'Fique com o app ligado. Quando entrar demanda perto de você, o celular avisa.')));
   }
 
   partes.push(...quadro());
 
   const carregando = rota.some((p) => p.tipo === 'entrega' && !rota.some((c) => c.tipo === 'coleta' && c.demanda_id === p.demanda_id));
-  if (!turno.almoco_usado) {
+  if (!turno.almoco_usado && motoboy.tipo !== 'avulso') {
     partes.push(h('div', { class: 'botoes' },
       h('button', { disabled: carregando, onclick: () => acaoAlmoco('iniciar') },
         carregando ? 'Almoço: entregue o que já coletou primeiro' : 'Iniciar almoço')));

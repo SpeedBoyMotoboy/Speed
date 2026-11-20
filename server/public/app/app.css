@@ -116,3 +116,10 @@ a.botao-link { display: flex; align-items: center; justify-content: center; min-
 .oculto { display: none; }
 button.grande.foto { border: 2px dashed var(--destaque); background: var(--cartao); }
 a.botao-link.claro { background: var(--cartao); color: var(--texto); border: 2px solid var(--acao); }
+
+/* Aviso de erro só ocupa espaço quando tem texto */
+.erro:empty { display: none; }
+[hidden] { display: none !important; }
+/* Login com um toque: conta lembrada neste aparelho */
+.conta-lembrada { text-align: center; font-size: 17px; margin: 6px 0 2px; }
+.conta-lembrada b { font-weight: 700; }
