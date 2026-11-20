@@ -5,7 +5,16 @@ import {
 import crypto from 'node:crypto';
 import { distM, distRuaKm, coordValida } from './geo.js';
 import { PROVEDORES, normalizarTelefone } from './mensageiro.js';
-import { TIPOS_CHAVE, normalizarChave } from './pix.js';
+import { TIPOS_CHAVE, normalizarChave, brCode } from './pix.js';
+import { createRequire } from 'node:module';
+const qrcode = createRequire(import.meta.url)('qrcode-generator');
+// QR Code do Pix em imagem (data URL), para o site e a página de acompanhamento mostrarem.
+function qrDataUrl(texto) {
+  const qr = qrcode(0, 'M');
+  qr.addData(texto);
+  qr.make();
+  return qr.createDataURL(5, 8);
+}
 import { MODELOS_IA } from './ia.js';
 import { atende, escolherMotoboy, melhorInsercao, REQUISITOS } from './despacho.js';
 import { lerConversa, textoDoZip, nomeDaConversa } from './whatsapp.js';
@@ -33,10 +42,13 @@ const CFG_NUM = {
   bike_max_km: [0.5, 50], capacidade: [1, 20], retencao_dias: [7, 730],
   diaria_valor: [0, 100000], almoco_valor: [0, 100000], almoco_min: [10, 180],
   mapa_lat: [-90, 90], mapa_lon: [-180, 180],
-  preco_base: [0, 100000], preco_km_incluso: [0, 1000], preco_km: [0, 1000], preco_minimo: [0, 100000],
+  preco_base: [0, 100000], preco_km_incluso: [0, 1000], preco_km: [0, 1000], preco_minimo: [0, 100000], preco_zona_sul: [0, 100000], urgente_pct: [0, 500], urgente_min: [0, 10000], urgente_repasse_pct: [0, 100],
+  tam_g_pct: [0, 500], tam_gg_pct: [0, 500], tam_repasse_pct: [0, 100],
+  longa_km1: [0, 10000], longa_preco1: [0, 1000], longa_km2: [0, 10000], longa_preco2: [0, 1000], longa_repasse_pct: [0, 100],
   convocacao_auto_max: [0, 50], convocacao_auto_espera_min: [0, 120],
-  urgente_prazo_min: [5, 600], robo_pausa_horas: [1, 168], repasse_pct: [0, 100], repasse_minimo: [0, 10000], oferta_raio_km: [0.5, 100],
+  urgente_prazo_min: [5, 600], robo_pausa_horas: [1, 168], repasse_pct: [0, 100], repasse_minimo: [0, 10000], repasse_base: [0, 10000], repasse_km: [0, 1000], oferta_raio_km: [0.5, 100],
   oferta_alerta_min: [1, 120], avulso_max_horas: [1, 24], pagamento_validade_min: [5, 1440],
+  urgente_km_max: [0, 10000], dono_motoboy_id: [0, 100000000], dono_espera_min: [0, 120], sem_lancamento_min: [0, 600],
 };
 const CFG_TXT = {
   cidade_base: 120, termo_texto: 8000, empresa_nome: 60, url_publica: 200, whats_url: 300, whats_instancia: 120,
@@ -45,12 +57,12 @@ const CFG_TXT = {
 const SIM_NAO = ['0', '1'];
 const CFG_OPC = {
   pedidos_site: SIM_NAO, rastreio_cliente: SIM_NAO, robo_ativo: SIM_NAO, avisos_cliente: SIM_NAO,
-  convocacao_auto: SIM_NAO, site_confirmacao: ['painel', 'whatsapp', 'pagamento', 'pix', 'nenhuma'], whats_provedor: PROVEDORES,
+  convocacao_auto: SIM_NAO, atribuir_auto: SIM_NAO, convocacao_obrigatoria: SIM_NAO, site_confirmacao: ['painel', 'whatsapp', 'pagamento', 'pix', 'nenhuma'], whats_provedor: PROVEDORES,
   ia_ativa: SIM_NAO, ia_modelo: MODELOS_IA, pix_tipo: TIPOS_CHAVE,
 };
 const CFG_HORA = ['atendimento_inicio', 'atendimento_fim'];
-const CFG_SECRETAS = ['api_chave_hash', 'whats_token', 'whats_app_secret', 'mp_token', 'ors_chave', 'ia_chave'];
-const SEM_SINAL_AVULSO = 30 * MIN;
+const CFG_SECRETAS = ['api_chave_hash', 'whats_token', 'whats_app_secret', 'mp_token', 'ors_chave', 'ia_chave', 'google_chave'];
+const SEM_SINAL_AVULSO = 120 * MIN; // pelo navegador (sem o app) o sinal cai com a tela apagada: não derruba o turno tão cedo
 const VOLTA_OFERTA = 90_000; // a cada volta sem aceite o raio da oferta dobra (até 8x)
 
 const txt = (v, max) => String(v ?? '').trim().slice(0, max);
@@ -119,11 +131,12 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       q('UPDATE config SET valor = ? WHERE chave = ?').run(crypto.randomBytes(18).toString('base64url'), 'whats_segredo');
       cacheCfg = null;
     }
-    const { api_chave_hash, whats_token, whats_app_secret, mp_token, ors_chave, ia_chave, ...resto } = cfgBruta();
+    const { api_chave_hash, whats_token, whats_app_secret, mp_token, ors_chave, ia_chave, google_chave, ...resto } = cfgBruta();
     return {
       ...resto, api_chave_definida: api_chave_hash !== '', whats_token_definido: whats_token !== '',
       whats_app_secret_definido: whats_app_secret !== '',
       mp_token_definido: mp_token !== '', ors_chave_definida: ors_chave !== '', ia_chave_definida: ia_chave !== '',
+      google_chave_definida: (google_chave ?? '') !== '',
     };
   }
   // Fora do horário de atendimento? (vazio = atende sempre). Devolve o texto do horário ou ''.
@@ -152,7 +165,95 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
 
   // Preço: (base + km a mais, com mínimo) + adicional do tipo de serviço. Cliente fixo pode ter percentual próprio.
   // Devolve também o repasse do motoboy avulso (percentual do valor, com mínimo).
-  function cotar(coleta, entrega, { km: kmRota = null, servicoId = null, telefone = '' } = {}) {
+  // Zona sul de Vila Velha (depois do posto da PRE na Rod. do Sol): pelo nome do bairro no endereço.
+  const ZONA_SUL = /\b(barra do jucu|barramares|morada da barra|terra vermelha|ulisses guimaraes|ulysses guimaraes|joao goulart|normilia da cunha|vinte e tres de maio|23 de maio|santa paula|jabaete|riviera da barra|ponta da fruta|xuri|cidade da barra|balneario ponta da fruta)\b/;
+  const semAcento = (s) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  // Usa o endere?o achado no mapa (se houver) e, em Vila Velha, tamb?m a latitude (sul de -20,405 = depois do posto da PRE).
+  const naZonaSul = (p) => {
+    if (!p) return false;
+    const texto = semAcento(p.nome || p.endereco || '');
+    if (ZONA_SUL.test(texto)) return true;
+    return /vila velha/.test(texto) && p.lat != null && Number(p.lat) < -20.405;
+  };
+  // Repasse próprio do motoboy avulso (definido no painel): base até os km incluídos + valor por km a mais.
+  // Sem valor próprio, devolve null e vale o repasse padrão da demanda.
+  // Corrida longa: diz se a corrida passa do 1º limite (devolve o R$/km da faixa; 0 = tabela normal).
+  function precoLonga(km) {
+    const n = Number(km);
+    if (km == null || !Number.isFinite(n)) return 0;
+    const c = cfgBruta();
+    const [k1, p1, k2, p2] = [c.longa_km1, c.longa_preco1, c.longa_km2, c.longa_preco2].map(Number);
+    if (k2 > 0 && p2 > 0 && n > k2) return p2;
+    if (k1 > 0 && p1 > 0 && n > k1) return p1;
+    return 0;
+  }
+  // Valor da corrida longa, suave: a tabela normal até o 1º limite + cada km a mais no valor da sua faixa
+  // (ex.: 36 km = tabela até 30 km + 6 × R$ 2,50; acima de 50 km, R$ 3,00 por km).
+  function valorLonga(km, normal) {
+    const c = cfgBruta();
+    const [k1, p1, k2, p2] = [c.longa_km1, c.longa_preco1, c.longa_km2, c.longa_preco2].map(Number);
+    const faixa1 = k1 > 0 && p1 > 0;
+    const faixa2 = k2 > 0 && p2 > 0;
+    const ini = faixa1 ? k1 : k2;
+    let v = normal(ini);
+    if (faixa1) v += (Math.min(km, faixa2 && k2 > k1 ? k2 : km) - k1) * p1;
+    if (faixa2 && km > k2) v += (km - Math.max(k2, faixa1 ? k1 : 0)) * p2;
+    return v;
+  }
+  // Tamanho da mercadoria que cobra a mais: 'g' (até 40 cm) ou 'gg' (mais de 40 cm). Pequeno e médio = ''.
+  const lerTamanho = (t) => ({ g: 'g', grande: 'g', gg: 'gg', maior: 'gg', gigante: 'gg' }[String(t ?? '').trim().toLowerCase()] || '');
+  // Valores em reais inteiros, sempre para baixo (cliente e motoboy): 319,20 → 319; 223,44 → 223.
+  const reaisInteiros = (v) => Math.floor(Math.round(Number(v) * 100) / 100 + 1e-9);
+  function repasseProprio(m, km) {
+    if (!m || km == null || (m.repasse_base == null && m.repasse_km == null)) return null;
+    if (precoLonga(km)) return null; // corrida longa: vale o % do total (repasse padrão da demanda)
+    const c = cfgBruta();
+    const base = m.repasse_base ?? Number(c.repasse_base);
+    const porKm = m.repasse_km ?? Number(c.repasse_km);
+    return reaisInteiros(base + Math.max(0, Number(km) - Number(c.preco_km_incluso)) * porKm);
+  }
+  // Rota da mesma coleta (motoboy avulso): ganha pelo km total da rota, coleta → entregas em linha
+  // (sempre a entrega mais perta de onde ele está). Entrega que entra numa rota aberta paga só o que a rota cresce.
+  const COLETA_MESMA_M = 150;
+  let ultimoKmExtra = 0; // km que a última entrega avaliada soma à rota (para a previsão de tempo)
+  function kmEmLinha(origem, destinos) {
+    let atual = origem;
+    let km = 0;
+    const resto = [...destinos];
+    while (resto.length) {
+      let i = 0;
+      let melhor = Infinity;
+      resto.forEach((p, j) => { const x = distRuaKm(atual, p); if (x < melhor) { melhor = x; i = j; } });
+      km += melhor;
+      atual = resto.splice(i, 1)[0];
+    }
+    return km;
+  }
+  function custoRota(mb, km) {
+    const c = cfgBruta();
+    const base = mb?.repasse_base ?? Number(c.repasse_base);
+    const porKm = mb?.repasse_km ?? Number(c.repasse_km);
+    return base + Math.max(0, km - Number(c.preco_km_incluso)) * porKm;
+  }
+  // d: demanda (id, coleta_lat/lon, entrega_lat/lon). Sem rota aberta da mesma coleta, devolve null.
+  function repasseNaRota(turno, d, mb) {
+    if (!turno || turno.tipo !== 'avulso' || d.coleta_lat == null || d.entrega_lat == null) return null;
+    if (precoLonga(d.km)) return null; // corrida longa não entra na conta da rota: paga o % do total
+    if (!Number(cfgBruta().repasse_base) && mb?.repasse_base == null) return null; // sem tabela de repasse
+    const coleta = { lat: d.coleta_lat, lon: d.coleta_lon };
+    const grupo = q(`SELECT coleta_lat, coleta_lon, entrega_lat AS lat, entrega_lon AS lon FROM demandas
+        WHERE turno_id = ? AND id <> ? AND status = 'atribuida' AND coleta_lat IS NOT NULL AND entrega_lat IS NOT NULL`)
+      .all(turno.id, d.id)
+      .filter((g) => distM(coleta, { lat: g.coleta_lat, lon: g.coleta_lon }) <= COLETA_MESMA_M);
+    if (!grupo.length) return null;
+    const kmAntes = kmEmLinha(coleta, grupo);
+    const kmDepois = kmEmLinha(coleta, [...grupo, { lat: d.entrega_lat, lon: d.entrega_lon }]);
+    ultimoKmExtra = Math.max(0, kmDepois - kmAntes);
+    const antes = custoRota(mb, kmAntes);
+    const depois = custoRota(mb, kmDepois);
+    return Math.max(0, reaisInteiros(depois) - reaisInteiros(antes)); // a rota inteira fecha em reais inteiros
+  }
+  function cotar(coleta, entrega, { km: kmRota = null, servicoId = null, telefone = '', urgente = false, tamanho = '' } = {}) {
     const servico = servicoId ? q('SELECT * FROM servicos WHERE id = ? AND ativo = 1').get(Number(servicoId)) || null : null;
     const nada = { km: null, valor: null, repasse: null, servico };
     if (coleta?.lat == null || entrega?.lat == null) return nada;
@@ -162,14 +263,43 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     const porKm = Number(c.preco_km);
     const minimo = Number(c.preco_minimo);
     const adicional = servico?.adicional || 0;
+    // Preço fixo do tipo de serviço (ex.: Correios): qualquer distância, sem acréscimos; o motoboy leva o fixo dele.
+    if (Number(servico?.preco_fixo) > 0) {
+      const valorFixo = reaisInteiros(servico.preco_fixo);
+      const pctFixo = servico.repasse_pct ?? Number(c.repasse_pct);
+      const repFixo = reaisInteiros(servico.repasse_fixo != null ? servico.repasse_fixo : (valorFixo * pctFixo) / 100);
+      return { km, valor: valorFixo, repasse: repFixo, servico, zona_sul: false, urgente_extra: 0, bonus: 0, tamanho: lerTamanho(tamanho), tamanho_extra: 0, longa: false, fixo: true };
+    }
     if (!base && !porKm && !minimo && !adicional) return { ...nada, km };
-    let valor = Math.max(minimo, base + Math.max(0, km - Number(c.preco_km_incluso)) * porKm) + adicional;
-    const fixo = telefone ? q('SELECT preco_pct FROM clientes WHERE telefone = ? AND faturado = 1').get(telefone) : null;
+    const normal = (k) => Math.max(minimo, base + Math.max(0, k - Number(c.preco_km_incluso)) * porKm);
+    const porKmLonga = precoLonga(km);
+    const valorKm = porKmLonga ? valorLonga(km, normal) : normal(km);
+    let valor = valorKm + adicional;
+    const fixo = telefone ? q('SELECT preco_pct, preco_fixo FROM clientes WHERE telefone = ? AND faturado = 1').get(telefone) : null;
     if (fixo) valor *= fixo.preco_pct / 100;
-    valor = Math.round(valor * 100) / 100;
+    const zonaSul = naZonaSul(coleta) || naZonaSul(entrega);
+    // Tarifa urgente: % a mais (com mínimo), antes do acréscimo de região. Parte do extra vai ao motoboy.
+    const extraUrg = urgente ? Math.round(Math.max(Number(c.urgente_min || 0), (valor * Number(c.urgente_pct || 0)) / 100) * 100) / 100 : 0;
+    // Tamanho G/GG: % a mais sobre o mesmo valor base (soma com a urgente, não acumula). Parte do extra vai ao motoboy.
+    // Corrida longa não cobra tamanho (o tamanho continua gravado para o motoboy saber que precisa de baú).
+    const tam = lerTamanho(tamanho);
+    const extraTam = tam && !porKmLonga ? Math.round(((valor * Number((tam === 'gg' ? c.tam_gg_pct : c.tam_g_pct) || 0)) / 100) * 100) / 100 : 0;
+    const bonus = Math.round(((extraUrg * Number(c.urgente_repasse_pct || 0)) / 100 + (extraTam * Number(c.tam_repasse_pct || 0)) / 100) * 100) / 100;
+    valor += extraUrg + extraTam;
+    if (zonaSul) valor += Number(c.preco_zona_sul || 0);
+    valor = reaisInteiros(valor);
+    // Cliente com valor fechado por viagem (ex.: Biohelp R$ 40): vale em qualquer caso.
+    if (Number(fixo?.preco_fixo) > 0) valor = reaisInteiros(fixo.preco_fixo);
     const pct = servico?.repasse_pct ?? Number(c.repasse_pct);
-    const repasse = Math.round(Math.max(Number(c.repasse_minimo), (valor * pct) / 100) * 100) / 100;
-    return { km, valor, repasse, servico };
+    // Tabela própria do motoboy (valor base até os km incluídos + valor por km a mais), se o dono preencheu;
+    // sem ela vale o percentual do valor cobrado. O adicional do serviço segue repassado pelo percentual.
+    const repBase = Number(c.repasse_base);
+    // Corrida longa: o motoboy leva um % do valor da corrida (sem os acréscimos), no lugar da tabela.
+    const bruto = porKmLonga ? (valorKm * Number(c.longa_repasse_pct || 0)) / 100 + (adicional * pct) / 100 : repBase > 0
+      ? repBase + Math.max(0, km - Number(c.preco_km_incluso)) * Number(c.repasse_km) + (adicional * pct) / 100
+      : (valor * pct) / 100;
+    const repasse = reaisInteiros(Math.max(Number(c.repasse_minimo), bruto) + bonus);
+    return { km, valor, repasse, servico, zona_sul: zonaSul, urgente_extra: extraUrg, bonus, tamanho: tam, tamanho_extra: extraTam, longa: Boolean(porKmLonga) };
   }
 
   // ------------------------------------------- tipos de serviço e clientes fixos
@@ -182,12 +312,20 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     if (!Number.isFinite(adicional) || adicional < 0 || adicional > 100000) throw new Erro(422, 'servico_invalido', 'Valor adicional inválido.');
     if (pct != null && (!Number.isFinite(pct) || pct < 0 || pct > 100)) throw new Erro(422, 'servico_invalido', 'Repasse entre 0 e 100%.');
     const ativo = d?.ativo === false || d?.ativo === 0 ? 0 : 1;
+    const lerFixo = (v) => {
+      if (v == null || v === '') return null;
+      const n = Number(v);
+      if (!Number.isFinite(n) || n < 0 || n > 100000) throw new Erro(422, 'servico_invalido', 'Preço fixo inválido.');
+      return n > 0 ? n : null;
+    };
+    const precoFixo = lerFixo(d?.preco_fixo);
+    const repasseFixo = precoFixo == null ? null : lerFixo(d?.repasse_fixo);
     if (d?.id) {
-      const r = q('UPDATE servicos SET nome = ?, adicional = ?, repasse_pct = ?, ativo = ? WHERE id = ?').run(nome, adicional, pct, ativo, Number(d.id));
+      const r = q('UPDATE servicos SET nome = ?, adicional = ?, repasse_pct = ?, ativo = ?, preco_fixo = ?, repasse_fixo = ? WHERE id = ?').run(nome, adicional, pct, ativo, precoFixo, repasseFixo, Number(d.id));
       if (!r.changes) throw new Erro(404, 'nao_encontrado', 'Tipo de serviço não encontrado.');
     } else {
       const ordem = q('SELECT COALESCE(MAX(ordem), 0) + 1 AS n FROM servicos').get().n;
-      q('INSERT INTO servicos (nome, adicional, repasse_pct, ativo, ordem) VALUES (?,?,?,?,?)').run(nome, adicional, pct, ativo, ordem);
+      q('INSERT INTO servicos (nome, adicional, repasse_pct, ativo, ordem, preco_fixo, repasse_fixo) VALUES (?,?,?,?,?,?,?)').run(nome, adicional, pct, ativo, ordem, precoFixo, repasseFixo);
     }
     auditar(ator, 'servico_salvo', nome);
   }
@@ -233,7 +371,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
           const tel = normalizarTelefone(bruto);
           if (soDigitos(bruto) !== '' && !tel) throw new Erro(422, 'config_invalida', 'WhatsApp da empresa: DDD + número.');
           gravar.run(tel, chave);
-        } else if (['whats_token', 'whats_app_secret', 'mp_token', 'ors_chave', 'ia_chave'].includes(chave)) {
+        } else if (['whats_token', 'whats_app_secret', 'mp_token', 'ors_chave', 'ia_chave', 'google_chave'].includes(chave)) {
           if (txt(bruto, 600) !== '') gravar.run(txt(bruto, 600), chave); // vazio = mantém o atual
         } else if (chave === 'admin_telefone') {
           const tel = normalizarTelefone(bruto);
@@ -347,6 +485,8 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
         throw new Erro(422, 'pin_invalido', 'A senha do motoboy deve ter 6 números.');
       }
       m.pin_hash = hashSenha(d.pin);
+      // O dono pediu para conseguir consultar a senha do motoboy (ele esquece e pede de novo).
+      m.pin_claro = String(d.pin);
     }
     if (novo || d.veiculo !== undefined) {
       if (!['moto', 'bike'].includes(d.veiculo)) throw new Erro(422, 'veiculo_invalido', 'Veículo: moto ou bike.');
@@ -359,6 +499,14 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     if (novo || d.tem_bau !== undefined) m.tem_bau = d.tem_bau ? 1 : 0;
     if (novo || d.tem_bag !== undefined) m.tem_bag = d.tem_bag ? 1 : 0;
     if (d.ativo !== undefined) m.ativo = d.ativo ? 1 : 0;
+    // Valor próprio do motoboy (vazio = tabela padrão).
+    for (const k of ['diaria_valor', 'repasse_base', 'repasse_km']) {
+      if (d[k] === undefined) continue;
+      if (d[k] === '' || d[k] === null) { m[k] = null; continue; }
+      const n = Number(String(d[k]).replace(',', '.'));
+      if (!Number.isFinite(n) || n < 0 || n > 100000) throw new Erro(422, 'valor_invalido', 'Valor do motoboy inválido.');
+      m[k] = n;
+    }
     return m;
   }
   function telefoneLivre(telefone, excetoId = 0) {
@@ -372,7 +520,64 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
                  VALUES (?,?,?,?,?,?,1,?,?)`)
       .run(m.nome, m.telefone, m.pin_hash, m.veiculo, m.tem_bau, m.tem_bag, agora(), m.tipo);
     auditar(ator, 'motoboy_criado', m.nome);
+    q('UPDATE motoboys SET pin_claro = ? WHERE id = ?').run(m.pin_claro ?? null, Number(r.lastInsertRowid));
+    const proprios = ['diaria_valor', 'repasse_base', 'repasse_km'].filter((k) => k in m);
+    if (proprios.length) {
+      q(`UPDATE motoboys SET ${proprios.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`)
+        .run(...proprios.map((k) => m[k]), Number(r.lastInsertRowid));
+    }
     return Number(r.lastInsertRowid);
+  }
+
+  // ------------------------------------------- cadastro público de motoboy
+  // O motoboy preenche a página /cadastro/; fica pendente até o dono aceitar ou recusar no painel.
+  function candidatar(d, ip) {
+    exigirNaoBloqueado(`cad:${ip}`, 6);
+    registrarFalha(`cad:${ip}`);
+    const nome = txt(d?.nome, 80);
+    if (nome.length < 5 || !nome.includes(' ')) throw new Erro(422, 'nome_invalido', 'Informe nome e sobrenome.');
+    const telefone = soDigitos(d?.telefone);
+    if (telefone.length < 10 || telefone.length > 11) throw new Erro(422, 'telefone_invalido', 'WhatsApp com DDD: 10 ou 11 números.');
+    const documento = txt(d?.documento, 20);
+    if (soDigitos(documento).length < 5) throw new Erro(422, 'documento_invalido', 'Informe o CPF ou o RG.');
+    const veiculo = d?.veiculo === 'bike' ? 'bike' : 'moto';
+    const placa = txt(d?.placa, 10).toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (veiculo === 'moto' && placa.length < 7) throw new Erro(422, 'placa_invalida', 'Informe a placa da moto (7 letras e números).');
+    const tipo = d?.tipo === 'diaria' ? 'diaria' : 'avulso';
+    const indicacao = txt(d?.indicacao, 160);
+    if (q('SELECT id FROM motoboys WHERE telefone = ?').get(telefone)) {
+      throw new Erro(409, 'ja_cadastrado', 'Esse WhatsApp já tem cadastro na SpeedBoy. Fale com a gente se esqueceu a senha.');
+    }
+    const campos = [nome, documento, placa, veiculo, d?.tem_bau ? 1 : 0, d?.tem_bag ? 1 : 0, tipo, indicacao];
+    const pendente = q("SELECT id FROM candidatos WHERE telefone = ? AND status = 'pendente'").get(telefone);
+    if (pendente) {
+      q('UPDATE candidatos SET nome=?, documento=?, placa=?, veiculo=?, tem_bau=?, tem_bag=?, tipo=?, indicacao=? WHERE id=?').run(...campos, pendente.id);
+      return { ok: true, id: pendente.id, novo: false, nome, tipo };
+    }
+    const r = q(`INSERT INTO candidatos (nome, documento, placa, veiculo, tem_bau, tem_bag, tipo, indicacao, telefone, status, criado_em)
+                 VALUES (?,?,?,?,?,?,?,?,?,'pendente',?)`).run(...campos, telefone, agora());
+    auditar('publico', 'cadastro_recebido', nome);
+    return { ok: true, id: Number(r.lastInsertRowid), novo: true, nome, tipo };
+  }
+  // Senha fácil de ditar (três pares, ex.: 447712), sorteada. O bloqueio de tentativas protege contra chute.
+  const pinFacil = () => Array.from({ length: 3 }, () => String(crypto.randomInt(0, 10)).repeat(2)).join('');
+  function decidirCandidato(id, aceitar, ator) {
+    const c = q('SELECT * FROM candidatos WHERE id = ?').get(Number(id));
+    if (!c) throw new Erro(404, 'nao_encontrado', 'Cadastro não encontrado.');
+    if (c.status !== 'pendente') throw new Erro(409, 'ja_decidido', 'Esse cadastro já foi respondido.');
+    if (!aceitar) {
+      q("UPDATE candidatos SET status = 'recusado', decidido_em = ? WHERE id = ?").run(agora(), c.id);
+      auditar(ator, 'cadastro_recusado', c.nome);
+      return { ok: true, aceito: false };
+    }
+    const pin = pinFacil();
+    return tx(() => {
+      const motoboyId = criarMotoboy({ nome: c.nome, telefone: c.telefone, pin, veiculo: c.veiculo, tipo: c.tipo, tem_bau: c.tem_bau, tem_bag: c.tem_bag }, ator);
+      q('UPDATE motoboys SET documento = ?, placa = ? WHERE id = ?').run(c.documento, c.placa, motoboyId);
+      q("UPDATE candidatos SET status = 'aceito', decidido_em = ?, motoboy_id = ? WHERE id = ?").run(agora(), motoboyId, c.id);
+      auditar(ator, 'cadastro_aceito', c.nome);
+      return { ok: true, aceito: true, motoboy_id: motoboyId, nome: c.nome, telefone: c.telefone, tipo: c.tipo, pin };
+    });
   }
   function atualizarMotoboy(id, dados, ator) {
     const atual = q('SELECT * FROM motoboys WHERE id = ?').get(id);
@@ -455,10 +660,10 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
           q('UPDATE turnos SET dispositivo = ?, origem = ? WHERE id = ?').run(disp, fonte, turno.id);
         }
       } else {
-        // Avulso entra quando quiser; diária só no dia em que for convocado.
+        // Avulso entra quando quiser; diária só no dia em que for convocado, se a convocação for obrigatória.
         const avulso = m.tipo === 'avulso';
         const conv = avulso ? null : convocacaoValida(m.id);
-        if (!avulso && !conv) {
+        if (!avulso && !conv && cfgBruta().convocacao_obrigatoria === '1') {
           throw new Erro(403, 'sem_convocacao', 'Você não foi convocado hoje. Aguarde o chamado da Speed.');
         }
         const t = agora();
@@ -660,15 +865,39 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     if (temCoord && !coordValida(lat, lon)) throw new Erro(422, 'local_invalido', `Local de ${nome} inválido.`);
     return { endereco, lat: temCoord ? lat : null, lon: temCoord ? lon : null, contato: txt(p?.contato, 120) };
   }
+  // Entrega agendada: data/hora da coleta (ms ou texto ISO). Só vale se for no futuro.
+  const ANTECEDENCIA = 60 * MIN; // até 1h antes a agendada fica só no quadro (reserva); depois entra no despacho normal
+  const JANELA_CONFIRMA = 120 * MIN; // a confirmação da reserva abre 2h antes
+  const VEL_KMH = 25; // velocidade média na cidade, para previsão de tempo
+  const MIN_PARADA = 5; // minutos por parada
+  function lerAgendada(v) {
+    if (v == null || v === '') return null;
+    const n = typeof v === 'number' ? v : Date.parse(String(v));
+    return Number.isFinite(n) && n > agora() ? n : null;
+  }
+  // Horário combinado: 'ate' (entregar até) ou 'apartir' (coletar a partir de), hora 'HH:MM' no dia agendado ou hoje.
+  // Vai em destaque no começo da descrição (motoboy, painel e compartilhar já mostram).
+  function lerJanela(tipo, hora, agendadaPara) {
+    if (!['ate', 'apartir'].includes(tipo)) return { tipo: '', ms: null, texto: '' };
+    const m = String(hora ?? '').trim().match(/^(\d{1,2})[:h](\d{2})$/);
+    if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) throw new Erro(422, 'hora_invalida', 'Informe o horário (ex.: 15:30).');
+    const base = new Date((agendadaPara || agora()) - 3 * 3600e3);
+    const ms = Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate(), Number(m[1]), Number(m[2])) + 3 * 3600e3;
+    const hh = `${m[1].padStart(2, '0')}:${m[2]}`;
+    return { tipo, ms, texto: tipo === 'ate' ? `⏰ ENTREGAR ATÉ ${hh}` : `⏰ COLETAR A PARTIR DE ${hh}` };
+  }
   function validarDemanda(d) {
     const cliente = txt(d?.cliente, 120);
     if (cliente.length < 2) throw new Erro(422, 'cliente_invalido', 'Informe o cliente.');
     const requisito = d?.requisito ?? 'qualquer';
     if (!REQUISITOS.includes(requisito)) throw new Erro(422, 'requisito_invalido', 'Requisito inválido.');
+    const janela = lerJanela(d?.hora_tipo, d?.hora, lerAgendada(d?.agendada_para));
     return {
-      cliente, requisito, descricao: txt(d?.descricao, 500),
+      cliente, requisito, descricao: [janela.texto, txt(d?.descricao, 1200)].filter(Boolean).join(' · ').slice(0, 1200),
+      horaTipo: janela.tipo, horaLimite: janela.ms,
       telefone: normalizarTelefone(d?.cliente_telefone ?? d?.telefone),
-      urgente: d?.urgente ? 1 : 0, servicoId: d?.servico_id ? Number(d.servico_id) : null,
+      agendadaPara: lerAgendada(d?.agendada_para),
+      urgente: d?.urgente ? 1 : 0, tarifaUrgente: d?.tarifa_urgente === true, tamanho: lerTamanho(d?.tamanho), servicoId: d?.servico_id ? Number(d.servico_id) : null,
       km: Number.isFinite(Number(d?.km)) && Number(d?.km) > 0 ? Number(d.km) : null, email: txt(d?.email, 120),
       coleta: lerPonto(d?.coleta, 'coleta'), entrega: lerPonto(d?.entrega, 'entrega'),
     };
@@ -676,7 +905,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
   // `retida`: fica parada (sem despacho) até o admin aprovar ou o cliente confirmar.
   function inserirDemanda(v, origem, ator, { retida = false, pagamento = '', ia = null } = {}) {
     const completo = v.coleta.lat != null && v.entrega.lat != null;
-    const { km, valor, repasse, servico } = cotar(v.coleta, v.entrega, { km: v.km, servicoId: v.servicoId, telefone: v.telefone });
+    const { km, valor, repasse, servico, bonus } = cotar(v.coleta, v.entrega, { km: v.km, servicoId: v.servicoId, telefone: v.telefone, urgente: v.tarifaUrgente, tamanho: v.tamanho });
     const r = q(`INSERT INTO demandas (cliente, descricao, requisito, origem,
         coleta_endereco, coleta_lat, coleta_lon, coleta_contato,
         entrega_endereco, entrega_lat, entrega_lon, entrega_contato, status, criada_em,
@@ -690,12 +919,53 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
         v.urgente, servico?.nome || '', repasse, pagamento, v.email, agora(),
         ia ? (ia.aprovado ? 1 : 0) : null, ia ? txt(ia.aprovado ? ia.resumo : ia.motivos.join(' · '), 500) : null);
     const id = Number(r.lastInsertRowid);
+    if (bonus) q('UPDATE demandas SET bonus_urgente = ? WHERE id = ?').run(bonus, id);
+    if (v.tamanho || v.tarifaUrgente) q('UPDATE demandas SET tamanho = ?, tarifa_urgente = ? WHERE id = ?').run(v.tamanho, v.tarifaUrgente ? 1 : 0, id);
+    if (v.agendadaPara) q('UPDATE demandas SET agendada_para = ? WHERE id = ?').run(v.agendadaPara, id);
+    if (v.horaTipo) q('UPDATE demandas SET hora_tipo = ?, hora_limite = ? WHERE id = ?').run(v.horaTipo, v.horaLimite, id);
     auditar(ator, 'demanda_criada', `#${id} ${v.cliente}`);
     emitir('demanda_criada', { demanda: q('SELECT * FROM demandas WHERE id = ?').get(id) });
     if (completo && !retida) despachar(id);
     return q('SELECT * FROM demandas WHERE id = ?').get(id);
   }
   // Pedido vindo do site ou do robô (os dados já foram conferidos por quem chama).
+  // Cliente fixo com coleta e entrega fixas (ex.: Biohelp): o robô avisa pelo WhatsApp.
+  // tipo 'nova' cria a viagem do dia (ou anota na que ainda não saiu); 'info' só anota.
+  function coletaFixa(d) {
+    const tel = normalizarTelefone(d?.telefone);
+    const cli = tel ? q('SELECT * FROM clientes WHERE telefone = ? AND faturado = 1').get(tel) : null;
+    const ler = (s) => { try { return JSON.parse(s || 'null'); } catch { return null; } };
+    const cf = ler(cli?.coleta_fixa);
+    const ef = ler(cli?.entrega_fixa);
+    if (!cli || !cf || !ef) return { acao: 'ignorado', motivo: 'cliente sem coleta e entrega fixas' };
+    const tipo = d?.tipo === 'nova' ? 'nova' : d?.tipo === 'info' ? 'info' : '';
+    const nota = txt(d?.nota, 300);
+    if (!tipo) return { acao: 'ignorado', motivo: 'tipo' };
+    const br = new Date(agora() - 3 * 3600e3);
+    const inicioDia = Date.UTC(br.getUTCFullYear(), br.getUTCMonth(), br.getUTCDate()) + 3 * 3600e3;
+    const aberta = q(`SELECT * FROM demandas WHERE cliente_telefone = ? AND status IN ('aguardando', 'sem_local', 'atribuida')
+      AND criada_em >= ? ORDER BY id DESC LIMIT 1`).get(tel, inicioDia);
+    if (aberta) {
+      if (nota && !String(aberta.descricao || '').includes(nota)) {
+        q('UPDATE demandas SET descricao = ? WHERE id = ?').run(`${aberta.descricao ? `${aberta.descricao} · ` : ''}📝 ${nota}`.slice(0, 1200), aberta.id);
+        auditar('robo', 'coleta_fixa_nota', `#${aberta.id}`);
+      }
+      return { acao: 'anotada', id: aberta.id };
+    }
+    if (tipo !== 'nova') return { acao: 'ignorado', motivo: 'sem coleta aberta hoje' };
+    const ponto = (p) => ({ endereco: txt(p.endereco, 200), contato: txt(p.contato, 120), lat: p.lat ?? null, lon: p.lon ?? null });
+    const descricao = [cf.obs && `📦 ${txt(cf.obs, 200)}`, ef.obs && `🏁 ${txt(ef.obs, 200)}`, nota && `📝 ${nota}`].filter(Boolean).join(' · ');
+    const nova = criarPedido({
+      cliente: cli.nome, telefone: tel, descricao, requisito: 'qualquer', urgente: false, coleta: ponto(cf), entrega: ponto(ef),
+    }, 'empresa', { retida: false, pagamento: 'faturado' });
+    q('UPDATE clientes SET pedidos = pedidos + 1 WHERE id = ?').run(cli.id);
+    let motoboy = null;
+    if (cli.motoboy_id && nova.status === 'aguardando') {
+      try { reatribuir(nova.id, Number(cli.motoboy_id), 'robo'); motoboy = Number(cli.motoboy_id); } catch (e) { console.error('[coleta fixa]', e.message); }
+    }
+    auditar('robo', 'coleta_fixa_criada', `#${nova.id} ${cli.nome}`);
+    return { acao: 'criada', id: nova.id, status: nova.status, motoboy };
+  }
   function criarPedido(dados, origem, opcoes) {
     const v = validarDemanda(dados);
     return tx(() => inserirDemanda(v, origem, origem, opcoes));
@@ -718,7 +988,67 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     });
     return true;
   }
+  // Pedido do site sem telefone: o número chega quando o cliente manda a mensagem no WhatsApp.
+  // Só preenche se estiver vazio (não troca o contato de um pedido que já tem dono).
+  function definirContato(id, telefoneBruto, ator) {
+    const d = q('SELECT * FROM demandas WHERE id = ?').get(id);
+    if (!d) throw new Erro(404, 'nao_encontrado', 'Demanda não encontrada.');
+    const telefone = normalizarTelefone(telefoneBruto);
+    if (!telefone) throw new Erro(422, 'telefone_invalido', 'Telefone inválido.');
+    const pix = pixAtual(d) ? { id: d.id, codigo: d.pag_pix, valor: d.valor } : null;
+    if (d.cliente_telefone) return { definido: false, igual: d.cliente_telefone === telefone, pix };
+    if (d.origem !== 'site' || ['entregue', 'cancelada'].includes(d.status)) return { definido: false, igual: false };
+    q('UPDATE demandas SET cliente_telefone = ? WHERE id = ?').run(telefone, id);
+    auditar(ator, 'demanda_contato', `#${id}`);
+    return { definido: true, igual: true, pix };
+  }
+  // Pedido do site fechado por fora (ex.: cliente aceitou o valor no WhatsApp): grava o valor
+  // combinado, recalcula o repasse e solta para o motoboy. Só pedido retido e ainda aberto.
+  function fecharPedido(id, valorCombinado, ator) {
+    const d = q('SELECT * FROM demandas WHERE id = ?').get(id);
+    if (!d) throw new Erro(404, 'nao_encontrado', 'Demanda não encontrada.');
+    if (!d.retida || ['entregue', 'cancelada'].includes(d.status)) return { liberada: false, motivo: 'ja_liberada_ou_encerrada', status: d.status };
+    const valor = Number(valorCombinado);
+    if (valorCombinado != null && valorCombinado !== '') {
+      if (!Number.isFinite(valor) || valor <= 0 || valor > 100000) throw new Erro(422, 'valor_invalido', 'Valor inválido.');
+      const c = cfgBruta();
+      const serv = d.servico ? q('SELECT * FROM servicos WHERE nome = ?').get(d.servico) : null;
+      const pct = serv?.repasse_pct ?? Number(c.repasse_pct);
+      // Valor igual ao cotado: o repasse já calculado (tabela, tamanho, corrida longa) continua valendo.
+      const igual = d.valor != null && d.repasse != null && Math.abs(valor - d.valor) < 0.01;
+      const repasse = igual ? d.repasse : reaisInteiros(Math.max(Number(c.repasse_minimo), (valor * pct) / 100));
+      q('UPDATE demandas SET valor = ?, repasse = ?, repasse_padrao = NULL, repasse_manual = ? WHERE id = ?').run(Math.round(valor * 100) / 100, repasse, igual ? d.repasse_manual : 0, id);
+      auditar(ator, 'demanda_valor', `#${id} ${valor}`);
+    }
+    const r = liberarDemanda(id, ator);
+    return { liberada: r === true, status: q('SELECT status FROM demandas WHERE id = ?').get(id).status };
+  }
   // Pix gerado para o pedido (o código fica guardado para a página de acompanhamento mostrar).
+  // Pix na chave da empresa (copia e cola + QR), com o valor do pedido. O cliente paga e a central confirma no painel.
+  function gerarPixManual(id) {
+    const c = cfgBruta();
+    const d = q('SELECT * FROM demandas WHERE id = ?').get(id);
+    if (!d || !c.pix_chave || d.valor == null || ['pago', 'faturado'].includes(d.pagamento) || d.status === 'cancelada') return null;
+    const codigo = brCode({ chave: c.pix_chave, nome: c.pix_nome || c.empresa_nome, cidade: c.pix_cidade, valor: d.valor, txid: `PEDIDO${d.id}` });
+    const qr = qrDataUrl(codigo);
+    registrarPix(id, { pagId: '', pix: codigo, qr, expira: agora() + 24 * 3600e3 });
+    return { codigo, qr, valor: d.valor, manual: true };
+  }
+  // Pix manual em aberto: se o valor mudou (desconto, correção), o código e o QR acompanham.
+  function pixAtual(d) {
+    if (d.pagamento !== 'pendente' || d.status === 'cancelada' || !d.pag_pix) return false;
+    if (!d.pag_id) {
+      const c = cfgBruta();
+      const codigo = brCode({ chave: c.pix_chave, nome: c.pix_nome || c.empresa_nome, cidade: c.pix_cidade, valor: d.valor, txid: `PEDIDO${d.id}` });
+      if (codigo !== d.pag_pix || !d.pag_qr) {
+        const qr = qrDataUrl(codigo);
+        q('UPDATE demandas SET pag_pix = ?, pag_qr = ? WHERE id = ?').run(codigo, qr, d.id);
+        d.pag_pix = codigo;
+        d.pag_qr = qr;
+      }
+    }
+    return true;
+  }
   function registrarPix(id, { pagId, pix, qr, expira }) {
     q("UPDATE demandas SET pagamento = 'pendente', pag_id = ?, pag_pix = ?, pag_qr = ?, pag_expira = ? WHERE id = ?")
       .run(String(pagId), pix, qr, expira, id);
@@ -748,6 +1078,10 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
   // Entrada automática (app de clientes, Make, WhatsApp): endereço em texto vira ponto no mapa.
   async function criarDemandaExterna(dados) {
     const v = validarDemanda(dados);
+    // Mesmo pedido mandado duas vezes pelo robô (mesmo cliente e mesma entrega em 10 min): devolve o que já existe.
+    const repetida = q(`SELECT * FROM demandas WHERE origem = 'api' AND status != 'cancelada' AND criada_em > ?
+        AND lower(cliente) = lower(?) AND entrega_endereco = ? ORDER BY id DESC`).get(agora() - 10 * MIN, v.cliente, v.entrega.endereco);
+    if (repetida) { auditar('api', 'demanda_repetida', `#${repetida.id} ${v.cliente}`); return repetida; }
     if (geocodificar) {
       for (const ponto of [v.coleta, v.entrega]) {
         if (ponto.lat != null) continue;
@@ -769,7 +1103,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     const entrega = lerPonto({ endereco: d.entrega_endereco, lat: d.entrega_lat, lon: d.entrega_lon, ...dados?.entrega }, 'entrega');
     if (coleta.lat == null || entrega.lat == null) throw new Erro(422, 'local_invalido', 'Marque coleta e entrega no mapa.');
     const servicoId = d.servico ? q('SELECT id FROM servicos WHERE nome = ?').get(d.servico)?.id : null;
-    const { km, valor, repasse } = cotar(coleta, entrega, { servicoId, telefone: d.cliente_telefone });
+    const { km, valor, repasse, bonus } = cotar(coleta, entrega, { servicoId, telefone: d.cliente_telefone, urgente: d.tarifa_urgente === 1, tamanho: d.tamanho });
     // Já pago: o valor combinado com o cliente não muda.
     const novoValor = d.pagamento === 'pago' ? d.valor : valor;
     const novoRepasse = d.pagamento === 'pago' ? d.repasse : repasse;
@@ -777,8 +1111,9 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     const cobrar = precisaCobrar(d, novoValor);
     const segurar = d.pagamento === 'pendente' || cobrar;
     tx(() => {
+      if (d.pagamento !== 'pago') q('UPDATE demandas SET bonus_urgente = ? WHERE id = ?').run(bonus || null, d.id);
       q(`UPDATE demandas SET coleta_endereco=?, coleta_lat=?, coleta_lon=?, entrega_endereco=?, entrega_lat=?,
-         entrega_lon=?, status='aguardando', km=?, valor=?, repasse=?, retida=?, fila_em=? WHERE id=?`)
+         entrega_lon=?, status='aguardando', km=?, valor=?, repasse=?, repasse_padrao=NULL, repasse_manual=0, retida=?, fila_em=? WHERE id=?`)
         .run(coleta.endereco, coleta.lat, coleta.lon, entrega.endereco, entrega.lat, entrega.lon, km, novoValor, novoRepasse,
           segurar ? 1 : 0, agora(), id);
       auditar(ator, 'demanda_local', `#${id}`);
@@ -786,16 +1121,92 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       despachar(id);
     });
   }
-  function cancelarDemanda(id, ator) {
+  function cancelarDemanda(id, ator, motivo = '') {
     const d = q('SELECT * FROM demandas WHERE id = ?').get(id);
     if (!d) throw new Erro(404, 'nao_encontrado', 'Demanda não encontrada.');
     if (['entregue', 'cancelada'].includes(d.status)) throw new Erro(409, 'ja_finalizada', 'Demanda já finalizada.');
     tx(() => {
-      q("UPDATE demandas SET status = 'cancelada', cancelada_em = ? WHERE id = ?").run(agora(), id);
+      q("UPDATE demandas SET status = 'cancelada', cancelada_em = ?, cancel_motivo = ? WHERE id = ?").run(agora(), txt(motivo, 200) || null, id);
       q("UPDATE ofertas SET status = 'encerrada', respondida_em = ? WHERE demanda_id = ? AND status = 'aberta'").run(agora(), id);
       if (d.turno_id) q('UPDATE turnos SET rota_versao = rota_versao + 1 WHERE id = ?').run(d.turno_id);
-      auditar(ator, 'demanda_cancelada', `#${id}`);
+      auditar(ator, 'demanda_cancelada', `#${id}${txt(motivo, 200) ? `: ${txt(motivo, 200)}` : ''}`);
       emitir('demanda_cancelada', { demanda: d });
+    });
+  }
+
+  // A central marca a entrega como concluída (ex.: o motoboy entregou e esqueceu de registrar).
+  // Central muda o valor do pedido (ex.: desconto combinado com o cliente) e o que o motoboy recebe.
+  // O repasse digitado fica travado: a tabela própria do motoboy e a conta da rota não mexem mais nele.
+  function editarValor(id, dados, ator) {
+    const d = q('SELECT * FROM demandas WHERE id = ?').get(id);
+    if (!d) throw new Erro(404, 'nao_encontrado', 'Demanda não encontrada.');
+    if (['entregue', 'cancelada'].includes(d.status)) throw new Erro(409, 'ja_finalizada', 'Demanda já finalizada: o valor não muda mais.');
+    if (d.pagamento === 'pago') throw new Erro(409, 'ja_pago', 'Pedido já pago: o valor não muda.');
+    if (d.pagamento === 'pendente' && d.pag_id) throw new Erro(409, 'pix_gerado', 'O Pix deste pedido já foi gerado com o valor antigo.');
+    const numero = (v, nome) => {
+      const n = Number(String(v ?? '').replace(',', '.'));
+      if (String(v ?? '').trim() === '' || !Number.isFinite(n) || n < 0 || n > 100000) throw new Erro(422, 'valor_invalido', `${nome}: valor inválido.`);
+      return Math.round(n * 100) / 100;
+    };
+    const valor = numero(dados?.valor, 'Cliente paga');
+    if (valor <= 0) throw new Erro(422, 'valor_invalido', 'Cliente paga: valor inválido.');
+    const repasse = dados?.repasse == null || String(dados.repasse).trim() === '' ? d.repasse : numero(dados.repasse, 'Motoboy recebe');
+    const obs = txt(dados?.motivo, 200);
+    tx(() => {
+      q('UPDATE demandas SET valor = ?, repasse = ?, repasse_padrao = NULL, bonus_urgente = NULL, repasse_manual = 1 WHERE id = ?').run(valor, repasse, id);
+      if (d.turno_id) q('UPDATE turnos SET rota_versao = rota_versao + 1 WHERE id = ?').run(d.turno_id);
+      auditar(ator, 'demanda_valor', `#${id} cliente ${d.valor ?? '—'} → ${valor}; motoboy ${d.repasse ?? '—'} → ${repasse ?? '—'}${obs ? `: ${obs}` : ''}`);
+    });
+    return q('SELECT * FROM demandas WHERE id = ?').get(id);
+  }
+  // Foto da entrega: o app manda depois de confirmar (ou quando a internet voltar). Só o motoboy da entrega.
+  function fotoPermitida(turno, demandaId) {
+    const d = q('SELECT id FROM demandas WHERE id = ? AND motoboy_id = ?').get(Number(demandaId), turno.motoboy_id);
+    if (!d) throw new Erro(404, 'nao_encontrado', 'Entrega não encontrada.');
+    return d.id;
+  }
+  // Central corrige os dados do pedido (cliente, descrição, contatos, exigência) a qualquer momento antes de fechar.
+  function editarDados(id, dados, ator) {
+    const d = q('SELECT * FROM demandas WHERE id = ?').get(Number(id));
+    if (!d) throw new Erro(404, 'nao_encontrado', 'Demanda não encontrada.');
+    if (['entregue', 'cancelada'].includes(d.status)) throw new Erro(409, 'ja_finalizada', 'Demanda já finalizada.');
+    const cliente = dados?.cliente == null ? d.cliente : txt(dados.cliente, 120);
+    if (cliente.length < 2) throw new Erro(422, 'cliente_invalido', 'Informe o cliente.');
+    const requisito = dados?.requisito ?? d.requisito;
+    if (!REQUISITOS.includes(requisito)) throw new Erro(422, 'requisito_invalido', 'Requisito inválido.');
+    const descricao = dados?.descricao == null ? d.descricao : txt(dados.descricao, 1200);
+    const cc = dados?.coleta_contato == null ? d.coleta_contato : txt(dados.coleta_contato, 120);
+    const ec = dados?.entrega_contato == null ? d.entrega_contato : txt(dados.entrega_contato, 120);
+    tx(() => {
+      q('UPDATE demandas SET cliente = ?, requisito = ?, descricao = ?, coleta_contato = ?, entrega_contato = ? WHERE id = ?')
+        .run(cliente, requisito, descricao, cc, ec, d.id);
+      if (d.turno_id) q('UPDATE turnos SET rota_versao = rota_versao + 1 WHERE id = ?').run(d.turno_id);
+      auditar(ator, 'demanda_editada', `#${d.id}`);
+    });
+    return q('SELECT * FROM demandas WHERE id = ?').get(d.id);
+  }
+  // Central libera para o cliente ver o motoboy desde a saída (ex.: coleta longe, viagem longa).
+  function liberarRastreio(id, ator) {
+    const d = q('SELECT id, status FROM demandas WHERE id = ?').get(Number(id));
+    if (!d) throw new Erro(404, 'nao_encontrado', 'Demanda não encontrada.');
+    q('UPDATE demandas SET rastreio_livre = 1 WHERE id = ?').run(d.id);
+    auditar(ator, 'rastreio_cliente', `#${d.id}`);
+    return { ok: true };
+  }
+  function fotoGravada(id) { q('UPDATE demandas SET foto_em = ? WHERE id = ?').run(agora(), id); }
+  function finalizarDemanda(id, motivo, ator) {
+    const d = q('SELECT * FROM demandas WHERE id = ?').get(id);
+    if (!d) throw new Erro(404, 'nao_encontrado', 'Demanda não encontrada.');
+    if (['entregue', 'cancelada'].includes(d.status)) throw new Erro(409, 'ja_finalizada', 'Demanda já finalizada.');
+    const t = agora();
+    const obs = txt(motivo, 300);
+    tx(() => {
+      q(`UPDATE demandas SET status = 'entregue', entregue_em = ?, coletada_em = COALESCE(coletada_em, ?), retida = 0,
+         entrega_justificativa = ?, recebedor = COALESCE(recebedor, ?) WHERE id = ?`)
+        .run(t, t, `Finalizada pela central${obs ? `: ${obs}` : ''}`, 'Finalizada pela central', id);
+      q("UPDATE ofertas SET status = 'encerrada', respondida_em = ? WHERE demanda_id = ? AND status = 'aberta'").run(t, id);
+      if (d.turno_id) q('UPDATE turnos SET rota_versao = rota_versao + 1 WHERE id = ?').run(d.turno_id);
+      auditar(ator, 'demanda_finalizada', `#${id}${obs ? `: ${obs}` : ''}`);
     });
   }
 
@@ -811,6 +1222,8 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     descricao: d.descricao,
     servico: d.servico,
     repasse: d.repasse,
+    agendada_para: d.agendada_para ?? null,
+    coleta_contato: d.coleta_contato,
     ordem: tipo === 'coleta' ? d.ordem_coleta : d.ordem_entrega,
   });
   function rotaDoTurno(turnoId) {
@@ -831,6 +1244,14 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     q(`UPDATE demandas SET status = 'atribuida', motoboy_id = ?, turno_id = ?, atribuida_em = ?,
        coletada_em = NULL, coleta_dist_m = NULL, coleta_justificativa = NULL WHERE id = ?`)
       .run(turno.motoboy_id, turno.id, t, d.id);
+    {
+      const atual = q('SELECT id, repasse, repasse_padrao, repasse_manual, bonus_urgente, km, coleta_lat, coleta_lon, entrega_lat, entrega_lon FROM demandas WHERE id = ?').get(d.id);
+      const padrao = atual.repasse_padrao ?? atual.repasse;
+      const mb = turno.tipo === 'avulso' && !atual.repasse_manual ? q('SELECT repasse_base, repasse_km FROM motoboys WHERE id = ?').get(turno.motoboy_id) : null;
+      const semBonus = mb ? (repasseNaRota(turno, atual, mb) ?? repasseProprio(mb, atual.km)) : null;
+      const proprio = semBonus == null ? null : reaisInteiros(semBonus + (atual.bonus_urgente || 0));
+      q('UPDATE demandas SET repasse = ?, repasse_padrao = ? WHERE id = ?').run(proprio ?? padrao, proprio != null ? padrao : null, d.id);
+    }
     nova.forEach((p, i) => {
       const coluna = p.tipo === 'coleta' ? 'ordem_coleta' : 'ordem_entrega';
       q(`UPDATE demandas SET ${coluna} = ? WHERE id = ?`).run(i, p.demanda_id);
@@ -866,9 +1287,16 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     const desde = d.fila_em ?? d.criada_em;
     const raio = Number(b.oferta_raio_km) * 2 ** Math.min(3, Math.floor((t - desde) / VOLTA_OFERTA));
     let novas = 0;
-    for (const cand of candidatos()) {
+    // Conta de motoboy do dono: a entrega comum toca antes para os outros; só chega nele depois da espera.
+    const donoId = Number(b.dono_motoboy_id || 0);
+    const esperaDono = Number(b.dono_espera_min || 0) * MIN;
+    const todos = candidatos();
+    const noAr = (x) => !x.emAlmoco && x.turno.ult_lat != null && t - (x.turno.ult_contato ?? x.turno.inicio) <= c.semSinalMs;
+    const outroNoAr = donoId > 0 && todos.some((x) => x.motoboy.id !== donoId && noAr(x));
+    for (const cand of todos) {
       const { turno, motoboy } = cand;
-      if (!d.urgente && turno.tipo !== 'avulso') continue;
+      if (!d.urgente && motoboy.id === donoId && outroNoAr && t - desde < esperaDono) continue;
+      if (!d.urgente && turno.tipo !== 'avulso' && b.atribuir_auto === '1') continue;
       if (cand.emAlmoco || turno.ult_lat == null || t - (turno.ult_contato ?? turno.inicio) > c.semSinalMs) continue;
       if (!atende(motoboy, d, c) || abertasDoTurno(turno.id) >= c.capacidade) continue;
       const dist = distRuaKm({ lat: turno.ult_lat, lon: turno.ult_lon }, { lat: d.coleta_lat, lon: d.coleta_lon });
@@ -890,7 +1318,9 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
   function despachar(demandaId) {
     const d = q("SELECT * FROM demandas WHERE id = ? AND status = 'aguardando' AND retida = 0").get(demandaId);
     if (!d) return false;
-    if (!d.urgente) {
+    if (d.agendada_para && agora() < d.agendada_para - ANTECEDENCIA) return false; // agendada: só no quadro, para reserva
+    // Atribuição automática desligada: a demanda toca na tela de todos e quem aceitar leva.
+    if (!d.urgente && cfgBruta().atribuir_auto === '1') {
       const escolhido = escolherMotoboy(d, candidatos().filter((x) => x.turno.tipo === 'diaria'), cfg());
       if (escolhido) {
         atribuir(d, escolhido.turno);
@@ -981,6 +1411,10 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
           : `Você está a ${dist} m do local. Explique o motivo para registrar.`,
         { distancia_m: dist });
     }
+    // Urgente pago no Pix: a entrega só finaliza depois que a central confirmar o pagamento.
+    if (tipo === 'entrega' && d.pagamento === 'pendente') {
+      throw new Erro(409, 'aguardando_pix', 'O cliente ainda não pagou o Pix. Peça o comprovante e avise a central: a entrega só finaliza depois do pagamento confirmado.');
+    }
     const nomeRecebedor = txt(recebedor, 80);
     if (tipo === 'entrega' && nomeRecebedor.length < 2) {
       throw new Erro(422, 'recebedor_obrigatorio', 'Informe o nome de quem recebeu.');
@@ -1006,24 +1440,100 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     });
   }
 
+  // ------------------------------------------------------- agendadas e problema
+  // Quadro de agendadas: as livres (até 1h antes) e as reservadas por este motoboy.
+  function agendadasPara(turno, paga) {
+    const t = agora();
+    return q(`SELECT id, cliente, coleta_endereco, entrega_endereco, km, repasse, agendada_para, reservada_por,
+        coleta_lat, coleta_lon, entrega_lat, entrega_lon FROM demandas
+        WHERE status = 'aguardando' AND retida = 0 AND agendada_para IS NOT NULL AND agendada_para - ? > ?
+          AND (reservada_por IS NULL OR reservada_por = ?) ORDER BY agendada_para`).all(ANTECEDENCIA, t, turno.motoboy_id)
+      .map(({ id, reservada_por: dono, repasse, ...d }) => ({
+        ...d, demanda_id: id, repasse: paga(repasse), minha: dono === turno.motoboy_id,
+        confirmar_ate: d.agendada_para - ANTECEDENCIA, pode_confirmar: dono === turno.motoboy_id && t >= d.agendada_para - JANELA_CONFIRMA,
+      }));
+  }
+  // Previsão de quando a rota atual termina: trajeto a 25 km/h + 5 min por parada.
+  function previsaoFim(turno) {
+    const rota = rotaDoTurno(turno.id).filter((p) => p.lat != null);
+    if (!rota.length) return null;
+    let atual = turno.ult_lat != null ? { lat: turno.ult_lat, lon: turno.ult_lon } : rota[0];
+    let km = 0;
+    for (const p of rota) { km += distRuaKm(atual, p); atual = p; }
+    return agora() + Math.round((km / VEL_KMH) * 60 + MIN_PARADA * rota.length) * MIN;
+  }
+  function agendadaMotoboy(turno, { demanda_id: id, acao }) {
+    const t = agora();
+    const fora = () => new Erro(409, 'agendada_indisponivel', 'Essa entrega agendada não está mais disponível.');
+    tx(() => {
+      const d = q("SELECT * FROM demandas WHERE id = ? AND status = 'aguardando' AND retida = 0 AND agendada_para IS NOT NULL").get(Number(id));
+      if (!d) throw fora();
+      if (acao === 'reservar') {
+        if (d.reservada_por || t >= d.agendada_para - ANTECEDENCIA) throw fora();
+        const mb = q('SELECT reserva_bloqueio_ate FROM motoboys WHERE id = ?').get(turno.motoboy_id);
+        if ((mb?.reserva_bloqueio_ate || 0) > t) throw fora(); // perdeu a prioridade por 1 dia (sem aviso explícito)
+        q('UPDATE demandas SET reservada_por = ? WHERE id = ?').run(turno.motoboy_id, d.id);
+        auditar(`motoboy:${turno.motoboy_id}`, 'agendada_reservada', `#${d.id}`);
+      } else if (acao === 'soltar') {
+        if (d.reservada_por !== turno.motoboy_id) throw fora();
+        q('UPDATE demandas SET reservada_por = NULL WHERE id = ?').run(d.id);
+        auditar(`motoboy:${turno.motoboy_id}`, 'agendada_solta', `#${d.id}`);
+      } else if (acao === 'confirmar') {
+        if (d.reservada_por !== turno.motoboy_id) throw fora();
+        if (t < d.agendada_para - JANELA_CONFIRMA) throw new Erro(409, 'cedo', 'A confirmação abre 2 horas antes do horário.');
+        atribuir(d, q('SELECT * FROM turnos WHERE id = ?').get(turno.id));
+        auditar(`motoboy:${turno.motoboy_id}`, 'agendada_confirmada', `#${d.id}`);
+      } else throw new Erro(422, 'acao_invalida', 'Ação inválida.');
+    });
+  }
+  // Reserva não confirmada até 1h antes: volta ao quadro e o motoboy fica 1 dia sem poder reservar.
+  function expirarReservas(t) {
+    for (const d of q(`SELECT id, reservada_por FROM demandas WHERE status = 'aguardando' AND reservada_por IS NOT NULL
+        AND agendada_para IS NOT NULL AND agendada_para - ? <= ?`).all(ANTECEDENCIA, t)) {
+      q('UPDATE demandas SET reservada_por = NULL WHERE id = ?').run(d.id);
+      q('UPDATE motoboys SET reserva_bloqueio_ate = ? WHERE id = ?').run(t + 24 * 60 * MIN, d.reservada_por);
+      auditar('sistema', 'reserva_expirada', `#${d.id} (motoboy ${d.reservada_por} sem reservar por 1 dia)`);
+    }
+  }
+  // Motoboy não conseguiu resolver com quem recebe nem com a loja: chama a central.
+  function problemaMotoboy(turno, { demanda_id: id, tipo, texto }) {
+    const d = q('SELECT id, cliente FROM demandas WHERE id = ? AND turno_id = ?').get(Number(id), turno.id);
+    if (!d) throw new Erro(404, 'nao_encontrado', 'Entrega não encontrada na sua rota.');
+    alertaPontual(turno, 'problema', `#${d.id} ${d.cliente} (${tipo === 'coleta' ? 'na coleta' : 'na entrega'}): ${txt(texto, 300) || 'sem detalhe'}. Já tentou os contatos. Decidir: voltar com a entrega ou deixar em outro lugar.`);
+  }
+
   // ------------------------------------------------------- telas (leitura)
   function estadoMotoboy(turno) {
-    const m = q('SELECT nome, veiculo FROM motoboys WHERE id = ?').get(turno.motoboy_id);
+    const m = q('SELECT nome, veiculo, repasse_base, repasse_km, ve_valores FROM motoboys WHERE id = ?').get(turno.motoboy_id);
     const c = cfg();
     const avulso = turno.tipo === 'avulso';
+    // Conta do dono (ve_valores): vê em cada entrega o que o cliente paga e o repasse do avulso.
+    const dono = Boolean(m.ve_valores);
+    const valorCliente = (id) => (dono ? q('SELECT valor FROM demandas WHERE id = ?').get(id)?.valor ?? null : undefined);
     // A diária não recebe por entrega: o valor do repasse só aparece para o avulso.
-    const paga = (v) => (avulso ? v : null);
+    const paga = (v) => (avulso || dono ? v : null);
     const ofertas = q(`SELECT o.id, o.dist_km, d.id AS demanda_id, d.servico, d.descricao, d.coleta_endereco,
-        d.entrega_endereco, d.km, d.repasse, d.urgente
+        d.entrega_endereco, d.km, d.repasse, d.repasse_manual, d.urgente, d.bonus_urgente, d.cliente, d.coleta_lat, d.coleta_lon, d.entrega_lat, d.entrega_lon
       FROM ofertas o JOIN demandas d ON d.id = o.demanda_id
       WHERE o.turno_id = ? AND o.status = 'aberta' AND d.status = 'aguardando' AND d.retida = 0
-      ORDER BY o.id`).all(turno.id).map((o) => ({ ...o, repasse: paga(o.repasse) }));
+      ORDER BY o.id`).all(turno.id).map(({ coleta_lat, coleta_lon, entrega_lat, entrega_lon, bonus_urgente, repasse_manual, ...o }) => {
+        const naRota = repasse_manual ? null : repasseNaRota(turno, { id: o.demanda_id, km: o.km, coleta_lat, coleta_lon, entrega_lat, entrega_lon }, m);
+        const proprio = repasse_manual ? null : naRota ?? repasseProprio(m, o.km);
+        const kmMais = naRota != null ? ultimoKmExtra : (o.dist_km || 0) + (o.km || 0);
+        return {
+          ...o, coleta_lat, coleta_lon, entrega_lat, entrega_lon, na_rota: naRota != null, valor_cliente: valorCliente(o.demanda_id),
+          tempo_min: Math.round((kmMais / VEL_KMH) * 60 + MIN_PARADA * (naRota != null ? 1 : 2)),
+          repasse: paga(proprio != null ? reaisInteiros(proprio + (bonus_urgente || 0)) : o.repasse),
+        };
+      });
     const feitas = avulso ? q(`SELECT id, servico, entrega_endereco, entregue_em, repasse FROM demandas
         WHERE turno_id = ? AND status = 'entregue' ORDER BY entregue_em DESC`).all(turno.id) : [];
     return {
       agora: agora(),
       motoboy: { nome: m.nome, veiculo: m.veiculo, tipo: turno.tipo },
       ofertas,
+      agendadas: agendadasPara(turno, paga),
+      previsao_fim: previsaoFim(turno),
       ganhos: avulso ? { total: Math.round(feitas.reduce((soma, d) => soma + (d.repasse || 0), 0) * 100) / 100, entregas: feitas } : null,
       pode_encerrar: avulso && abertasDoTurno(turno.id) === 0,
       turno: {
@@ -1035,7 +1545,8 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       },
       rota_versao: turno.rota_versao,
       cerca_m: c.cercaM,
-      rota: rotaDoTurno(turno.id).map(({ ordem, ...p }) => ({ ...p, repasse: paga(p.repasse) })),
+      rota: rotaDoTurno(turno.id).map(({ ordem, ...p }) => ({ ...p, repasse: paga(p.repasse), valor_cliente: valorCliente(p.demanda_id),
+        aguarda_pix: q('SELECT pagamento FROM demandas WHERE id = ?').get(p.demanda_id)?.pagamento === 'pendente' })),
     };
   }
 
@@ -1051,10 +1562,28 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     return pendentes > 0 ? 'em_rota' : 'disponivel';
   }
 
+  // O que pede ação agora: carga parada com turno encerrado e pedido sem motoboy há tempo demais.
+  function avisosOperacao() {
+    const t = agora();
+    const b = cfgBruta();
+    const lista = [];
+    for (const d of q(`SELECT d.id, d.cliente, m.nome FROM demandas d JOIN turnos tu ON tu.id = d.turno_id
+        LEFT JOIN motoboys m ON m.id = d.motoboy_id WHERE d.status = 'coletada' AND tu.fim_real IS NOT NULL`).all()) {
+      lista.push(`Pedido #${d.id} (${d.cliente}) foi coletado e não entregue: o turno de ${d.nome || 'motoboy'} já encerrou.`);
+    }
+    for (const d of q("SELECT id, cliente, urgente, criada_em, fila_em, agendada_para FROM demandas WHERE status = 'aguardando' AND retida = 0").all()) {
+      if (d.agendada_para && t < d.agendada_para - ANTECEDENCIA) continue;
+      const min = Math.floor((t - (d.fila_em ?? d.criada_em)) / MIN);
+      if (min >= (d.urgente ? Number(b.oferta_alerta_min || 5) : 20)) {
+        lista.push(`Pedido #${d.id} (${d.cliente})${d.urgente ? ' URGENTE' : ''} está há ${min} min sem motoboy aceitar.`);
+      }
+    }
+    return lista;
+  }
   function estadoAdmin() {
     const c = cfg();
     const hoje = inicioDoDia();
-    const motoboys = q('SELECT id, nome, telefone, veiculo, tem_bau, tem_bag, ativo, tipo FROM motoboys ORDER BY nome').all()
+    const motoboys = q('SELECT id, nome, telefone, veiculo, tem_bau, tem_bag, ativo, tipo, pin_claro, documento, placa, diaria_valor, repasse_base, repasse_km FROM motoboys ORDER BY nome').all()
       .map((m) => {
         const turno = turnoAtivoDoMotoboy(m.id);
         const conv = turno ? null : convocacaoValida(m.id);
@@ -1083,6 +1612,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     const alertas = q(`SELECT a.*, m.nome AS motoboy FROM alertas a JOIN motoboys m ON m.id = a.motoboy_id
         WHERE a.fim IS NULL OR a.inicio >= ? ORDER BY (a.fim IS NULL) DESC, a.inicio DESC LIMIT 100`).all(hoje);
 
+    const candidatos = q("SELECT * FROM candidatos WHERE status = 'pendente' ORDER BY criado_em").all();
     return {
       agora: agora(),
       motoboys,
@@ -1090,7 +1620,9 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       alertas,
       sugestoes: sugestoes(motoboys, demandas, c),
       mapa: { lat: Number(cfgBruta().mapa_lat), lon: Number(cfgBruta().mapa_lon) },
-      pendencias: pendencias(motoboys),
+      pendencias: [...(candidatos.length ? [`${candidatos.length} cadastro(s) de motoboy aguardando sua resposta (aba Motoboys).`] : []), ...pendencias(motoboys)],
+      candidatos,
+      avisos: avisosOperacao(),
     };
   }
 
@@ -1120,7 +1652,11 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     if (emRota && d.turno_id) {
       const turno = q('SELECT * FROM turnos WHERE id = ?').get(d.turno_id);
       const m = q('SELECT nome, veiculo FROM motoboys WHERE id = ?').get(d.motoboy_id);
-      const ver = cfgBruta().rastreio_cliente === '1' && turno?.ult_lat != null;
+      // Cliente vê o motoboy no mapa só a caminho do destino: depois da coleta, ou desde a saída quando
+      // coleta e entrega são o mesmo lugar (endereço único: visita, notificação).
+      const unico = d.coleta_lat != null && d.entrega_lat != null
+        && distM({ lat: d.coleta_lat, lon: d.coleta_lon }, { lat: d.entrega_lat, lon: d.entrega_lon }) <= 150;
+      const ver = cfgBruta().rastreio_cliente === '1' && turno?.ult_lat != null && (d.status === 'coletada' || unico || Boolean(d.rastreio_livre));
       motoboy = {
         nome: m.nome.split(/\s+/)[0], veiculo: m.veiculo,
         lat: ver ? turno.ult_lat : null, lon: ver ? turno.ult_lon : null, ult_ts: ver ? turno.ult_ts : null,
@@ -1133,7 +1669,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       id: d.id, status: d.status, retida: Boolean(d.retida), descricao: d.descricao, valor: d.valor, km: d.km,
       servico: d.servico, urgente: Boolean(d.urgente), prazo_min: Number(cfgBruta().urgente_prazo_min),
       pagamento: d.pagamento,
-      pix: d.pagamento === 'pendente' && d.status !== 'cancelada' ? {
+      pix: pixAtual(d) ? {
         codigo: d.pag_pix, qr: d.pag_qr, expira: d.pag_expira,
         // Pix na chave da empresa: o cliente manda o comprovante e a equipe confirma.
         manual: !d.pag_id, whatsapp: cfgBruta().empresa_whatsapp, comprovante: d.comprovante_em != null,
@@ -1183,7 +1719,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     const c = cfgBruta();
     const porDiaria = Number(c.diaria_valor) + Number(c.almoco_valor);
     const linhas = q(`
-      SELECT m.id AS motoboy_id, m.nome,
+      SELECT m.id AS motoboy_id, m.nome, m.diaria_valor AS diaria_propria,
         COALESCE(SUM(t.tipo = 'diaria'), 0) AS diarias,
         (SELECT COALESCE(SUM(d.repasse), 0) FROM demandas d JOIN turnos t5 ON t5.id = d.turno_id
           WHERE t5.motoboy_id = m.id AND t5.tipo = 'avulso' AND d.status = 'entregue' AND t5.inicio >= ? AND t5.inicio < ?) AS repasses,
@@ -1208,7 +1744,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       min_parado: Math.round(l.ms_parado / MIN),
       alertas: l.alertas,
       repasses: Math.round(l.repasses * 100) / 100,
-      valor: Math.round((l.diarias * porDiaria + l.repasses) * 100) / 100,
+      valor: Math.round((l.diarias * (l.diaria_propria != null ? l.diaria_propria + Number(c.almoco_valor) : porDiaria) + l.repasses) * 100) / 100,
     }));
   }
   // Cada entrega concluída: quanto o cliente pagou, quanto vai para o motoboy avulso e o que fica.
@@ -1221,6 +1757,22 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       .map((l) => ({ ...l, margem: l.valor == null ? null : Math.round((l.valor - l.repasse) * 100) / 100 }));
   }
 
+  // Fechamento do período: o que entrou, o que sai para motoboy e o que sobra (sem gasolina nem anúncio).
+  function fechamento(de, ate) {
+    const dono = Number(cfgBruta().dono_motoboy_id || 0);
+    const ent = relatorioEntregas(de, ate);
+    const faturado = ent.reduce((s, x) => s + (x.valor || 0), 0);
+    const repasses = ent.reduce((s, x) => s + x.repasse, 0);
+    const diarias = relatorio(de, ate).filter((l) => l.motoboy_id !== dono).reduce((s, l) => s + (l.valor - l.repasses), 0);
+    const canc = q("SELECT COUNT(*) AS n, COALESCE(SUM(valor), 0) AS v FROM demandas WHERE status = 'cancelada' AND cancelada_em >= ? AND cancelada_em < ?").get(de, ate);
+    const r2 = (v) => Math.round(v * 100) / 100;
+    return {
+      entregas: ent.length, faturado: r2(faturado), repasses: r2(repasses), diarias: r2(diarias), lucro: r2(faturado - repasses - diarias),
+      cancelados: canc.n, cancelado_valor: r2(canc.v),
+      em_aberto: q("SELECT COUNT(*) AS n FROM demandas WHERE status IN ('aguardando','atribuida','coletada') AND criada_em < ?").get(ate).n,
+      sem_foto: q("SELECT COUNT(*) AS n FROM demandas WHERE status = 'entregue' AND foto_em IS NULL AND entregue_em >= ? AND entregue_em < ?").get(de, ate).n,
+    };
+  }
   // Entregas concluídas no período, somadas por cliente (para cobrar).
   function relatorioClientes(de, ate) {
     return q(`SELECT cliente, cliente_telefone AS telefone, COUNT(*) AS entregas,
@@ -1304,6 +1856,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
   function rotina() {
     const c = cfg();
     const t = agora();
+    expirarReservas(t);
     for (const turno of q('SELECT * FROM turnos WHERE fim_real IS NULL').all()) {
       if (t >= turno.fim_previsto) {
         const comCarga = q("SELECT COUNT(*) AS n FROM demandas WHERE turno_id = ? AND status = 'coletada'").get(turno.id).n;
@@ -1324,6 +1877,24 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       if (t - contato > c.semSinalMs && (turno.tipo !== 'avulso' || abertasDoTurno(turno.id) > 0)) {
         abrirAlerta(turno, 'sem_sinal', 'Aparelho sem contato: app fechado, sem internet ou desligado.', contato);
       }
+      // Diária em turno há muito tempo sem nenhuma entrega no sistema: trabalho por fora não aparece no fechamento.
+      const limSem = Number(cfgBruta().sem_lancamento_min || 0) * MIN;
+      if (limSem && turno.tipo === 'diaria' && turno.motoboy_id !== Number(cfgBruta().dono_motoboy_id || 0)) {
+        const mexeu = q(`SELECT COUNT(*) AS n FROM demandas WHERE turno_id = ?
+            AND (status IN ('atribuida','coletada') OR COALESCE(entregue_em, coletada_em, atribuida_em, criada_em) > ?)`).get(turno.id, t - limSem).n;
+        if (mexeu) fecharAlerta(turno.id, 'sem_lancamento');
+        else if (t - turno.inicio > limSem && !emAlmoco(turno)) {
+          abrirAlerta(turno, 'sem_lancamento', `Em turno há mais de ${Math.round(limSem / MIN)} min sem entrega lançada no sistema.`);
+        }
+      }
+    }
+    // Entrega finalizada pelo motoboy e a foto não subiu em 20 min.
+    for (const d of q(`SELECT d.id, d.turno_id FROM demandas d WHERE d.status = 'entregue' AND d.foto_em IS NULL
+        AND d.recebedor IS NOT NULL AND d.turno_id IS NOT NULL AND d.entregue_em < ? AND d.entregue_em > ?
+        AND NOT EXISTS (SELECT 1 FROM alertas a WHERE a.tipo = 'sem_foto' AND a.turno_id = d.turno_id
+          AND a.detalhe LIKE '%#' || d.id || ' %')`).all(t - 20 * MIN, t - 12 * 60 * MIN)) {
+      const turno = q('SELECT * FROM turnos WHERE id = ?').get(d.turno_id);
+      if (turno) alertaPontual(turno, 'sem_foto', `Entrega #${d.id} finalizada sem foto.`);
     }
     convocarSozinho(t);
     q('DELETE FROM sessoes WHERE expira_em <= ?').run(t);
@@ -1336,12 +1907,12 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
   return {
     cfg, lerConfig, salvarConfig, gerarChaveApi, chaveApiValida,
     garantirAdmin, loginAdmin, autenticarAdmin, sairAdmin, trocarSenhaAdmin,
-    criarMotoboy, atualizarMotoboy, convocar, cancelarConvocacao,
+    criarMotoboy, atualizarMotoboy, candidatar, decidirCandidato, convocar, cancelarConvocacao,
     loginMotoboy, autenticarMotoboy, almoco, encerrarTurno, registrarPosicoes,
-    criarDemanda, criarDemandaExterna, definirLocais, cancelarDemanda, reatribuir, confirmarParada,
+    criarDemanda, criarDemandaExterna, definirLocais, cancelarDemanda, fechamento, reatribuir, confirmarParada,
     despacharPendentes, estadoMotoboy, estadoAdmin, trilha, relatorio, rotina,
     importarWhatsapp, listarConversas, mensagensDaConversa, excluirConversa,
-    aoEvento, cotar, foraDoHorario, criarPedido, liberarDemanda, pedidoPublico, relatorioClientes, relatorioEntregas,
+    aoEvento, cotar, agendadaMotoboy, problemaMotoboy, finalizarDemanda, editarValor, editarDados, liberarRastreio, fotoPermitida, fotoGravada, foraDoHorario, criarPedido, coletaFixa, gerarPixManual, liberarDemanda, fecharPedido, definirContato, pedidoPublico, relatorioClientes, relatorioEntregas,
     listarServicos, salvarServico, listarClientes, salvarCliente, registrarPix, marcarPago,
     responderOferta, encerrarPeloMotoboy, modoPagamento,
     interno: { q, tx, cfgBruta, auditar, agora, exigirNaoBloqueado, registrarFalha },

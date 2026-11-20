@@ -27,6 +27,7 @@ a { color: var(--info); }
 .topo { background: var(--marca); color: #fff; display: flex; align-items: center; gap: 4px; padding: 0 14px; height: 48px; }
 .topo .logo { font-weight: 800; letter-spacing: .02em; margin-right: 18px; }
 .topo .logo span { color: var(--destaque); }
+.abas { display: flex; align-items: center; gap: 4px; }
 .topo button { background: transparent; color: #cfd4dc; border: 0; border-radius: 0; height: 48px; padding: 0 12px; border-bottom: 3px solid transparent; }
 .topo button.ativa { color: #fff; border-bottom-color: var(--destaque); }
 .topo .espaco { flex: 1; }
@@ -119,3 +120,54 @@ details.cartao summary { font-weight: 600; color: var(--texto); padding: 0; }
   .grade2, .grade3 { grid-template-columns: 1fr; }
   .topo { overflow-x: auto; }
 }
+.cartao.clicavel { cursor: pointer; }
+.cartao.clicavel:hover { border-color: var(--destaque); }
+.cartao.focada { border-color: #ff5400; box-shadow: 0 0 0 2px rgba(255,84,0,.25); }
+.escolha-motoboy { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--borda); }
+.linha-motoboy { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 4px 0; font-size: 12.5px; }
+.gaveta-config > summary { font-weight: 600; cursor: pointer; padding: 4px 0; }
+.gaveta-config[open] > summary { margin-bottom: 10px; }
+.barra-salvar { position: sticky; top: 0; z-index: 5; background: var(--fundo, #f4f5f7); padding: 8px 0; }
+
+/* ---------- Celular: painel como aplicativo (abas embaixo, toque fácil, nada estoura a tela) ---------- */
+@media (max-width: 700px) {
+  body { font-size: 15px; padding-bottom: calc(58px + env(safe-area-inset-bottom)); }
+  .topo { position: sticky; top: 0; z-index: 900; overflow: visible; padding: 0 12px; }
+  .topo .logo { margin-right: 8px; }
+  .abas { position: fixed; left: 0; right: 0; bottom: 0; z-index: 950; background: var(--marca); display: grid; grid-template-columns: repeat(6, 1fr); gap: 0;
+    padding-bottom: env(safe-area-inset-bottom); border-top: 1px solid #2a2e37; }
+  .abas button { height: 56px; padding: 0 2px; font-size: 11.5px; border-bottom: 0; border-top: 3px solid transparent; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .abas button.ativa { border-bottom-color: transparent; border-top-color: var(--destaque); }
+  .operacao { grid-template-rows: 36vh auto; }
+  #mapa { min-height: 0; }
+  .lateral { padding: 10px 10px 24px; }
+  .pagina { padding: 14px 10px 30px; }
+  button, a.botao { padding: 10px 14px; border-radius: 10px; }
+  button.pequeno { padding: 8px 12px; font-size: 13.5px; }
+  input, select, textarea { font-size: 16px; padding: 10px; }
+  table { display: block; overflow-x: auto; white-space: nowrap; -webkit-overflow-scrolling: touch; }
+  dialog { width: calc(100vw - 12px); max-width: none; }
+  dialog .corpo { padding: 14px 14px 18px; max-height: calc(100vh - 40px); }
+  .linha.fim { justify-content: stretch; }
+  .linha.fim > * { flex: 1; text-align: center; }
+  .cartao.saida { margin-left: 12px; }
+  h2 { font-size: 17px; }
+}
+/* Escolher motoboy (janela) e entregas de cada um */
+.grade-escolha { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; margin: 10px 0 14px; }
+button.escolha { text-align: left; padding: 12px; border-radius: 10px; border: 2px solid var(--borda); background: var(--cartao); cursor: pointer; display: block; width: 100%; }
+button.escolha:hover { border-color: #002776; }
+button.escolha.g0 { border-color: #15803d; }
+button.escolha.g2 { opacity: .65; }
+button.escolha.atual { background: #eef2ff; }
+.escolha-topo { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 15px; }
+.selo { font-size: 11px; font-weight: 700; border-radius: 999px; padding: 2px 9px; white-space: nowrap; }
+.selo.g0 { background: #dcfce7; color: #15803d; }
+.selo.g1 { background: #fef3c7; color: #92400e; }
+.selo.g2 { background: #e7eaee; color: #374151; }
+.escolha-sub { color: var(--suave); font-size: 12.5px; margin-top: 4px; }
+.escolha-aviso { color: #b91c1c; font-size: 12.5px; font-weight: 600; margin-top: 4px; }
+.com-ele { margin: -3px 0 8px 10px; padding-left: 9px; border-left: 3px solid #D4A017; }
+button.escolha .com-ele { margin: 8px 0 0; }
+.linha-entrega { display: flex; gap: 6px; align-items: center; font-size: 12.5px; padding: 2px 0; }
+.foto-entrega { max-width: 100%; max-height: 70vh; display: block; margin: 8px auto; border-radius: 8px; }

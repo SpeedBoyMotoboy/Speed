@@ -1,7 +1,10 @@
-:root { --marca: #111318; --destaque: #f5a300; --texto: #16181d; --suave: #5b6472; --borda: #d9dde3; --ok: #15803d; --erro: #b91c1c; --aviso: #b45309; --coleta: #7c3aed; --entrega: #db2777; }
+@font-face { font-family: Barlow; font-weight: 400; font-display: swap; src: url(/loja/barlow-400.woff2) format('woff2'); }
+@font-face { font-family: Barlow; font-weight: 600; font-display: swap; src: url(/loja/barlow-600.woff2) format('woff2'); }
+@font-face { font-family: Barlow; font-weight: 800; font-display: swap; src: url(/loja/barlow-800.woff2) format('woff2'); }
+:root { --marca: #333F22; --acao: #002776; --destaque: #D4A017; --forte: #002776; --fundo: #f4f4ef; --cartao: #ffffff; --sutil: #eef0ea; --no-ouro: #1A1A1A; --texto: #1A1A1A; --suave: #5b6472; --borda: #d9dde3; --ok: #15803d; --erro: #b91c1c; --aviso: #b45309; --coleta: #002776; --entrega: #333F22; }
 * { box-sizing: border-box; }
 html, body { margin: 0; min-height: 100%; }
-body { font: 16px/1.4 system-ui, -apple-system, Roboto, sans-serif; color: var(--texto); background: #f3f4f6; -webkit-tap-highlight-color: transparent; }
+body { font: 16px/1.4 Barlow, system-ui, -apple-system, Roboto, sans-serif; color: var(--texto); background: #faf8f3; -webkit-tap-highlight-color: transparent; }
 h1, h2, p { margin: 0; }
 button, input, textarea { font: inherit; color: inherit; }
 button { border: 1px solid var(--borda); background: #fff; border-radius: 10px; padding: 14px; width: 100%; font-weight: 600; min-height: 52px; }
@@ -49,6 +52,67 @@ label.marcar input { width: 24px; height: 24px; flex: none; margin-top: 1px; }
 .pendencia .sim { color: var(--ok); font-weight: 700; }
 .pendencia .nao { color: var(--erro); font-weight: 700; }
 .cartao.oferta { border: 2px solid var(--destaque); }
-.etiqueta.oferta { background: var(--destaque); color: #111318; }
+.etiqueta.oferta { background: var(--destaque); color: #fff; }
 .ganho { font-size: 22px; font-weight: 800; margin: 8px 0 4px; color: var(--ok); }
-.cartao.oferta .botoes { display: grid; grid-template-columns: 2fr 1fr; gap: 8px; margin-top: 12px; }
+.cartao.oferta .botoes { display: grid; grid-template-columns: 3fr 2fr; gap: 8px; margin-top: 12px; }
+.ver-termo { margin-top: 8px; font-size: 13.5px; }
+.ver-termo summary { cursor: pointer; color: var(--suave, #555); text-decoration: underline; }
+
+/* 18/11: informações da parada organizadas */
+.info { margin: 8px 0 4px; display: grid; gap: 6px; }
+.prazo { background: var(--erro); color: #fff; font-weight: 800; font-size: 16.5px; border-radius: 10px; padding: 10px 12px; overflow-wrap: anywhere; }
+.info-linha { display: grid; grid-template-columns: 96px 1fr; gap: 8px; font-size: 15px; align-items: baseline; }
+.info-rot { color: var(--suave); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; font-weight: 700; }
+.info-val { color: var(--texto); font-weight: 600; overflow-wrap: anywhere; }
+.info-acoes { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.info-botao { display: block; text-align: center; text-decoration: none; font-weight: 700; color: var(--texto); border: 1px solid var(--borda); border-radius: 10px; padding: 10px; background: #f4f6f8; }
+.info-obs { border-top: 1px dashed var(--borda); padding-top: 6px; }
+.info-item { font-size: 15px; color: var(--texto); margin-top: 3px; overflow-wrap: anywhere; }
+
+/* 19/11: identidade SpeedBoy + quadro de entregas, agendadas, mapa e "Deu problema" */
+.topo { border-bottom: 4px solid var(--destaque); }
+.linha-topo { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.linha-topo .ganho { margin: 0; white-space: nowrap; }
+.endereco.pequeno { font-size: 17px; }
+.etiqueta.rota { background: var(--ok); }
+.etiqueta.agendada { background: #b45309; }
+.cartao.oferta.na-rota { border-color: var(--ok); }
+.cartao.agendada { border: 2px solid #b45309; }
+.tempo { font-weight: 800; color: var(--marca); font-size: 15px; margin-top: 4px; }
+.previsao { font-size: 14px; color: var(--marca); font-weight: 600; margin: -4px 2px 12px; }
+button.leve { min-height: 40px; padding: 8px; font-weight: 600; font-size: 14px; color: var(--suave); border-color: transparent; background: transparent; margin-top: 6px; }
+.mapa-quadro { height: 230px; border: 1px solid var(--borda); border-radius: 10px; margin-top: 10px; background: #dfe3e8; }
+.pino { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; color: #fff; font-weight: 800; font-size: 12px; border: 2px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,.4); }
+.pino.coleta { background: var(--coleta); }
+.pino.entrega { background: var(--entrega); }
+.speedy { background: #eef2fb; border-left: 4px solid var(--marca); padding: 10px 12px; font-weight: 600; }
+
+/* 19/11: paleta oficial SpeedBoy + tema claro e escuro */
+body { background: var(--fundo); }
+button { background: var(--cartao); }
+button.primario { background: var(--acao); border-color: var(--acao); color: #fff; }
+input, textarea, .cartao, .termo { background: var(--cartao); color: var(--texto); }
+.info-botao, .speedy { background: var(--sutil); }
+.speedy { border-left-color: var(--destaque); }
+.etiqueta.oferta { background: var(--destaque); color: var(--no-ouro); }
+.tempo, .previsao { color: var(--forte); }
+.prazo { background: #b91c1c; color: #fff; }
+.topo { position: relative; }
+button.tema { position: absolute; right: 12px; top: calc(10px + env(safe-area-inset-top)); width: auto; min-height: 36px; padding: 6px 12px; font-size: 13px; font-weight: 600; background: transparent; color: #fff; border: 1px solid var(--destaque); border-radius: 999px; }
+:root[data-tema="escuro"] {
+  --texto: #f3f3f0; --suave: #b9bbb4; --borda: #44463f; --fundo: #1A1A1A; --cartao: #262724; --sutil: #33352f;
+  --forte: #D4A017; --ok: #4ade80; --erro: #f87171; --aviso: #fbbf24;
+}
+:root[data-tema="escuro"] button.primario, :root[data-tema="escuro"] button.coleta, :root[data-tema="escuro"] button.entrega,
+:root[data-tema="escuro"] .etiqueta.coleta, :root[data-tema="escuro"] .etiqueta.entrega, :root[data-tema="escuro"] .pino { border: 1px solid var(--destaque); }
+:root[data-tema="escuro"] .faixa.ok { background: #14331f; }
+:root[data-tema="escuro"] .faixa.ruim { background: #3f1717; }
+:root[data-tema="escuro"] .faixa.aviso { background: #3b2a0a; }
+:root[data-tema="escuro"] .etiqueta.rota { color: #10240f; }
+/* Botão "Baixar app" (navegador do Android) */
+.cartao.baixar-app { border: 2px solid var(--destaque); }
+a.botao-link { display: flex; align-items: center; justify-content: center; min-height: 52px; padding: 14px; border-radius: 10px;
+  background: var(--acao); color: #fff; font-weight: 800; text-decoration: none; }
+.oculto { display: none; }
+button.grande.foto { border: 2px dashed var(--destaque); background: var(--cartao); }
+a.botao-link.claro { background: var(--cartao); color: var(--texto); border: 2px solid var(--acao); }

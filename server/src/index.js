@@ -5,7 +5,7 @@ const { abrirBanco } = await import('./db.js');
 const { criarServico } = await import('./servico.js');
 const { criarApp } = await import('./app.js');
 const { criarAtendimento } = await import('./atendimento.js');
-const { geocodificar } = await import('./geo.js');
+const { criarGeocodificador } = await import('./geo.js');
 const { senhaAleatoria } = await import('./auth.js');
 
 const PORTA = Number(process.env.PORT || 3000);
@@ -13,7 +13,10 @@ const DADOS = process.env.DADOS_DIR || './dados';
 const producao = process.env.NODE_ENV === 'production';
 
 const db = abrirBanco(`${DADOS}/speed.db`);
+let chaveGoogle = () => '';
+const geocodificar = criarGeocodificador(() => chaveGoogle());
 const servico = criarServico({ db, geocodificar });
+chaveGoogle = () => servico.interno.cfgBruta().google_chave;
 
 const usuario = (process.env.ADMIN_USER || 'admin').toLowerCase();
 const senhaInicial = process.env.ADMIN_PASSWORD || senhaAleatoria();
@@ -33,6 +36,7 @@ const app = criarApp({
   atendimento,
   geocodificar,
   confiarProxy: process.env.TRUST_PROXY === '1',
+  ...(process.env.SITE_ORIGENS !== undefined ? { origensSite: process.env.SITE_ORIGENS } : {}),
   cookieSeguro: process.env.COOKIE_SECURE ? process.env.COOKIE_SECURE === '1' : producao,
 });
 

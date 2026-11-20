@@ -72,6 +72,77 @@ export function geocodificar(texto, { cidadeBase = '', limite = 5 } = {}) {
   return tarefa;
 }
 
+// ---------------------------------------------------------------- Google Maps (opcional)
+// Com a chave do Google em Configurações, a busca acha rua difícil e loja pelo nome ("KS loja Jardim Camburi").
+// Tenta o Geocoding; se não achar ou só achar parecido, tenta o Places (busca por texto). Sem chave, ou se o
+// Google recusar, vale o Nominatim de sempre.
+const cacheGoogle = new Map();
+const ES = { sul: -21.4, oeste: -41.9, norte: -17.8, leste: -39.6 };
+async function googleJson(url, buscar) {
+  const r = await buscar(url, { signal: AbortSignal.timeout(7000) });
+  if (!r.ok) return null;
+  const j = await r.json();
+  if (j.status && !['OK', 'ZERO_RESULTS'].includes(j.status)) console.error('[google]', j.status, String(j.error_message || '').slice(0, 160));
+  return j;
+}
+export async function geocodificarGoogle(chave, consulta, limite = 5, buscar = fetch) {
+  const id = `${limite}|${consulta.toLowerCase()}`;
+  if (cacheGoogle.has(id)) return cacheGoogle.get(id);
+  const ler = (lista, nome) => (lista || [])
+    .map((x) => ({ nome: String(nome(x)), lat: Number(x.geometry?.location?.lat), lon: Number(x.geometry?.location?.lng) }))
+    .filter((x) => coordValida(x.lat, x.lon)).slice(0, limite);
+  let achados = [];
+  const g = await googleJson('https://maps.googleapis.com/maps/api/geocode/json?' + new URLSearchParams({
+    address: consulta, region: 'br', language: 'pt-BR', components: 'country:BR',
+    bounds: `${ES.sul},${ES.oeste}|${ES.norte},${ES.leste}`, key: chave,
+  }), buscar);
+  const exatos = (g?.results || []).filter((x) => !x.partial_match && !(x.types || []).some((t) => ['locality', 'administrative_area_level_1', 'administrative_area_level_2', 'country'].includes(t)));
+  achados = ler(exatos, (x) => x.formatted_address);
+  if (!achados.length) {
+    // Places API (New): busca por texto, acha loja pelo nome.
+    try {
+      const r = await buscar('https://places.googleapis.com/v1/places:searchText', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': chave, 'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location' },
+        body: JSON.stringify({ textQuery: consulta, languageCode: 'pt-BR', regionCode: 'BR', pageSize: Math.min(limite, 5),
+          locationBias: { circle: { center: { latitude: -20.3, longitude: -40.3 }, radius: 50000 } } }),
+        signal: AbortSignal.timeout(7000),
+      });
+      const j = await r.json();
+      if (!r.ok) console.error('[google places]', r.status, String(j?.error?.message || '').slice(0, 160));
+      achados = (j.places || []).map((x) => {
+        const nome = x.displayName?.text || ''; const end = x.formattedAddress || '';
+        return { nome: nome && !end.startsWith(nome) ? `${nome} · ${end}` : end, lat: Number(x.location?.latitude), lon: Number(x.location?.longitude) };
+      }).filter((x) => coordValida(x.lat, x.lon) && x.lat > ES.sul && x.lat < ES.norte && x.lon > ES.oeste && x.lon < ES.leste).slice(0, limite);
+    } catch (e) { console.error('[google places]', e.message); }
+  }
+  if (!achados.length) achados = ler(g?.results, (x) => x.formatted_address);
+  if (achados.length) {
+    if (cacheGoogle.size > 1000) cacheGoogle.clear();
+    cacheGoogle.set(id, achados);
+  }
+  return achados;
+}
+// Busca de endereço do sistema: Google primeiro (se houver chave), Nominatim como reserva.
+export function criarGeocodificador(lerChave, buscar = fetch) {
+  return async (texto, opcoes = {}) => {
+    const chave = String(lerChave() || '');
+    if (chave) {
+      const base = String(texto || '').trim().slice(0, 200);
+      const cidade = String(opcoes.cidadeBase || '').trim();
+      const primeira = cidade.split(',')[0].trim().toLowerCase();
+      const consulta = cidade && !base.toLowerCase().includes(primeira) && !/ - es\b|esp[ií]rito santo/i.test(base) ? `${base}, ${cidade}` : base;
+      if (base.length >= 4) {
+        try {
+          const r = await geocodificarGoogle(chave, consulta, opcoes.limite ?? 5, buscar);
+          if (r.length) return r;
+        } catch (e) { console.error('[google]', e.message); }
+      }
+    }
+    return geocodificar(texto, opcoes);
+  };
+}
+
 // Distância pelas ruas (OpenRouteService, chave gratuita). Devolve km ou null se não der.
 const cacheRota = new Map();
 export async function kmPelasRuas(chave, a, b, buscar = fetch) {

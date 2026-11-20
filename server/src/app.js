@@ -13,7 +13,7 @@ const QRCODE = path.dirname(createRequire(import.meta.url).resolve('qrcode-gener
 const TIPOS = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.svg': 'image/svg+xml',
-  '.json': 'application/json; charset=utf-8', '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json',
+  '.json': 'application/json; charset=utf-8', '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json', '.apk': 'application/vnd.android.package-archive',
 };
 const COOKIE = 'speed_admin';
 const TEXTO = Symbol('texto'); // rota que responde texto puro em vez de JSON
@@ -24,7 +24,11 @@ const CSP = [
   "frame-ancestors 'none'", "base-uri 'none'", "form-action 'self'", "object-src 'none'",
 ].join('; ');
 
-export function criarApp({ servico, atendimento, geocodificar, confiarProxy = false, cookieSeguro = false }) {
+// Sites que podem chamar as rotas públicas direto do navegador (formulário de pedido no site da empresa).
+const ORIGENS_PADRAO = 'https://www.speedboy.com.br,https://speedboy.com.br';
+
+export function criarApp({ servico, atendimento, geocodificar, confiarProxy = false, cookieSeguro = false, origensSite = ORIGENS_PADRAO }) {
+  const origens = new Set(String(origensSite || '').split(',').map((o) => o.trim().replace(/\/+$/, '')).filter(Boolean));
   const rotas = [];
   const rota = (metodo, caminho, acesso, fn, max = CORPO_MAX) => {
     const nomes = [];
@@ -100,8 +104,18 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
 
   // Site de pedidos e página de acompanhamento (sem login).
   rota('GET', '/api/publico/info', 'publico', () => atendimento.infoPublica());
+  rota('GET', '/api/publico/sugerir', 'publico', ({ url, ip }) => atendimento.sugerirPublico(url.searchParams.get('q'), ip));
   rota('POST', '/api/publico/cotar', 'publico', ({ corpo, ip }) => atendimento.cotarPublico(corpo, ip));
   rota('POST', '/api/publico/pedidos', 'publico', ({ corpo, ip }) => atendimento.pedidoSite(corpo, ip));
+  rota('GET', '/api/publico/empresa', 'publico', ({ url }) => atendimento.empresaPublica(url.searchParams.get('k')));
+  rota('POST', '/api/publico/empresa/pedidos', 'publico', ({ corpo, ip }) => atendimento.pedidoEmpresa(corpo, ip));
+  rota('GET', '/api/publico/empresa/entregas', 'publico', ({ url }) => atendimento.entregasEmpresa(url.searchParams.get('k'), url.searchParams.get('periodo')));
+  // Cadastro de motoboy pela página pública: fica pendente até o dono responder no painel.
+  rota('POST', '/api/publico/cadastro', 'publico', ({ corpo, ip }) => {
+    const r = servico.candidatar(corpo, ip);
+    if (r.novo) atendimento.avisarDono(`🛵 Novo cadastro de motoboy: ${r.nome} (${r.tipo === 'diaria' ? 'fixo' : 'avulso'}). Abra o painel, aba Motoboys, para aceitar ou recusar.`);
+    return { ok: true };
+  });
   rota('GET', '/api/publico/pedido', 'publico', ({ url }) => atendimento.pedidoVivo(url.searchParams.get('c')));
   // Aviso de pagamento do Mercado Pago. O corpo só diz "olhe o pagamento X": o sistema confere direto no banco.
   rota('POST', '/api/pagamento/mp', 'publico', ({ url, corpo }) => {
@@ -133,6 +147,12 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
     return { id: d.id, status: d.status };
   });
 
+  // Pedido do site aceito pelo cliente (fechado no WhatsApp): grava o valor e libera para o motoboy.
+  rota('POST', '/api/entrada/demandas/:id/fechar', 'api', ({ p, corpo }) => servico.fecharPedido(p.id, corpo?.valor, 'api'));
+
+  rota('POST', '/api/entrada/coleta-fixa', 'api', ({ corpo }) => servico.coletaFixa(corpo));
+  rota('POST', '/api/entrada/demandas/:id/contato', 'api', ({ p, corpo }) => servico.definirContato(p.id, corpo?.telefone, 'api'));
+
   // -------------------------------------------------------------- motoboy
   rota('GET', '/api/motoboy/estado', 'motoboy', ({ turno }) => servico.estadoMotoboy(turno));
   rota('POST', '/api/motoboy/posicoes', 'motoboy', ({ turno, corpo }) => servico.registrarPosicoes(turno, corpo));
@@ -140,9 +160,33 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
     servico.confirmarParada(turno, corpo);
     return servico.estadoMotoboy(servico.autenticarMotoboy(turno.token));
   });
+  const PASTA_FOTOS = path.join(process.env.DADOS_DIR || './dados', 'fotos');
+  rota('POST', '/api/motoboy/foto', 'motoboy', ({ turno, corpo }) => {
+    const id = servico.fotoPermitida(turno, corpo?.demanda_id);
+    const m = /^data:image\/jpeg;base64,([A-Za-z0-9+/=]+)$/.exec(String(corpo?.foto || ''));
+    const dados = m ? Buffer.from(m[1], 'base64') : null;
+    if (!dados || dados.length < 1000 || dados.length > 2 * 1024 * 1024 || dados[0] !== 0xff || dados[1] !== 0xd8) throw new Erro(422, 'foto_invalida', 'Foto inválida.');
+    fs.mkdirSync(PASTA_FOTOS, { recursive: true });
+    fs.writeFileSync(path.join(PASTA_FOTOS, `${id}.jpg`), dados);
+    servico.fotoGravada(id);
+    return { ok: true };
+  }, 3 * 1024 * 1024);
+  rota('GET', '/api/admin/demandas/:id/foto', 'admin', ({ p }) => {
+    const arq = path.join(PASTA_FOTOS, `${Number(p.id)}.jpg`);
+    if (!fs.existsSync(arq)) throw new Erro(404, 'sem_foto', 'Sem foto desta entrega.');
+    return { foto: `data:image/jpeg;base64,${fs.readFileSync(arq).toString('base64')}` };
+  });
   rota('POST', '/api/motoboy/oferta', 'motoboy', ({ turno, corpo }) => {
     servico.responderOferta(turno, corpo);
     return servico.estadoMotoboy(servico.autenticarMotoboy(turno.token));
+  });
+  rota('POST', '/api/motoboy/agendada', 'motoboy', ({ turno, corpo }) => {
+    servico.agendadaMotoboy(turno, corpo);
+    return servico.estadoMotoboy(servico.autenticarMotoboy(turno.token));
+  });
+  rota('POST', '/api/motoboy/problema', 'motoboy', ({ turno, corpo }) => {
+    servico.problemaMotoboy(turno, corpo);
+    return { ok: true };
   });
   rota('POST', '/api/motoboy/encerrar', 'motoboy', ({ turno }) => {
     servico.encerrarPeloMotoboy(turno);
@@ -201,6 +245,7 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
     servico.atualizarMotoboy(p.id, corpo, ator(admin));
     return { ok: true };
   });
+  rota('POST', '/api/admin/candidatos/:id/decidir', 'admin', ({ admin, corpo, p }) => servico.decidirCandidato(p.id, corpo.aceitar === true, ator(admin)));
   rota('POST', '/api/admin/motoboys/:id/convocar', 'admin', ({ admin, p }) => servico.convocar(p.id, ator(admin)));
   rota('POST', '/api/admin/motoboys/:id/desconvocar', 'admin', ({ admin, p }) => {
     servico.cancelarConvocacao(p.id, ator(admin));
@@ -220,8 +265,15 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
     servico.reatribuir(p.id, corpo.motoboy_id ? Number(corpo.motoboy_id) : null, ator(admin));
     return { ok: true };
   });
-  rota('POST', '/api/admin/demandas/:id/cancelar', 'admin', ({ admin, p }) => {
-    servico.cancelarDemanda(p.id, ator(admin));
+  rota('POST', '/api/admin/demandas/:id/finalizar', 'admin', ({ admin, corpo, p }) => {
+    servico.finalizarDemanda(p.id, corpo?.motivo, ator(admin));
+    return { ok: true };
+  });
+  rota('PUT', '/api/admin/demandas/:id/valor', 'admin', ({ admin, corpo, p }) => servico.editarValor(p.id, corpo, ator(admin)));
+  rota('PUT', '/api/admin/demandas/:id/dados', 'admin', ({ admin, corpo, p }) => servico.editarDados(p.id, corpo, ator(admin)));
+  rota('POST', '/api/admin/demandas/:id/rastreio', 'admin', ({ admin, p }) => servico.liberarRastreio(p.id, ator(admin)));
+  rota('POST', '/api/admin/demandas/:id/cancelar', 'admin', ({ admin, corpo, p }) => {
+    servico.cancelarDemanda(p.id, ator(admin), corpo?.motivo);
     return { ok: true };
   });
   rota('GET', '/api/admin/geocode', 'admin', async ({ url }) => {
@@ -236,7 +288,7 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
     const de = Number(url.searchParams.get('de'));
     const ate = Number(url.searchParams.get('ate'));
     if (!Number.isFinite(de) || !Number.isFinite(ate) || ate <= de) throw new Erro(422, 'periodo_invalido', 'Período inválido.');
-    return { linhas: servico.relatorio(de, ate), clientes: servico.relatorioClientes(de, ate), entregas: servico.relatorioEntregas(de, ate) };
+    return { linhas: servico.relatorio(de, ate), clientes: servico.relatorioClientes(de, ate), entregas: servico.relatorioEntregas(de, ate), resumo: servico.fechamento(de, ate) };
   });
   rota('POST', '/api/admin/whatsapp', 'admin', ({ admin, corpo }) => servico.importarWhatsapp(corpo, ator(admin)), 30 * 1024 * 1024);
   rota('GET', '/api/admin/whatsapp', 'admin', () => ({ conversas: servico.listarConversas() }));
@@ -278,6 +330,17 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
     res.setHeader('Permissions-Policy', 'geolocation=(self), camera=(), microphone=()');
     if (cookieSeguro) res.setHeader('Strict-Transport-Security', 'max-age=31536000');
 
+    // CORS só para as rotas públicas e só para os sites cadastrados. Painel, motoboy e API seguem fechados.
+    const origem = String(req.headers.origin || '');
+    if (caminho.startsWith('/api/publico/') && origens.has(origem)) {
+      res.setHeader('Access-Control-Allow-Origin', origem);
+      res.setHeader('Vary', 'Origin');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      res.setHeader('Access-Control-Max-Age', '600');
+      if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+    }
+
     if (caminho.startsWith('/api/') || caminho === '/saude') {
       const metodoOk = rotas.filter((r) => r.re.test(caminho));
       const r = metodoOk.find((x) => x.metodo === req.method);
@@ -302,7 +365,7 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
 
     if (req.method !== 'GET' && req.method !== 'HEAD') throw new Erro(405, 'metodo', 'Método não permitido.');
     if (caminho === '/') { res.writeHead(302, { Location: '/painel/' }); return res.end(); }
-    if (['/painel', '/app', '/pedir', '/acompanhar'].includes(caminho)) { res.writeHead(302, { Location: `${caminho}/${url.search}` }); return res.end(); }
+    if (['/painel', '/app', '/pedir', '/acompanhar', '/cadastro', '/loja', '/empresa'].includes(caminho)) { res.writeHead(302, { Location: `${caminho}/${url.search}` }); return res.end(); }
     if (caminho.startsWith('/vendor/leaflet/')) {
       if (servirArquivo(res, LEAFLET, caminho.slice('/vendor/leaflet/'.length), req.method)) return undefined;
     } else if (caminho === '/vendor/qrcode/qrcode.mjs') {

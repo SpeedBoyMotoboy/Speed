@@ -66,12 +66,12 @@ const ROTULO_STATUS = {
   entregue: 'Entregue', cancelada: 'Cancelada',
 };
 const ROTULO_ALERTA = {
-  parado: 'Parado na rota', sem_sinal: 'Sem sinal', gps_falso: 'GPS falso', gps_desligado: 'GPS desligado',
+  problema: 'Problema na entrega', parado: 'Parado na rota', sem_sinal: 'Sem sinal', gps_falso: 'GPS falso', gps_desligado: 'GPS desligado',
   salto: 'Salto de posição', fora_do_local: 'Confirmou longe do local', troca_aparelho: 'Trocou de aparelho',
-  carga_pendente: 'Turno encerrado com carga',
+  carga_pendente: 'Turno encerrado com carga', sem_foto: 'Entrega sem foto', sem_lancamento: 'Em turno sem entrega lançada',
 };
 const ROTULO_REQUISITO = { qualquer: 'Qualquer', moto: 'Só moto', bau: 'Baú', bag: 'Bag' };
-const ROTULO_ORIGEM = { site: 'Site', robo: 'WhatsApp', whatsapp: 'WhatsApp', api: 'API' };
+const ROTULO_ORIGEM = { empresa: 'Empresa', site: 'Site', robo: 'WhatsApp', whatsapp: 'WhatsApp', api: 'API' };
 const chip = (texto, classe = '') => h('span', { class: `chip ${classe}` }, texto);
 const equipamento = (m) => [m.veiculo === 'bike' ? 'Bike' : 'Moto', m.tem_bau && 'baú', m.tem_bag && 'bag', m.tipo === 'avulso' ? 'avulso' : 'diária'].filter(Boolean).join(' · ');
 
@@ -138,6 +138,38 @@ let camadas = null;
 let trilhaAberta = null; // { turnoId, nome }
 let enquadrado = false;
 const els = {};
+// Gavetas (<details>) abertas pelo usuário continuam abertas quando a tela se atualiza.
+const gavetas = new Map();
+function gaveta(chave, abertaPadrao, atributos, ...filhos) {
+  return h('details', {
+    ...atributos,
+    open: gavetas.has(chave) ? gavetas.get(chave) : abertaPadrao,
+    ontoggle: (ev) => gavetas.set(chave, ev.currentTarget.open),
+  }, ...filhos);
+}
+let demandaFocada = null; // id da demanda destacada no mapa
+let escolhendoPara = null; // id da demanda com a lista de motoboys aberta
+function kmEntre(a, b) {
+  const r = Math.PI / 180;
+  const x = Math.sin(((b[0] - a[0]) * r) / 2) ** 2 + Math.cos(a[0] * r) * Math.cos(b[0] * r) * Math.sin(((b[1] - a[1]) * r) / 2) ** 2;
+  return 12742 * Math.asin(Math.sqrt(x));
+}
+async function designar(demanda, motoboyId) {
+  try {
+    await api('POST', `/api/admin/demandas/${demanda.id}/atribuir`, { motoboy_id: motoboyId || null });
+    escolhendoPara = null;
+    mapa.closePopup();
+  } catch (e) { els.conexao.textContent = e.message; }
+  atualizar();
+}
+function focarDemanda(d) {
+  demandaFocada = demandaFocada === d.id ? null : d.id;
+  desenharMapa();
+  desenharLateral();
+  if (demandaFocada == null || d.coleta_lat == null) return;
+  const pts = [[d.coleta_lat, d.coleta_lon], [d.entrega_lat, d.entrega_lon]].filter((p) => p[0] != null);
+  mapa.fitBounds(pts, { padding: [60, 60], maxZoom: 16 });
+}
 
 function pararAtualizacao() { clearInterval(temporizador); temporizador = null; }
 
@@ -152,11 +184,11 @@ function telaPrincipal() {
   trocar(raiz, 
     h('div', { class: 'topo' },
       h('div', { class: 'logo' }, 'Speed ', h('span', null, 'Despacho')),
-      els.botoesAba, h('div', { class: 'espaco' }), els.conexao,
+      h('nav', { class: 'abas' }, els.botoesAba), h('div', { class: 'espaco' }), els.conexao,
       h('button', { onclick: async () => { await api('POST', '/api/admin/logout').catch(() => {}); telaLogin(); } }, 'Sair')),
     els.operacao, els.pagina);
 
-  mapa = L.map(els.mapa, { zoomControl: true }).setView([-23.5505, -46.6333], 12);
+  mapa = L.map(els.mapa, { zoomControl: true }).setView([-20.3358, -40.2969], 12); // Vila Velha/ES até o estado chegar
   camadaBase().addTo(mapa);
   camadas = { trilha: L.layerGroup().addTo(mapa), demandas: L.layerGroup().addTo(mapa), motoboys: L.layerGroup().addTo(mapa) };
   enquadrado = false;
@@ -234,7 +266,8 @@ async function atualizar() {
 // --------------------------------------------------------------- operação
 function desenhar() {
   if (!estado) return;
-  desenharMapa();
+  // Com um balão aberto no mapa (ex.: designar motoboy), não redesenha o mapa para não fechar o balão.
+  if (!(mapa._popup && mapa.hasLayer(mapa._popup))) desenharMapa();
   desenharLateral();
 }
 
@@ -256,19 +289,22 @@ function desenharMapa() {
 
   for (const d of estado.demandas) {
     if (!['aguardando', 'atribuida', 'coletada'].includes(d.status) || d.coleta_lat == null) continue;
+    const focada = d.id === demandaFocada;
+    if (demandaFocada != null && !focada) continue; // com uma demanda em foco, só ela aparece
     const coleta = [d.coleta_lat, d.coleta_lon];
     const entrega = [d.entrega_lat, d.entrega_lon];
+    const umPonto = kmEntre(coleta, entrega) < 0.05;
     const info = () => h('div', null,
       h('b', null, `#${d.id} ${d.cliente}`), h('br'),
       `Coleta: ${d.coleta_endereco}`, h('br'), `Entrega: ${d.entrega_endereco}`, h('br'),
       d.motoboy_id ? `Motoboy: ${nomes.get(d.motoboy_id) || '—'}` : 'Aguardando motoboy');
-    if (d.status !== 'coletada') {
+    if (d.status !== 'coletada' && !umPonto) {
       L.marker(coleta, { icon: dimensionar(icone(`ponto ${d.status === 'aguardando' ? 'espera' : 'coleta'}`, 'C', 22), 22) })
         .bindPopup(info).addTo(camadas.demandas);
       limites.push(coleta);
     }
-    L.marker(entrega, { icon: dimensionar(icone('ponto entrega', 'E', 22), 22) }).bindPopup(info).addTo(camadas.demandas);
-    L.polyline([coleta, entrega], { color: '#7c3aed', weight: 2, dashArray: '5 6', opacity: 0.7 }).addTo(camadas.demandas);
+    L.marker(entrega, { icon: dimensionar(icone('ponto entrega', umPonto ? '●' : 'E', focada ? 28 : 22), focada ? 28 : 22) }).bindPopup(info).addTo(camadas.demandas);
+    if (!umPonto) L.polyline([coleta, entrega], { color: focada ? '#ff5400' : '#7c3aed', weight: focada ? 4 : 2, dashArray: '5 6', opacity: focada ? 0.95 : 0.7 }).addTo(camadas.demandas);
     limites.push(entrega);
   }
 
@@ -277,16 +313,31 @@ function desenharMapa() {
     if (!t || t.lat == null) continue;
     const classe = `pino ${t.status}${alertados.has(m.id) ? ' alertado' : ''}`;
     L.marker([t.lat, t.lon], { icon: dimensionar(icone(classe, iniciais(m.nome), 34), 34), zIndexOffset: 500 })
-      .bindPopup(() => h('div', null,
-        h('b', null, m.nome), h('br'), `${ROTULO_STATUS[t.status]} · ${t.pendentes} parada(s)`, h('br'),
-        `Último sinal ${ha(t.ult_contato ?? t.inicio, estado.agora)}`))
+      .bindPopup(() => {
+        // Demandas ainda sem motoboy, da mais perto para a mais longe dele.
+        const livres = estado.demandas
+          .filter((d) => ['aguardando'].includes(d.status) && d.coleta_lat != null)
+          .map((d) => ({ d, km: kmEntre([t.lat, t.lon], [d.coleta_lat, d.coleta_lon]) }))
+          .sort((a, b) => a.km - b.km).slice(0, 6);
+        return h('div', null,
+          h('b', null, m.nome), h('br'), `${ROTULO_STATUS[t.status]} · ${t.pendentes} parada(s)`, h('br'),
+          `Último sinal ${ha(t.ult_contato ?? t.inicio, estado.agora)}`,
+          livres.length ? [h('div', { style: 'margin-top:6px;font-weight:600' }, 'Designar para:'),
+            livres.map(({ d, km }) => h('div', { style: 'margin-top:4px' },
+              h('button', { class: 'pequeno primario', onclick: () => designar(d, m.id) }, `#${d.id}`),
+              ` ${d.cliente} · ${km.toFixed(1)} km`, d.retida ? ' (aprova junto)' : ''))]
+            : h('div', { class: 'sub', style: 'margin-top:6px' }, 'Nenhuma demanda esperando motoboy.'));
+      })
       .addTo(camadas.motoboys);
     limites.push([t.lat, t.lon]);
   }
 
   if (!enquadrado) {
     enquadrado = true;
-    if (limites.length) mapa.fitBounds(limites, { padding: [40, 40], maxZoom: 15 });
+    // Ponto localizado errado (ex.: endereço sem cidade achado em outro estado) não arrasta o mapa para longe.
+    const centro = [estado.mapa.lat, estado.mapa.lon];
+    const perto = limites.filter((p) => kmEntre(centro, p) < 150);
+    if (perto.length) mapa.fitBounds(perto, { padding: [40, 40], maxZoom: 15 });
     else mapa.setView([estado.mapa.lat, estado.mapa.lon], 12);
   }
 }
@@ -310,7 +361,27 @@ function desenharLateral() {
         : a.fim === a.inicio ? `Às ${hora(a.inicio)}` : `${hora(a.inicio)} a ${hora(a.fim)} (${duracao(a.fim - a.inicio)})`),
     a.detalhe && h('div', { class: 'sub' }, a.detalhe));
 
-  const cartaoDemanda = (d) => h('div', { class: 'cartao' },
+  const listaMotoboys = (d) => {
+    const ref = d.coleta_lat != null ? [d.coleta_lat, d.coleta_lon] : null;
+    const lista = emTurno.filter((m) => m.turno)
+      .map((m) => ({ m, km: ref && m.turno.lat != null ? kmEntre(ref, [m.turno.lat, m.turno.lon]) : null }))
+      .sort((a, b) => (a.km ?? 1e9) - (b.km ?? 1e9));
+    return h('div', { class: 'escolha-motoboy' },
+      d.status === 'coletada' && h('div', { class: 'sub' }, 'Atenção: a carga já foi coletada. O novo motoboy precisa pegar com o anterior.'),
+      lista.length ? lista.map(({ m, km }) => h('div', { class: 'linha-motoboy' },
+        h('span', null, h('b', null, m.nome), ` · ${equipamento(m)} · ${m.turno.pendentes} parada(s)${km != null ? ` · ${km.toFixed(1)} km da coleta` : ''}`),
+        h('button', { class: 'pequeno primario', onclick: () => designar(d, m.id) }, m.id === d.motoboy_id ? 'Manter' : 'Designar')))
+        : h('div', { class: 'vazio' }, 'Ninguém em turno agora. Convoque na aba Motoboys.'),
+      h('div', { class: 'acoes' },
+        h('button', { class: 'pequeno', onclick: () => designar(d, null) }, 'Automático'),
+        h('button', { class: 'pequeno', onclick: () => { escolhendoPara = null; desenharLateral(); } }, 'Fechar')));
+  };
+
+  const cartaoDemanda = (d) => h('div', {
+    class: `cartao clicavel${d.id === demandaFocada ? ' focada' : ''}`,
+    title: 'Clique para ver no mapa',
+    onclick: (ev) => { if (!ev.target.closest('button, a, select, input, details')) focarDemanda(d); },
+  },
     h('div', { class: 'titulo' }, `#${d.id} ${d.cliente}`, chip(ROTULO_STATUS[d.status], d.status),
       d.requisito !== 'qualquer' && chip(ROTULO_REQUISITO[d.requisito]),
       d.urgente ? chip('Urgente', 'sem_sinal') : null,
@@ -332,6 +403,9 @@ function desenharLateral() {
         : d.status === 'cancelada' ? `cancelada ${hora(d.cancelada_em)}`
           : d.status === 'coletada' ? `coletada ${hora(d.coletada_em)}`
             : `criada ${hora(d.criada_em)} (${ha(d.criada_em, agora)})`),
+    d.status === 'entregue' && h('div', { class: 'acoes' }, d.foto_em
+      ? h('button', { class: 'pequeno', onclick: () => verFoto(d) }, '📷 Ver foto da entrega')
+      : chip('Sem foto', 'aguardando')),
     d.ia_obs && h('div', { class: 'sub' }, `IA: ${d.ia_obs}`),
     d.cliente_telefone && h('div', { class: 'sub' }, `Cliente: ${telefoneFmt(d.cliente_telefone)}`),
     !['entregue', 'cancelada'].includes(d.status) && h('div', { class: 'acoes' },
@@ -352,12 +426,28 @@ function desenharLateral() {
       }, 'Aprovar'),
       d.status === 'sem_local'
         ? h('button', { class: 'pequeno primario', onclick: () => janelaDemanda(d) }, 'Marcar no mapa')
-        : h('button', { class: 'pequeno', onclick: () => janelaTrocar(d) }, d.motoboy_id ? 'Trocar motoboy' : 'Escolher motoboy'),
+        : h('button', { class: 'pequeno', onclick: () => janelaEscolher(d) }, d.motoboy_id ? 'Trocar motoboy' : 'Escolher motoboy'),
+      d.status === 'aguardando' && !d.motoboy_id && d.repasse != null && h('button', { class: 'pequeno', onclick: () => compartilharDemanda(d) }, 'Compartilhar'),
+      d.status !== 'sem_local' && h('button', { class: 'pequeno', onclick: () => janelaDemanda(d) }, 'Editar'),
+      d.coleta_lat != null && h('button', {
+        class: 'pequeno', title: 'Outro pedido com a mesma coleta e o mesmo cliente: é só marcar o novo destino.',
+        onclick: () => janelaDemanda(null, {
+          titulo: `Nova entrega com a coleta do #${d.id}`, cliente: d.cliente, requisito: d.requisito, descricao: d.descricao, telefone: d.cliente_telefone,
+          coleta: { endereco: d.coleta_endereco, contato: d.coleta_contato, lat: d.coleta_lat, lon: d.coleta_lon },
+        }),
+      }, '+ Entrega'),
+      !['pago', 'pendente'].includes(d.pagamento) && h('button', { class: 'pequeno', onclick: () => janelaValor(d) }, 'Valor'),
+      d.codigo && h('button', { class: 'pequeno', onclick: () => linkCliente(d) }, 'Link do cliente'),
+      d.codigo && ['aguardando', 'atribuida'].includes(d.status) && h('button', {
+        class: 'pequeno', title: 'O cliente passa a ver o motoboy no mapa desde agora (depois da coleta já é automático).',
+        onclick: () => localizacaoCliente(d),
+      }, d.rastreio_livre ? '📍 Reenviar localização' : '📍 Localização p/ cliente'),
+      h('button', { class: 'pequeno', onclick: () => janelaFinalizar(d) }, 'Finalizar'),
       h('button', {
         class: 'pequeno perigo',
-        onclick: () => confirmar('Cancelar demanda', `Cancelar a demanda #${d.id} de ${d.cliente}?`, 'Cancelar demanda',
-          () => api('POST', `/api/admin/demandas/${d.id}/cancelar`)),
-      }, 'Cancelar')));
+        onclick: () => janelaCancelar(d),
+      }, 'Cancelar')),
+    escolhendoPara === d.id && !['entregue', 'cancelada'].includes(d.status) && listaMotoboys(d));
 
   const cartaoMotoboy = (m) => {
     const t = m.turno;
@@ -386,7 +476,10 @@ function desenharLateral() {
       h('div', null, h('b', null, fila.length + semLocal.length + retidas.length), h('span', null, 'aguardando'))),
     h('button', { class: 'primario', onclick: () => janelaDemanda() }, '+ Nova demanda'),
 
-    estado.pendencias.length > 0 && h('details', { class: 'cartao sugestao', open: !estado.motoboys.length },
+    (estado.avisos || []).length > 0 && h('div', { class: 'cartao sugestao' },
+      h('strong', null, `Atenção agora (${estado.avisos.length})`),
+      h('ul', { class: 'lista' }, estado.avisos.map((t) => h('li', null, t)))),
+    estado.pendencias.length > 0 && gaveta('pendencias', !estado.motoboys.length, { class: 'cartao sugestao' },
       h('summary', null, `Falta configurar (${estado.pendencias.length})`),
       h('ul', { class: 'lista' }, estado.pendencias.map((t) => h('li', null, t))),
       h('div', { class: 'acoes' }, h('button', { class: 'pequeno', onclick: () => abrirAba('config') }, 'Abrir Configurações'))),
@@ -412,17 +505,17 @@ function desenharLateral() {
 
     h('h3', null, `Alertas abertos (${alertasAbertos.length})`),
     alertasAbertos.length ? alertasAbertos.map(cartaoAlerta) : h('div', { class: 'vazio' }, 'Nenhum alerta agora.'),
-    alertasHoje.length > 0 && h('details', null, h('summary', null, `Alertas encerrados hoje (${alertasHoje.length})`), alertasHoje.map(cartaoAlerta)),
+    alertasHoje.length > 0 && gaveta('alertas_hoje', false, null, h('summary', null, `Alertas encerrados hoje (${alertasHoje.length})`), alertasHoje.map(cartaoAlerta)),
 
     semLocal.length > 0 && [h('h3', null, 'Sem local no mapa'), semLocal.map(cartaoDemanda)],
     h('h3', null, `Aguardando motoboy (${fila.length})`),
     fila.length ? fila.map(cartaoDemanda) : h('div', { class: 'vazio' }, 'Nada na fila.'),
     h('h3', null, `Em andamento (${abertas.length})`),
     abertas.length ? abertas.map(cartaoDemanda) : h('div', { class: 'vazio' }, 'Nenhuma entrega em andamento.'),
-    fechadas.length > 0 && h('details', null, h('summary', null, `Finalizadas hoje (${fechadas.length})`), fechadas.map(cartaoDemanda)),
+    fechadas.length > 0 && gaveta('finalizadas', false, null, h('summary', null, `Finalizadas hoje (${fechadas.length})`), fechadas.map(cartaoDemanda)),
 
     h('h3', null, `Motoboys em turno (${emTurno.length})`),
-    emTurno.length ? emTurno.map(cartaoMotoboy) : h('div', { class: 'vazio' }, 'Ninguém em turno. Convoque na aba Motoboys.'));
+    emTurno.length ? emTurno.map((m) => [cartaoMotoboy(m), entregasDe(m)]) : h('div', { class: 'vazio' }, 'Ninguém em turno. Convoque na aba Motoboys.'));
 }
 
 async function abrirTrilha(turnoId, nome) {
@@ -467,17 +560,41 @@ function janelaTrocar(d) {
 // `previa` preenche a partir de uma mensagem do WhatsApp: { cliente, descricao, mensagem_id }.
 function janelaDemanda(existente = null, previa = null) {
   const pontos = {
-    coleta: { lat: existente?.coleta_lat ?? null, lon: existente?.coleta_lon ?? null, marcador: null },
+    coleta: { lat: existente?.coleta_lat ?? previa?.coleta?.lat ?? null, lon: existente?.coleta_lon ?? previa?.coleta?.lon ?? null, marcador: null },
     entrega: { lat: existente?.entrega_lat ?? null, lon: existente?.entrega_lon ?? null, marcador: null },
   };
   let alvo = pontos.coleta.lat == null ? 'coleta' : 'entrega';
   let mini = null;
 
-  dialogo(existente ? `Demanda #${existente.id} — marcar locais` : 'Nova demanda', (dlg) => {
-    const cliente = h('input', { maxlength: 120, value: existente?.cliente || previa?.cliente || '', disabled: Boolean(existente) });
-    const requisito = h('select', { disabled: Boolean(existente) },
+  dialogo(existente ? `Editar demanda #${existente.id}` : previa?.titulo || 'Nova demanda', (dlg) => {
+    const cliente = h('input', { maxlength: 120, value: existente?.cliente || previa?.cliente || '' });
+    const requisito = h('select', null,
       Object.entries(ROTULO_REQUISITO).map(([v, r]) => h('option', { value: v, selected: (existente?.requisito ?? previa?.requisito) === v }, r)));
-    const descricao = h('input', { maxlength: 500, value: existente?.descricao || previa?.descricao?.replace(/\s*\n+\s*/g, ' · ').slice(0, 500) || '', disabled: Boolean(existente), placeholder: 'O que é, observações' });
+    const descricao = h('input', { maxlength: 500, value: existente?.descricao || previa?.descricao?.replace(/\s*\n+\s*/g, ' · ').slice(0, 500) || '', placeholder: 'O que é, observações' });
+    const agendar = h('input', { type: 'datetime-local' });
+    const horaTipo = h('select', null, [['', 'Sem horário'], ['ate', 'Entregar até'], ['apartir', 'Coletar a partir de']].map(([v, r]) => h('option', { value: v }, r)));
+    const horaVal = h('input', { type: 'time' });
+    const tamanhoSel = h('select', null, [['', 'Normal (pequeno ou médio)'], ['g', 'G — até 40 cm (cobra a mais)'], ['gg', 'GG — mais de 40 cm (cobra a mais)']]
+      .map(([v, r]) => h('option', { value: v }, r)));
+    // Tipo de serviço (só na criação). Correios: preço fixo e entrega na agência mais próxima da coleta.
+    let listaServ = [];
+    const servicoSel = h('select', null, h('option', { value: '' }, 'Normal (preço por km)'));
+    const notaServ = h('p', { class: 'nota' }, 'Correios: valor fixo em qualquer distância. O motoboy posta na agência mais próxima da coleta — não precisa marcar a entrega.');
+    notaServ.hidden = true;
+    const ehCorreio = () => {
+      const s = listaServ.find((x) => String(x.id) === servicoSel.value);
+      return Boolean(s && Number(s.preco_fixo) > 0 && /correio/i.test(s.nome));
+    };
+    if (!existente) {
+      api('GET', '/api/admin/servicos').then(({ servicos: todos }) => {
+        listaServ = todos.filter((s) => s.ativo);
+        for (const s of listaServ) servicoSel.append(h('option', { value: s.id }, s.preco_fixo ? `${s.nome} — ${reais(s.preco_fixo)} fixo` : s.nome));
+      }).catch(() => {});
+    }
+    servicoSel.addEventListener('change', () => {
+      notaServ.hidden = !ehCorreio();
+      if (ehCorreio() && !campos.entrega.endereco.value.trim()) campos.entrega.endereco.value = 'Agência dos Correios mais próxima';
+    });
     const campos = {};
     const botoesAlvo = {};
 
@@ -498,7 +615,7 @@ function janelaDemanda(existente = null, previa = null) {
 
     const bloco = (qual, titulo) => {
       const endereco = h('input', { maxlength: 200, value: existente?.[`${qual}_endereco`] || previa?.[qual]?.endereco || '', placeholder: 'Rua, número, bairro' });
-      const contato = h('input', { maxlength: 120, value: existente?.[`${qual}_contato`] || previa?.[qual]?.contato || '', disabled: Boolean(existente), placeholder: 'Nome / telefone no local' });
+      const contato = h('input', { maxlength: 120, value: existente?.[`${qual}_contato`] || previa?.[qual]?.contato || '', placeholder: 'Nome / telefone no local' });
       const resultados = h('div', { class: 'resultados' });
       const situacao = h('span', { class: 'falta' }, 'Falta marcar no mapa');
       const buscar = h('button', {
@@ -532,17 +649,30 @@ function janelaDemanda(existente = null, previa = null) {
           endereco: campos[qual].endereco.value, contato: campos[qual].contato.value,
           lat: pontos[qual].lat, lon: pontos[qual].lon,
         });
+        if (!existente && ehCorreio() && pontos.entrega.lat == null && pontos.coleta.lat != null) {
+          pontos.entrega.lat = pontos.coleta.lat;
+          pontos.entrega.lon = pontos.coleta.lon;
+          if (!campos.entrega.endereco.value.trim()) campos.entrega.endereco.value = 'Agência dos Correios mais próxima';
+        }
         if (pontos.coleta.lat == null || pontos.entrega.lat == null) throw new Error('Marque coleta e entrega no mapa.');
         if (existente) {
-          await api('PUT', `/api/admin/demandas/${existente.id}/locais`, { coleta: ponto('coleta'), entrega: ponto('entrega') });
+          await api('PUT', `/api/admin/demandas/${existente.id}/dados`, {
+            cliente: cliente.value, requisito: requisito.value, descricao: descricao.value,
+            coleta_contato: campos.coleta.contato.value, entrega_contato: campos.entrega.contato.value,
+          });
+          const mudou = (qual) => campos[qual].endereco.value !== (existente[`${qual}_endereco`] || '')
+            || pontos[qual].lat !== existente[`${qual}_lat`] || pontos[qual].lon !== existente[`${qual}_lon`];
+          if (mudou('coleta') || mudou('entrega')) {
+            await api('PUT', `/api/admin/demandas/${existente.id}/locais`, { coleta: ponto('coleta'), entrega: ponto('entrega') });
+          }
         } else {
           await api('POST', '/api/admin/demandas', {
-            cliente: cliente.value, requisito: requisito.value, descricao: descricao.value, mensagem_id: previa?.mensagem_id,
+            cliente: cliente.value, requisito: requisito.value, descricao: descricao.value, mensagem_id: previa?.mensagem_id, telefone: previa?.telefone || undefined, agendada_para: agendar.value || undefined, hora_tipo: horaTipo.value || undefined, hora: horaTipo.value ? horaVal.value : undefined, tamanho: tamanhoSel.value || undefined, servico_id: servicoSel.value || undefined,
             coleta: ponto('coleta'), entrega: ponto('entrega'),
           });
         }
       }, salvar),
-    }, existente ? 'Salvar e despachar' : 'Criar e despachar');
+    }, existente ? 'Salvar' : 'Criar e despachar');
 
     // O mapa só mede o tamanho certo depois que a janela aparece.
     setTimeout(() => {
@@ -565,6 +695,11 @@ function janelaDemanda(existente = null, previa = null) {
         h('div', null, h('label', null, 'Cliente'), cliente),
         h('div', null, h('label', null, 'Exige'), requisito)),
       h('label', null, 'Descrição'), descricao,
+      existente && ['atribuida', 'coletada'].includes(existente.status) && h('p', { class: 'nota' }, 'Já tem motoboy: o endereço não muda mais por aqui. Para outro destino, use "+ Entrega" no pedido.'),
+      !existente && h('label', null, 'Agendar para (vazio = agora)'), !existente && agendar,
+      !existente && h('div', { class: 'grade2' }, h('div', null, h('label', null, 'Horário'), horaTipo), h('div', null, h('label', null, 'Hora'), horaVal)),
+      !existente && h('label', null, 'Tamanho da mercadoria'), !existente && tamanhoSel,
+      !existente && h('label', null, 'Tipo de serviço'), !existente && servicoSel, !existente && notaServ,
       h('div', { class: 'grade2' }, bloco('coleta', 'Coleta'), bloco('entrega', 'Entrega')),
       h('div', { class: 'alvo' }, botoesAlvo.coleta, botoesAlvo.entrega),
       miniEl,
@@ -590,6 +725,217 @@ async function convocar(id) {
   } catch (e) { els.conexao.textContent = e.message; }
 }
 
+// "Bairro, Cidade" de um endereço gravado (ex.: "R. X, 556 - Centro, Piúma - ES, 29285-000" → "Centro, Piúma").
+// Sem cidade reconhecível, devolve ''. Nunca rua, número, nome do cliente ou complemento.
+function bairroCidade(endereco) {
+  let s = String(endereco || '').split(' — ')[0];
+  if (s.includes(' · ')) s = s.slice(s.lastIndexOf(' · ') + 3);
+  const m = s.match(/^(.*?)([^,\-]+?)\s*-\s*ES\b/i);
+  if (!m) return '';
+  const cidade = m[2].trim();
+  const partes = m[1].split(/,| - /).map((x) => x.trim()).filter(Boolean);
+  let bairro = partes.length > 1 ? partes[partes.length - 1] : '';
+  if (/^\d|^(r\.|rua|av\.?|avenida|rod\.?|rodovia|travessa|estrada)\b|^s\/n$/i.test(bairro)) bairro = '';
+  return [bairro, cidade].filter(Boolean).join(', ');
+}
+
+// Só o que descreve a mercadoria, tirado da descrição do pedido: sem nomes de quem coleta/recebe, loja,
+// NF/CNPJ, telefone, e-mail, endereço ou cobrança. O dono revisa antes de enviar.
+const TAMANHO_TXT = { g: 'Grande (até 40 cm)', gg: 'Gigante (mais de 40 cm)' };
+function mercadoria(descricao) {
+  const fora = /modalidade|tamanho:|cnpj|cpf|nota|\bnf\b|minuta|loja|coleta|coletar|entreg|pegar|levar|retirar n|despachar|confirmar|refer[eê]ncia|cobrar|parada \d|pix|pagamento|apresentar|devolver|recolh|📏|\(|@|https?:/i;
+  return String(descricao || '').replace(/\\/g, ' ').split(/\s*(?:·|\||\n)\s*/)
+    .map((x) => x.replace(/\s+/g, ' ').trim())
+    .filter((x) => x && !fora.test(x.replace(/\(\d+x\d+(x\d+)?\s*cm\)/gi, '')) && (x.replace(/\D/g, '').length < 8 || /\d+\s*x\s*\d+/i.test(x)))
+    .join(' · ').slice(0, 200);
+}
+
+// Recrutar motoboy no WhatsApp: trajeto (bairro e cidade), km, valor do motoboy, mercadoria e baú, + link do cadastro.
+// Abre uma janela para revisar antes; nunca leva cliente, telefone ou endereço completo.
+function compartilharDemanda(d) {
+  dialogo(`Compartilhar pedido #${d.id}`, (dlg) => {
+    const de = bairroCidade(d.coleta_endereco);
+    const para = bairroCidade(d.entrega_endereco);
+    const cadastro = `${location.origin.replace('//despacho.', '//speedy.')}/cadastro/`;
+    const merc = h('input', { maxlength: 200, value: mercadoria(d.descricao), placeholder: 'Ex.: caixa de 7 kg, 30x25x40 cm' });
+    const bau = h('input', { type: 'checkbox', checked: d.requisito === 'bau' || ['g', 'gg'].includes(d.tamanho) });
+    const previa = h('textarea', { rows: 13, readonly: true });
+    const texto = () => [
+      '🛵 *Entrega disponível — SpeedBoy*', '',
+      (de || para) && `📍 ${de || 'Grande Vitória'} → ${para || 'Grande Vitória'}`,
+      d.km != null && `📏 ${String(d.km).replace('.', ',')} km`,
+      merc.value.trim() && `📦 ${merc.value.trim()}`,
+      TAMANHO_TXT[d.tamanho] && `📐 Tamanho: ${TAMANHO_TXT[d.tamanho]}`,
+      bau.checked && '🧰 *Necessário baú*',
+      `💰 *${reais(d.repasse)}*`, '',
+      'Essa e muitas outras entregas estão disponíveis todos os dias no app Speedy.', '',
+      'Quer rodar com a SpeedBoy? Faça seu cadastro:', cadastro, '',
+      'Depois do cadastro, a SpeedBoy confere seus dados e libera seu acesso.',
+    ].filter((l) => typeof l === 'string').join('\n');
+    const atualizarPrevia = () => { previa.value = texto(); };
+    merc.addEventListener('input', atualizarPrevia);
+    bau.addEventListener('change', atualizarPrevia);
+    atualizarPrevia();
+    const ok = h('button', {
+      class: 'primario',
+      onclick: () => {
+        const t = texto();
+        try { navigator.clipboard?.writeText(t); } catch { /* sem área de transferência */ }
+        window.open(`https://wa.me/?text=${encodeURIComponent(t)}`, '_blank', 'noopener');
+        dlg.fechar();
+      },
+    }, 'Abrir no WhatsApp');
+    return [
+      h('p', { class: 'nota' }, 'Confira a mercadoria: não pode ter nome, telefone ou endereço de cliente.'),
+      h('label', null, 'Mercadoria'), merc,
+      h('label', { class: 'marcar' }, bau, ' Necessário baú'),
+      h('label', null, 'Mensagem'), previa,
+      h('div', { class: 'linha fim' }, h('button', { onclick: dlg.fechar }, 'Voltar'), ok)];
+  });
+}
+
+// Cancelar pede o motivo: sem ele não dá para saber por que o pedido se perdeu.
+function janelaCancelar(d) {
+  dialogo(`Cancelar a demanda #${d.id}`, (dlg) => {
+    const motivo = h('input', { maxlength: 200, placeholder: 'Ex.: cliente desistiu, não pagou o Pix, sem motoboy' });
+    const erro = h('div', { class: 'erro' });
+    const ok = h('button', {
+      class: 'primario perigo',
+      onclick: () => {
+        if (motivo.value.trim().length < 3) { erro.textContent = 'Escreva o motivo do cancelamento.'; return; }
+        dlg.executar(() => api('POST', `/api/admin/demandas/${d.id}/cancelar`, { motivo: motivo.value }), ok);
+      },
+    }, 'Cancelar demanda');
+    return [
+      h('p', { class: 'nota' }, `${d.cliente}. O motivo fica guardado no pedido.`),
+      h('label', null, 'Motivo do cancelamento'), motivo, erro,
+      h('div', { class: 'linha fim' }, h('button', { onclick: dlg.fechar }, 'Voltar'), ok)];
+  });
+}
+
+// Muda o valor do pedido (ex.: desconto) e o que o motoboy recebe. O motoboy não muda sozinho.
+function janelaValor(d) {
+  dialogo(`Valor do pedido #${d.id}`, (dlg) => {
+    const valor = h('input', { type: 'number', step: '0.01', min: '0', inputmode: 'decimal', value: d.valor ?? '' });
+    const repasse = h('input', { type: 'number', step: '0.01', min: '0', inputmode: 'decimal', value: d.repasse ?? '' });
+    const motivo = h('input', { maxlength: 200, placeholder: 'Ex.: desconto combinado com o cliente' });
+    // Mostra o que sobra para a empresa; ao mudar o valor, o repasse acompanha na mesma proporção.
+    const sobra = h('div', { class: 'nota' });
+    let mexeuRepasse = false;
+    const conta = () => {
+      const v = Number(valor.value);
+      const r = Number(repasse.value || 0);
+      if (!(v > 0)) { sobra.textContent = ''; return; }
+      const pct = Math.round(((v - r) / v) * 100);
+      sobra.textContent = `Sobra para a empresa: ${reais(v - r)} (${pct}%).${pct < 30 ? ' Atenção: menos de 30%.' : ''}`;
+      sobra.className = pct < 30 ? 'erro' : 'nota';
+    };
+    valor.addEventListener('input', () => {
+      if (!mexeuRepasse && d.valor > 0 && d.repasse != null && Number(valor.value) > 0) {
+        repasse.value = Math.floor((d.repasse * Number(valor.value)) / d.valor);
+      }
+      conta();
+    });
+    repasse.addEventListener('input', () => { mexeuRepasse = true; conta(); });
+    conta();
+    const ok = h('button', {
+      class: 'primario',
+      onclick: () => dlg.executar(() => api('PUT', `/api/admin/demandas/${d.id}/valor`, { valor: valor.value, repasse: repasse.value, motivo: motivo.value }), ok),
+    }, 'Salvar valor');
+    return [
+      h('p', { class: 'nota' }, `${d.cliente}. Ao mudar o valor, o repasse do motoboy acompanha na mesma proporção: ajuste abaixo se precisar.`),
+      h('label', null, 'Cliente paga (R$)'), valor,
+      h('label', null, 'Motoboy recebe (R$)'), repasse, sobra,
+      h('label', null, 'Motivo (opcional)'), motivo,
+      h('div', { class: 'linha fim' }, h('button', { onclick: dlg.fechar }, 'Voltar'), ok)];
+  });
+}
+
+// Entregas que cada motoboy tem agora (para ver quem está com o quê).
+function entregasDe(m) {
+  const lista = estado.demandas.filter((d) => d.motoboy_id === m.id && ['atribuida', 'coletada'].includes(d.status));
+  if (!lista.length) return null;
+  return h('div', { class: 'com-ele' }, lista.map((d) => h('div', { class: 'linha-entrega' },
+    chip(d.status === 'coletada' ? 'Levando' : 'Vai coletar', d.status),
+    h('span', null, `#${d.id} ${d.cliente} → ${bairroCidade(d.entrega_endereco) || d.entrega_endereco}`))));
+}
+
+// Escolher motoboy: janela com um cartão por motoboy. Livres e mais perto primeiro; um toque designa.
+function janelaEscolher(d) {
+  dialogo(`Escolher motoboy — #${d.id} ${d.cliente}`, (dlg) => {
+    const ref = d.coleta_lat != null ? [d.coleta_lat, d.coleta_lon] : null;
+    const precisaBau = d.requisito === 'bau';
+    const lista = estado.motoboys.filter((m) => m.turno).map((m) => {
+      const t = m.turno;
+      const km = ref && t.lat != null ? kmEntre(ref, [t.lat, t.lon]) : null;
+      const parado = Boolean(t.almoco_ate) || t.status === 'sem_sinal';
+      const grupo = parado ? 2 : t.pendentes > 0 ? 1 : 0;
+      return { m, t, km, grupo, semBau: precisaBau && !m.tem_bau };
+    }).sort((a, b) => a.semBau - b.semBau || a.grupo - b.grupo || (a.km ?? 1e9) - (b.km ?? 1e9));
+    const escolher = (id) => { dlg.fechar(); designar(d, id); };
+    const cartao = ({ m, t, km, grupo, semBau }) => h('button', { class: `escolha g${grupo}${m.id === d.motoboy_id ? ' atual' : ''}`, onclick: () => escolher(m.id) },
+      h('div', { class: 'escolha-topo' }, h('b', null, m.nome),
+        h('span', { class: `selo g${grupo}` }, grupo === 0 ? 'LIVRE' : grupo === 1 ? `${t.pendentes} parada(s)` : t.almoco_ate ? 'ALMOÇO' : 'SEM SINAL')),
+      h('div', { class: 'escolha-sub' }, [km != null ? `${km.toFixed(1)} km da coleta` : 'sem posição', equipamento(m)].join(' · ')),
+      semBau && h('div', { class: 'escolha-aviso' }, 'Pedido precisa de baú: este não tem.'),
+      m.id === d.motoboy_id && h('div', { class: 'escolha-sub' }, 'Está com este pedido agora.'),
+      entregasDe(m));
+    return [
+      h('p', { class: 'nota' }, `Coleta: ${bairroCidade(d.coleta_endereco) || d.coleta_endereco}. Toque no motoboy para designar.`),
+      d.status === 'coletada' && h('p', { class: 'escolha-aviso' }, 'Atenção: a carga já foi coletada. O novo motoboy precisa pegar com o anterior.'),
+      lista.length ? h('div', { class: 'grade-escolha' }, lista.map(cartao)) : h('div', { class: 'vazio' }, 'Ninguém em turno agora. Convoque na aba Motoboys.'),
+      h('div', { class: 'linha fim' }, h('button', { onclick: dlg.fechar }, 'Voltar'),
+        h('button', { onclick: () => escolher(null) }, 'Automático (sistema escolhe)'))];
+  }, { largo: true });
+}
+
+async function verFoto(d) {
+  try {
+    const r = await api('GET', `/api/admin/demandas/${d.id}/foto`);
+    dialogo(`Foto da entrega #${d.id} — ${d.cliente}`, (dlg) => [
+      h('p', { class: 'nota' }, `Entregue ${hora(d.entregue_em)} para ${d.recebedor || '—'}`),
+      h('img', { src: r.foto, alt: 'Foto da entrega', class: 'foto-entrega' }),
+      h('div', { class: 'linha fim' }, h('button', { onclick: dlg.fechar }, 'Fechar'))], { largo: true });
+  } catch (e) { els.conexao.textContent = e.message; }
+}
+
+// Libera o mapa do motoboy para o cliente desde já e manda o link pelo WhatsApp.
+async function localizacaoCliente(d) {
+  const janela = window.open('', '_blank', 'noopener');
+  try { await api('POST', `/api/admin/demandas/${d.id}/rastreio`); } catch (e) { els.conexao.textContent = e.message; if (janela) janela.close(); return; }
+  const link = `https://www.speedboy.com.br/acompanhar/?c=${d.codigo}`;
+  const texto = `Olá! Aqui é a SpeedBoy. Você já pode acompanhar o motoboy em tempo real, no mapa, por este link: ${link}`;
+  try { navigator.clipboard?.writeText(link); } catch { /* sem área de transferência */ }
+  const tel = String(d.cliente_telefone || '').replace(/\D/g, '');
+  const url = `https://wa.me/${tel ? (tel.length <= 11 ? `55${tel}` : tel) : ''}?text=${encodeURIComponent(texto)}`;
+  if (janela) janela.location.href = url; else window.open(url, '_blank', 'noopener');
+  atualizar();
+}
+
+// Link de acompanhamento do pedido: copia e abre o WhatsApp do cliente com a mensagem pronta.
+function linkCliente(d) {
+  const link = `https://www.speedboy.com.br/acompanhar/?c=${d.codigo}`;
+  const texto = `Olá! Aqui é a SpeedBoy. Acompanhe a sua entrega por este link: ${link}\nO mapa com o motoboy aparece quando ele estiver a caminho do destino.`;
+  try { navigator.clipboard?.writeText(link); } catch { /* sem área de transferência */ }
+  const tel = String(d.cliente_telefone || '').replace(/\D/g, '');
+  const para = tel ? (tel.length <= 11 ? `55${tel}` : tel) : '';
+  window.open(`https://wa.me/${para}?text=${encodeURIComponent(texto)}`, '_blank', 'noopener');
+}
+
+function janelaFinalizar(d) {
+  dialogo(`Finalizar entrega #${d.id}`, (dlg) => {
+    const motivo = h('textarea', { maxlength: 300, rows: 3, placeholder: 'O que ocorreu (opcional). Ex.: motoboy entregou e esqueceu de marcar.' });
+    const ok = h('button', {
+      class: 'primario',
+      onclick: () => dlg.executar(() => api('POST', `/api/admin/demandas/${d.id}/finalizar`, { motivo: motivo.value }), ok),
+    }, 'Finalizar como entregue');
+    return [
+      h('p', { class: 'nota' }, `${d.cliente}: marca a entrega como concluída com sucesso. Fica registrado que foi finalizada pela central.`),
+      h('label', null, 'Motivo'), motivo,
+      h('div', { class: 'linha fim' }, h('button', { onclick: dlg.fechar }, 'Voltar'), ok)];
+  });
+}
+
 function janelaMotoboy(m = null) {
   dialogo(m ? `Editar ${m.nome}` : 'Novo motoboy', (dlg) => {
     const nome = h('input', { maxlength: 80, value: m?.nome || '' });
@@ -602,11 +948,16 @@ function janelaMotoboy(m = null) {
     const bau = h('input', { type: 'checkbox', checked: m?.tem_bau });
     const bag = h('input', { type: 'checkbox', checked: m?.tem_bag });
     const ativo = h('input', { type: 'checkbox', checked: m ? m.ativo : true });
+    const valorTxt = (v) => (v == null ? '' : String(v).replace('.', ','));
+    const diariaP = h('input', { inputmode: 'decimal', placeholder: 'Padrão', value: valorTxt(m?.diaria_valor) });
+    const repBaseP = h('input', { inputmode: 'decimal', placeholder: 'Padrão', value: valorTxt(m?.repasse_base) });
+    const repKmP = h('input', { inputmode: 'decimal', placeholder: 'Padrão', value: valorTxt(m?.repasse_km) });
     const gerar = h('button', { type: 'button', onclick: () => { pin.value = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1000000).padStart(6, '0'); } }, 'Gerar');
     const ok = h('button', {
       class: 'primario',
       onclick: () => dlg.executar(() => {
-        const dados = { nome: nome.value, telefone: telefone.value, pin: pin.value, veiculo: veiculo.value, tipo: tipo.value, tem_bau: bau.checked, tem_bag: bag.checked, ativo: ativo.checked };
+        const dados = { nome: nome.value, telefone: telefone.value, pin: pin.value, veiculo: veiculo.value, tipo: tipo.value, tem_bau: bau.checked, tem_bag: bag.checked, ativo: ativo.checked,
+          diaria_valor: diariaP.value.trim(), repasse_base: repBaseP.value.trim(), repasse_km: repKmP.value.trim() };
         return m ? api('PUT', `/api/admin/motoboys/${m.id}`, dados) : api('POST', '/api/admin/motoboys', dados);
       }, ok),
     }, 'Salvar');
@@ -621,9 +972,42 @@ function janelaMotoboy(m = null) {
         h('div', null, h('label', null, 'Como trabalha'), tipo)),
       h('label', { class: 'marcar' }, bau, 'Tem baú'),
       h('label', { class: 'marcar' }, bag, 'Tem bag'),
+      h('h3', null, 'Valor deste motoboy'),
+      h('div', { class: 'nota' }, 'Vazio = tabela padrão (Configurações).'),
+      h('div', { class: 'grade2' },
+        h('div', null, h('label', null, 'Diária (R$)'), diariaP),
+        h('div', null, h('label', null, 'Avulso: valor até os km incluídos (R$)'), repBaseP)),
+      h('div', { class: 'grade2' },
+        h('div', null, h('label', null, 'Avulso: por km a mais (R$)'), repKmP),
+        h('div', null)),
       m && h('label', { class: 'marcar' }, ativo, 'Ativo (desmarcar bloqueia o login e encerra o turno)'),
       h('div', { class: 'linha fim' }, h('button', { onclick: dlg.fechar }, 'Voltar'), ok)];
   });
+}
+
+function mensagemAcesso(nome, telefone, pin, tipo) {
+  return `Olá, ${nome.split(' ')[0]}! Seu cadastro na SpeedBoy foi aprovado. ✅\n\n` +
+    `Para entrar, toque no link:\n${location.origin}/app/\n\n` +
+    `Telefone: ${telefoneFmt(telefone)}\nSenha: ${pin}\n\n` +
+    (tipo === 'avulso'
+      ? 'Você entra quando quiser. As entregas disponíveis aparecem no app e você aceita as que quiser fazer.'
+      : 'Você faz o turno nos dias combinados com a gente. As entregas chegam direto no app.') +
+    '\n\nDeixe a localização ligada durante o serviço. Qualquer dúvida, é só chamar aqui.';
+}
+async function decidirCadastro(c, aceitar) {
+  try {
+    const r = await api('POST', `/api/admin/candidatos/${c.id}/decidir`, { aceitar });
+    await atualizar();
+    if (!r.aceito) return;
+    const texto = mensagemAcesso(r.nome, r.telefone, r.pin, r.tipo);
+    dialogo(`${r.nome} aceito`, (dlg) => [
+      h('p', null, 'A conta já está criada no aplicativo. Mande o acesso para ele:'),
+      h('p', null, h('strong', null, `Telefone ${telefoneFmt(r.telefone)} · Senha ${r.pin}`)),
+      h('p', { class: 'nota' }, 'A senha fica guardada na lista de motoboys, coluna Senha, se ele esquecer.'),
+      h('div', { class: 'linha fim' },
+        h('button', { onclick: dlg.fechar }, 'Fechar'),
+        h('a', { class: 'botao primario', href: `https://wa.me/55${r.telefone}?text=${encodeURIComponent(texto)}`, target: '_blank', rel: 'noopener noreferrer' }, 'Enviar acesso pelo WhatsApp'))]);
+  } catch (e) { els.conexao.textContent = e.message; }
 }
 
 function desenharMotoboys() {
@@ -635,15 +1019,31 @@ function desenharMotoboys() {
     if (m.convocado_ate) return chip('Convocado, aguardando login', 'convocado');
     return h('span', { class: 'nota' }, m.ultimo_turno ? `Último turno ${dataHora(m.ultimo_turno)}` : 'Nunca fez turno');
   };
+  const linkCadastro = `${location.origin}/cadastro/`;
+  const copiarLink = h('button', { class: 'pequeno', onclick: async () => { try { await navigator.clipboard.writeText(linkCadastro); copiarLink.textContent = 'Link copiado ✓'; } catch { /* copia manual */ } } }, 'Copiar link');
+  const pendentes = estado.candidatos || [];
   trocar(els.pagina, 
+    pendentes.length > 0 && h('div', { class: 'cartao sugestao' },
+      h('h3', null, `Cadastros aguardando sua resposta (${pendentes.length})`),
+      pendentes.map((c) => h('div', { class: 'linha' },
+        h('div', { class: 'cresce' },
+          h('div', null, h('strong', null, c.nome), ` · ${c.tipo === 'diaria' ? 'Fixo (diária)' : 'Avulso'}`),
+          h('div', { class: 'sub' }, `${telefoneFmt(c.telefone)} · Doc ${c.documento || '—'} · ${c.veiculo === 'bike' ? 'Bike' : `Moto ${c.placa || '—'}`}${c.tem_bau ? ' · baú' : ''}${c.tem_bag ? ' · bag' : ''}`),
+          c.indicacao && h('div', { class: 'sub' }, `Indicação / de onde veio: ${c.indicacao}`),
+          h('div', { class: 'nota' }, `Recebido ${dataHora(c.criado_em)}`)),
+        h('button', { class: 'pequeno primario', onclick: () => decidirCadastro(c, true) }, 'Aceitar'),
+        h('button', { class: 'pequeno', onclick: () => confirmar('Recusar cadastro', `Recusar o cadastro de ${c.nome}?`, 'Recusar', () => decidirCadastro(c, false)) }, 'Recusar')))),
+    h('div', { class: 'cartao' },
+      h('div', { class: 'linha' }, h('div', { class: 'cresce' }, h('strong', null, 'Link de cadastro para novos motoboys'), h('div', { class: 'sub' }, linkCadastro)), copiarLink),
+      h('p', { class: 'nota' }, 'Mande esse link no grupo. Quem preencher aparece aqui para você aceitar ou recusar.')),
     h('div', { class: 'linha' }, h('h2', { class: 'cresce' }, 'Motoboys'),
       h('button', { class: 'primario', onclick: () => janelaMotoboy() }, '+ Novo motoboy')),
     h('p', { class: 'nota' }, 'Diária: só faz login no dia em que for convocado e cumpre o turno. Avulso: entra e sai quando quiser, aceita as entregas perto dele e recebe o repasse de cada uma.'),
     estado.motoboys.length === 0 ? h('div', { class: 'vazio' }, 'Nenhum motoboy cadastrado ainda.')
       : h('table', null,
-        h('thead', null, h('tr', null, ['Nome', 'Telefone', 'Equipamento', 'Situação', ''].map((c) => h('th', null, c)))),
+        h('thead', null, h('tr', null, ['Nome', 'Telefone', 'Senha', 'Equipamento', 'Situação', ''].map((c) => h('th', null, c)))),
         h('tbody', null, estado.motoboys.map((m) => h('tr', null,
-          h('td', null, m.nome), h('td', null, telefoneFmt(m.telefone)), h('td', null, equipamento(m)), h('td', null, situacao(m)),
+          h('td', null, m.nome), h('td', null, telefoneFmt(m.telefone)), h('td', null, m.pin_claro || '—'), h('td', null, equipamento(m)), h('td', null, situacao(m)),
           h('td', null, h('div', { class: 'linha' },
             m.ativo && m.tipo !== 'avulso' && !m.turno && !m.convocado_ate && h('button', { class: 'pequeno primario', onclick: () => convocar(m.id) }, 'Convocar'),
             m.convocado_ate && h('button', {
@@ -906,16 +1306,27 @@ async function desenharIa(mensagem = '') {
 
 // -------------------------------------------------------------- relatório
 const diaLocal = (d) => `${d.getFullYear()}-${doisDig(d.getMonth() + 1)}-${doisDig(d.getDate())}`;
+function cartaoFechamento(r) {
+  const item = (rotulo, v) => h('div', null, h('div', { class: 'nota' }, rotulo), h('strong', null, v));
+  return h('div', { class: 'cartao' },
+    h('h3', null, 'Fechamento do período'),
+    h('div', { class: 'linha' },
+      item('Entregas', String(r.entregas)), item('Faturado', reais(r.faturado)), item('Repasse dos avulsos', reais(r.repasses)),
+      item('Diárias + almoço', reais(r.diarias)), item('Sobra', reais(r.lucro))),
+    h('p', { class: 'nota' }, `Cancelados: ${r.cancelados} (${reais(r.cancelado_valor)}). Em aberto agora: ${r.em_aberto}. Entregues sem foto: ${r.sem_foto}. Gasolina e anúncio não entram na conta.`));
+}
 function desenharRelatorio() {
   const hoje = new Date();
   const de = h('input', { type: 'date', value: diaLocal(new Date(hoje.getFullYear(), hoje.getMonth(), 1)) });
   const ate = h('input', { type: 'date', value: diaLocal(hoje) });
   const saida = h('div', null);
+  const topo = h('div', null);
   const gerar = async () => {
     const inicio = new Date(`${de.value}T00:00:00`).getTime();
     const fim = new Date(`${ate.value}T00:00:00`).getTime() + 24 * 3600 * 1000;
     try {
-      const { linhas, clientes, entregas } = await api('GET', `/api/admin/relatorio?de=${inicio}&ate=${fim}`);
+      const { linhas, clientes, entregas, resumo } = await api('GET', `/api/admin/relatorio?de=${inicio}&ate=${fim}`);
+      trocar(topo, resumo ? cartaoFechamento(resumo) : h('div', null));
       const colunas = [['nome', 'Motoboy'], ['diarias', 'Diárias'], ['horas', 'Horas'], ['entregas', 'Entregas'], ['km', 'Km'], ['min_parado', 'Min. parado em alerta'], ['alertas', 'Alertas'], ['repasses', 'Repasses'], ['valor', 'A pagar']];
       const dinheiro = (v) => (v == null ? '—' : reais(v));
       const baixarEntregas = () => {
@@ -968,8 +1379,9 @@ function desenharRelatorio() {
     h('p', { class: 'nota' }, 'A pagar = diárias × (valor da diária + almoço) + repasses das entregas feitas como avulso.'),
     h('div', { class: 'linha' },
       h('div', null, h('label', null, 'De'), de), h('div', null, h('label', null, 'Até'), ate),
-      h('div', null, h('label', null, ' '), h('button', { class: 'primario', onclick: gerar }, 'Gerar'))),
-    h('div', { class: 'nota' }, ' '), saida);
+      h('div', null, h('label', null, ' '), h('button', { class: 'primario', onclick: gerar }, 'Gerar')),
+      h('div', null, h('label', null, '\u00a0'), h('button', { onclick: () => { de.value = diaLocal(new Date()); ate.value = de.value; gerar(); } }, 'Fechamento de hoje'))),
+    h('div', { class: 'nota' }, ' '), topo, saida);
   gerar();
 }
 
@@ -989,10 +1401,12 @@ async function desenharConfig() {
     const adicional = h('input', { type: 'number', step: 0.01, min: 0, value: sv?.adicional ?? 0 });
     const pct = h('input', { type: 'number', step: 1, min: 0, max: 100, value: sv?.repasse_pct ?? '', placeholder: `Padrão (${c.repasse_pct}%)` });
     const ativo = h('input', { type: 'checkbox', checked: sv ? sv.ativo : true });
+    const fixo = h('input', { type: 'number', step: 0.01, min: 0, value: sv?.preco_fixo ?? '', placeholder: 'Vazio = preço por km' });
+    const repFixo = h('input', { type: 'number', step: 0.01, min: 0, value: sv?.repasse_fixo ?? '', placeholder: 'Vazio = % do repasse' });
     const ok = h('button', {
       class: 'primario',
       onclick: () => dlg.executar(async () => {
-        await api('POST', '/api/admin/servicos', { id: sv?.id, nome: nome.value, adicional: adicional.value, repasse_pct: pct.value, ativo: ativo.checked });
+        await api('POST', '/api/admin/servicos', { id: sv?.id, nome: nome.value, adicional: adicional.value, repasse_pct: pct.value, ativo: ativo.checked, preco_fixo: fixo.value, repasse_fixo: repFixo.value });
         desenharConfig();
       }, ok),
     }, 'Salvar');
@@ -1001,6 +1415,9 @@ async function desenharConfig() {
       h('div', { class: 'grade2' },
         h('div', null, h('label', null, 'Soma no preço (R$)'), adicional),
         h('div', null, h('label', null, 'Repasse ao avulso (%)'), pct)),
+      h('div', { class: 'grade2' },
+        h('div', null, h('label', null, 'Preço fixo, qualquer distância (R$)'), fixo),
+        h('div', null, h('label', null, 'Motoboy recebe no fixo (R$)'), repFixo)),
       h('label', { class: 'marcar' }, ativo, 'Ativo (aparece para o cliente)'),
       h('div', { class: 'linha fim' }, h('button', { onclick: dlg.fechar }, 'Voltar'), ok)];
   });
@@ -1068,6 +1485,8 @@ async function desenharConfig() {
 
   trocar(els.pagina, 
     h('h2', null, 'Configurações'),
+    h('div', { class: 'linha fim barra-salvar' }, aviso, salvar),
+    h('p', { class: 'nota' }, 'Toque em um título para abrir. "Salvar configurações" grava tudo de uma vez.'),
     h('h3', null, 'Turno e pagamento'),
     h('div', { class: 'grade3' },
       num('horas_turno', 'Duração do turno (horas)', 0.5), num('almoco_min', 'Almoço (minutos)'),
@@ -1092,7 +1511,17 @@ async function desenharConfig() {
     h('div', { class: 'grade3' },
       num('preco_base', 'Valor base (R$)', 0.01), num('preco_km_incluso', 'Km já incluídos no valor base', 0.5),
       num('preco_km', 'Valor por km a mais (R$)', 0.01), num('preco_minimo', 'Valor mínimo (R$)', 0.01),
+      num('preco_zona_sul', 'Acréscimo zona sul de Vila Velha (R$)', 0.01),
+      num('urgente_pct', 'Urgente: % a mais', 1), num('urgente_min', 'Urgente: mínimo a mais (R$)', 0.01),
+      num('urgente_repasse_pct', 'Urgente: % do extra para o motoboy', 1),
+      num('tam_g_pct', 'Tamanho G (até 40 cm): % a mais (não vale em corrida longa)', 1), num('tam_gg_pct', 'Tamanho GG (mais de 40 cm): % a mais (não vale em corrida longa)', 1),
+      num('tam_repasse_pct', 'Tamanho: % do extra para o motoboy', 1),
+      num('longa_km1', 'Corrida longa 1: acima de (km)', 1), num('longa_preco1', 'Corrida longa 1: R$ por km acima do limite', 0.01),
+      num('longa_km2', 'Corrida longa 2: acima de (km)', 1), num('longa_preco2', 'Corrida longa 2: R$ por km acima do limite', 0.01),
+      num('longa_repasse_pct', 'Corrida longa: % do total para o motoboy', 1),
+      num('repasse_base', 'Motoboy avulso recebe: valor base (R$)', 0.01), num('repasse_km', 'Motoboy avulso: por km a mais (R$)', 0.01),
       num('urgente_prazo_min', 'Prazo prometido na página (min)'),
+      texto('google_chave', c.google_chave_definida ? 'Chave do Google Maps (já salva; vazio mantém)' : 'Chave do Google Maps (acha endereço e loja pelo nome)', { type: 'password', autocomplete: 'off', value: '' }),
       texto('ors_chave', c.ors_chave_definida ? 'Chave de rota (já salva; vazio mantém)' : 'Chave de rota pelas ruas (opcional)', { type: 'password', autocomplete: 'off', value: '' })),
     h('div', { class: 'nota' }, 'Preço = valor base + km a mais (respeitando o mínimo) + o adicional do tipo de serviço. Sem chave de rota a distância é linha reta × 1,35; com chave gratuita do openrouteservice.org é a distância pelas ruas.'),
 
@@ -1101,8 +1530,8 @@ async function desenharConfig() {
       h('thead', null, h('tr', null, h('th', null, 'Serviço'), h('th', { class: 'num' }, 'Soma no preço'), h('th', { class: 'num' }, 'Repasse ao avulso'), h('th', null, ''))),
       h('tbody', null, servicos.map((sv) => h('tr', null,
         h('td', null, sv.nome, !sv.ativo && chip('desligado', 'inativo')),
-        h('td', { class: 'num' }, reais(sv.adicional)),
-        h('td', { class: 'num' }, sv.repasse_pct == null ? `padrão (${c.repasse_pct}%)` : `${sv.repasse_pct}%`),
+        h('td', { class: 'num' }, sv.preco_fixo ? `${reais(sv.preco_fixo)} fixo` : reais(sv.adicional)),
+        h('td', { class: 'num' }, sv.preco_fixo && sv.repasse_fixo != null ? `${reais(sv.repasse_fixo)} fixo` : sv.repasse_pct == null ? `padrão (${c.repasse_pct}%)` : `${sv.repasse_pct}%`),
         h('td', null, h('button', { class: 'pequeno', onclick: () => janelaServico(sv) }, 'Editar')))))),
     h('div', { class: 'linha' }, h('button', { class: 'pequeno', onclick: () => janelaServico() }, '+ Novo tipo de serviço'), avisoLista),
 
@@ -1111,7 +1540,7 @@ async function desenharConfig() {
       num('repasse_pct', 'Repasse padrão ao avulso (% do valor)'), num('repasse_minimo', 'Repasse mínimo por entrega (R$)', 0.01),
       num('oferta_raio_km', 'Oferecer a quem está até (km) da coleta', 0.5),
       num('oferta_alerta_min', 'Avisar se ninguém aceitar em (min)'), num('avulso_max_horas', 'Avulso fica online no máximo (horas)')),
-    h('div', { class: 'nota' }, 'A cada 1,5 min sem aceite o raio da oferta dobra (até 8 vezes). Se o repasse mínimo for maior que o preço cobrado, a entrega dá prejuízo: mantenha o valor mínimo da entrega acima dele.'),
+    h('div', { class: 'nota' }, 'A oferta vai para todos os motoboys dentro dessa distância da coleta. A cada 1,5 min sem ninguém aceitar, a distância dobra (até 8 vezes) e mais motoboys recebem. Atenção: o repasse mínimo do motoboy tem que ser menor que o valor mínimo cobrado do cliente, senão a entrega dá prejuízo.'),
 
     h('h3', null, 'Pagamento por Pix'),
     h('div', { class: 'nota' }, 'Opção 1 — sua chave Pix (sem taxa): o cliente paga direto na sua conta e manda o comprovante; você confirma no painel ou respondendo "pago 12" no WhatsApp.'),
@@ -1130,7 +1559,7 @@ async function desenharConfig() {
     h('h3', null, 'Conferência dos pedidos por IA'),
     h('div', { class: 'grade3' },
       opcao('ia_ativa', 'IA confere cada pedido antes de liberar'),
-      texto('ia_chave', c.ia_chave_definida ? 'Chave da API (já salva; vazio mantém)' : 'Chave da API da Anthropic (sk-ant-...)', { type: 'password', autocomplete: 'off', value: '' }),
+      texto('ia_chave', c.ia_chave_definida ? 'Chave da API (já salva; vazio mantém)' : 'Chave da API da Anthropic (sk-ant-...) ou ponte:TOKEN', { type: 'password', autocomplete: 'off', value: '' }),
       opcao('ia_modelo', 'Modelo', [['claude-opus-5-5', 'Claude Opus 5.5 (mais capaz)'], ['claude-sonnet-5-5', 'Claude Sonnet 5.5 (intermediário)'], ['claude-haiku-5-5', 'Claude Haiku 5.5 (mais barato)']])),
     h('label', null, 'Cidades atendidas'), campos.cidades_atendidas,
     h('div', { class: 'nota' }, 'A IA lê endereços e descrição (nunca nome ou telefone do cliente), identifica o tipo de serviço e segura para você conferir o que parecer errado. Se ela estiver fora do ar ou sem crédito, os pedidos seguem as regras normais. Gere a chave em console.anthropic.com → API Keys (precisa de crédito na conta). Salve antes de testar.'),
@@ -1181,6 +1610,8 @@ async function desenharConfig() {
       texto('url_publica', 'Endereço deste sistema (para os links)', { maxlength: 200, placeholder: location.origin }),
       opcao('robo_ativo', 'Robô atende e monta o pedido sozinho'),
       opcao('avisos_cliente', 'Avisar o cliente a cada etapa'),
+      opcao('convocacao_obrigatoria', 'Motoboy de diária só entra se for convocado'),
+      opcao('atribuir_auto', 'Mandar a demanda direto para o motoboy de diária (desligado: toca para todos e quem aceitar leva)'),
       opcao('convocacao_auto', 'Convocar motoboy sozinho quando faltar gente'),
       num('convocacao_auto_max', 'Máx. de convocações automáticas por dia'),
       num('convocacao_auto_espera_min', 'Demanda esperando há (min) para convocar')),
@@ -1199,7 +1630,6 @@ async function desenharConfig() {
     h('h3', null, `Termo aceito pelo motoboy a cada login (versão ${c.termo_versao})`),
     campos.termo_texto,
     h('div', { class: 'nota' }, 'Modelo inicial: peça para seu advogado ou contador revisar antes de usar.'),
-    h('div', { class: 'linha fim' }, aviso, salvar),
 
     h('h3', null, 'Entrada automática de demandas (app de clientes, Make, WhatsApp)'),
     h('p', { class: 'nota' }, c.api_chave_definida ? 'Já existe uma chave ativa. Gerar outra cancela a anterior.' : 'Nenhuma chave gerada ainda.'),
@@ -1227,7 +1657,23 @@ async function desenharConfig() {
         },
       }, 'Trocar senha'))),
     avisoSenha);
+
+  // Cada seção (h3) vira uma gaveta fechada: a página fica curta e abre só o que interessa.
+  let atualGaveta = null;
+  for (const no of [...els.pagina.children]) {
+    if (no.tagName === 'H3') {
+      const titulo = no.textContent;
+      const chave = `cfg:${titulo.replace(/\(.*$/, '').trim()}`;
+      atualGaveta = gaveta(chave, false, { class: 'cartao gaveta-config' }, h('summary', null, titulo));
+      no.replaceWith(atualGaveta);
+    } else if (atualGaveta) {
+      atualGaveta.append(no);
+    }
+  }
 }
 
 // ----------------------------------------------------------------- início
 api('GET', '/api/admin/estado').then(() => telaPrincipal()).catch(() => telaLogin());
+
+// Permite instalar o painel como aplicativo no celular (ícone na tela inicial, tela cheia).
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});

@@ -1,7 +1,7 @@
 :root {
   /* Mesmas cores do site speedboy.com.br */
-  --fundo: #faf8f3; --cartao: #ffffff; --texto: #0d0d0d; --suave: #5f5f5f; --borda: #e2ded6;
-  --marca: #001f6b; --destaque: #ff5400; --ok: #15803d; --aviso: #b45309; --erro: #b91c1c; --info: #1d4ed8;
+  --fundo: #faf8f3; --cartao: #ffffff; --texto: #1A1A1A; --suave: #5f5f5f; --borda: #e2ded6;
+  --marca: #002776; --destaque: #D4A017; --ok: #15803d; --aviso: #b45309; --erro: #b91c1c; --info: #1d4ed8;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; }
@@ -59,3 +59,6 @@ button:disabled { opacity: .55; cursor: default; }
 a.botao { width: 100%; }
 .qr { display: block; margin: 12px auto; border: 1px solid var(--borda); border-radius: 10px; background: #fff; }
 textarea { resize: vertical; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; overflow-wrap: anywhere; }
+
+label.marcar { display: flex; align-items: center; gap: 10px; font-size: 16px; color: inherit; margin-top: 14px; }
+label.marcar input { width: 22px; height: 22px; flex: none; margin: 0; }

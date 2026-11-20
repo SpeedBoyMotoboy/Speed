@@ -367,7 +367,7 @@ test('site: pedido fica retido até o admin aprovar', async () => {
   assert.equal(demandas()[0].retida, 1);
   assert.deepEqual(s.estadoAdmin().sugestoes, []);
   await a.despacharSaida();
-  assert.ok(enviadas.some((m) => /chegou pelo site e espera sua aprovação/.test(m.texto)));
+  assert.ok(enviadas.some((m) => /chegou pelo site e espera sua aprovação[\s\S]*📦 Coleta: [\s\S]*🏁 Entrega: /.test(m.texto)), 'aviso leva coleta e entrega');
 
   const publico = s.pedidoPublico(r.codigo);
   assert.equal(publico.retida, true);
@@ -384,7 +384,7 @@ test('site: pedido fica retido até o admin aprovar', async () => {
   assert.equal(depois.motoboy.nome, 'Ana');
   assert.equal(depois.motoboy.lat, null, 'posição só aparece com rastreio_cliente ligado');
   s.salvarConfig({ rastreio_cliente: '1' }, 'teste');
-  assert.equal(s.pedidoPublico(r.codigo).motoboy.lat, P(0).lat);
+  assert.equal(s.pedidoPublico(r.codigo).motoboy.lat, null, 'antes da coleta o cliente n?o v? o motoboy no mapa');
   assert.equal(s.pedidoPublico(r.codigo).paradas_antes, 0);
 });
 
@@ -503,6 +503,13 @@ test('HTTP: páginas públicas, webhook com segredo e segredos fora da resposta'
   assert.equal((await fetch(`${base}/pedir`, { redirect: 'manual' })).headers.get('location'), '/pedir/');
   assert.equal((await (await fetch(`${base}/api/publico/info`)).json()).empresa, 'SpeedBoy');
   assert.equal((await fetch(`${base}/api/publico/pedido?c=nao-existe-123`)).status, 404);
+
+  // Site da empresa chama as rotas públicas direto do navegador; outros sites e o painel não.
+  const pre = await fetch(`${base}/api/publico/pedidos`, { method: 'OPTIONS', headers: { Origin: 'https://www.speedboy.com.br', 'Access-Control-Request-Method': 'POST' } });
+  assert.equal(pre.status, 204);
+  assert.equal(pre.headers.get('access-control-allow-origin'), 'https://www.speedboy.com.br');
+  assert.equal((await fetch(`${base}/api/publico/info`, { headers: { Origin: 'https://golpe.example' } })).headers.get('access-control-allow-origin'), null);
+  assert.equal((await fetch(`${base}/api/admin/estado`, { headers: { Origin: 'https://www.speedboy.com.br' } })).headers.get('access-control-allow-origin'), null);
 
   const login = await fetch(`${base}/api/admin/login`, json({ usuario: 'admin', senha: 'senha-de-teste-123' }));
   const cookie = login.headers.get('set-cookie').split(';')[0];
@@ -629,7 +636,7 @@ test('tipo de serviço soma no preço e pode ter repasse próprio', () => {
   s.salvarServico({ id: cartorio.id, nome: cartorio.nome, adicional: 30, repasse_pct: 70 }, 'teste');
   const cot = s.cotar(P(0), P(3), { servicoId: cartorio.id });
   assert.equal(cot.valor, 42, 'R$ 12 da distância + R$ 30 do cartório');
-  assert.equal(cot.repasse, 29.4, '70% para o motoboy');
+  assert.equal(cot.repasse, 29, '70% para o motoboy');
   assert.equal(s.cotar(P(0), P(3), { km: 10 }).valor, 24, 'km pelas ruas, quando informado, vale mais que a linha reta');
   assert.throws(() => s.salvarServico({ nome: 'X' }, 'teste'), { codigo: 'servico_invalido' });
 });
@@ -706,7 +713,7 @@ test('cliente fixo: preço próprio, vai para a fatura e confirma pelo WhatsApp 
     nome: 'Recepção', telefone: '11977770001', descricao: 'Exames',
     coleta: { endereco: 'Rua da Coleta, 10, Centro' }, entrega: { endereco: 'Rua da Entrega, 20, Centro' },
   }, 'ip');
-  assert.deepEqual([r.confirmacao, r.pix, r.valor], ['whatsapp', null, 9.6]);
+  assert.deepEqual([r.confirmacao, r.pix, r.valor], ['whatsapp', null, 9]);
   const [d] = demandas();
   assert.deepEqual([d.cliente, d.pagamento, d.retida], ['Clínica Vida', 'faturado', 1]);
   await a.receber({ telefone: '5511977770001', nome: 'Recepção', texto: '1' });
@@ -766,7 +773,7 @@ test('Pix na chave da empresa: cliente manda o comprovante e o responsável libe
   assert.match(fim, /Pedido #1 reservado[\s\S]*R\$\s12,00[\s\S]*000201[\s\S]*envie o comprovante aqui/);
   assert.ok(enviadas.some((m) => m.destino === '5511988880000' && /esperando Pix de R\$\s12,00[\s\S]*pago 1/.test(m.texto)));
   const publico = s.pedidoPublico(demandas()[0].codigo);
-  assert.deepEqual([publico.pix.manual, publico.pix.whatsapp, publico.pix.qr], [true, '27999165959', '']);
+  assert.deepEqual([publico.pix.manual, publico.pix.whatsapp, publico.pix.qr.startsWith('data:image/')], [true, '27999165959', true]);
   assert.match(publico.pix.codigo, /0014br\.gov\.bcb\.pix011446178859000196[\s\S]*540512\.00[\s\S]*0507PEDIDO1/);
   assert.equal(estadoDe(token).ofertas.length, 0);
 
@@ -998,4 +1005,42 @@ test('IA: análise de arquivos monta imagem, PDF e texto na chamada e devolve o 
   assert.match(corpo.system, /não invente|não complete endereço de memória/i);
   assert.deepEqual([r.resumo, r.alertas, r.comprovante, r.pedidos[0].servico_id, r.pedidos[0].requisito], ['Resumo.', ['Olhar isso'], null, null, 'qualquer']);
   await assert.rejects(ia.analisar({ ia_chave: '' }, { arquivos: [], contexto: {}, pergunta: '' }), /chave da IA/);
+});
+
+test('pedido do site fechado no WhatsApp: grava valor, recalcula repasse e libera', () => {
+  const s = criarServico({ db: abrirBanco(':memory:') });
+  const d = s.criarPedido({
+    cliente: 'Loja Teste', telefone: '27999990000', descricao: 'caixa',
+    coleta: { endereco: 'Rua A, 1, Centro, Vila Velha', lat: -20.3357, lon: -40.2968 },
+    entrega: { endereco: 'Rua B, 2, Centro, Vitória', lat: -20.3186, lon: -40.3302 },
+  }, 'site', { retida: true });
+  assert.equal(d.retida, 1);
+  const r = s.fecharPedido(d.id, 40, 'api');
+  assert.equal(r.liberada, true);
+  const depois = s.estadoAdmin().demandas.find((x) => x.id === d.id);
+  assert.equal(depois.valor, 40);
+  assert.equal(depois.repasse, 24, '60% de 40');
+  assert.equal(s.fecharPedido(d.id, 50, 'api').liberada, false, 'não fecha duas vezes');
+  assert.throws(() => s.fecharPedido(9999, 10, 'api'), { codigo: 'nao_encontrado' });
+});
+
+test('pedido do site sem telefone: contato chega depois pelo WhatsApp', async () => {
+  const { s, a, demandas } = montar();
+  const base = { nome: 'Carla', descricao: 'envelope', coleta: { endereco: 'Rua A, 10, Centro', lat: -23.55, lon: -46.63 }, entrega: { endereco: 'Rua B, 20, Centro', lat: -23.56, lon: -46.64 } };
+  await assert.rejects(a.pedidoSite(base, 'ip'), { codigo: 'telefone_invalido' });
+  const r = await a.pedidoSite({ ...base, contato_whatsapp: true }, 'ip');
+  assert.equal(demandas().find((d) => d.id === r.id).cliente_telefone, '');
+  assert.deepEqual(s.definirContato(r.id, '5527999990000', 'api'), { definido: true, igual: true, pix: null });
+  assert.equal(demandas().find((d) => d.id === r.id).cliente_telefone, '27999990000');
+  assert.equal(s.definirContato(r.id, '5527988880000', 'api').definido, false, 'não troca contato já definido');
+});
+
+test('diária entra sem convocação, salvo se a convocação for obrigatória', () => {
+  const s = criarServico({ db: abrirBanco(':memory:') });
+  s.criarMotoboy({ nome: 'Beto', telefone: '27999990011', pin: '123456', veiculo: 'moto' }, 'teste');
+  const r = s.loginMotoboy({ telefone: '27999990011', pin: '123456', aceito_termo: true, dispositivo: 'a' });
+  assert.ok(r.token, 'entrou sem convocação');
+  s.criarMotoboy({ nome: 'Caio', telefone: '27999990012', pin: '123456', veiculo: 'moto' }, 'teste');
+  s.salvarConfig({ convocacao_obrigatoria: '1' }, 'teste');
+  assert.throws(() => s.loginMotoboy({ telefone: '27999990012', pin: '123456', aceito_termo: true, dispositivo: 'b' }), { codigo: 'sem_convocacao' });
 });

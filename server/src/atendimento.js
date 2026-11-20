@@ -17,7 +17,7 @@ const TENTATIVAS_MAX = 6;
 const PEDIDOS_ABERTOS_MAX = 5;
 const ALERTAS_AVISADOS = {
   parado: 'Parado na rota', sem_sinal: 'Sem sinal', gps_falso: 'GPS falso', gps_desligado: 'GPS desligado',
-  carga_pendente: 'Turno encerrado com carga',
+  carga_pendente: 'Turno encerrado com carga', problema: 'PROBLEMA NA ENTREGA',
 };
 const txt = (v, max) => String(v ?? '').trim().slice(0, max);
 const hora = (ts) => new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
@@ -636,14 +636,164 @@ export function criarAtendimento({
       mapa: { lat: Number(c.mapa_lat), lon: Number(c.mapa_lon) },
       prazo_min: Number(c.urgente_prazo_min), pagamento: modoConfirmacao() === 'pagamento',
       pede_email: servico.modoPagamento() === 'mp', whatsapp: c.empresa_whatsapp,
-      servicos: servico.listarServicos().filter((x) => x.ativo).map((x) => ({ id: x.id, nome: x.nome, adicional: x.adicional })),
+      acrescimos: { urgente_pct: Number(c.urgente_pct || 0), g_pct: Number(c.tam_g_pct || 0), gg_pct: Number(c.tam_gg_pct || 0), tamanho_ate_km: Number(c.longa_km1 || 0) },
+      servicos: servico.listarServicos().filter((x) => x.ativo).map((x) => ({ id: x.id, nome: x.nome, adicional: x.adicional, preco_fixo: x.preco_fixo || null })),
     };
   }
+  // ── Link próprio de empresa (/empresa/?k=CHAVE): busca em fornecedores, entrega fixa, fatura do mês ──
+  function empresaDaChave(k) {
+    const chave = txt(k, 64);
+    const cli = chave.length >= 16 ? q('SELECT * FROM clientes WHERE chave = ? AND faturado = 1').get(chave) : null;
+    if (!cli) throw new Erro(404, 'link_invalido', 'Link inválido. Peça o link certo à SpeedBoy.');
+    return cli;
+  }
+  const entregaFixa = (cli) => { try { return JSON.parse(cli.entrega_fixa || 'null'); } catch { return null; } };
+  const coletaFixa = (cli) => { try { return JSON.parse(cli.coleta_fixa || 'null'); } catch { return null; } };
+  function empresaPublica(k) {
+    const cli = empresaDaChave(k);
+    const fixa = entregaFixa(cli);
+    const cf = coletaFixa(cli);
+    return { nome: cli.nome, entrega: fixa ? { endereco: fixa.endereco } : null, coleta: cf ? { endereco: cf.endereco } : null, fechamento: cli.fechamento || 'mensal' };
+  }
+  async function pedidoEmpresa(dados, ip) {
+    limitar(`empresa:${ip}`, 60, 60 * MIN);
+    const cli = empresaDaChave(dados?.k);
+    const horario = servico.foraDoHorario();
+    if (horario) throw new Erro(403, 'fechado', `Estamos fechados agora. Atendimento: ${horario}.`);
+    const cf = coletaFixa(cli);
+    if (cf) return pedidoLoja(cli, cf, dados);
+    const fixa = entregaFixa(cli);
+    if (!fixa) throw new Erro(422, 'sem_destino', 'Empresa sem endereço de entrega cadastrado. Fale com a SpeedBoy.');
+    const coleta = lerPontoPublico(dados?.coleta);
+    if (coleta.endereco.length < 6) throw new Erro(422, 'endereco_invalido', 'Escreva o endereço do fornecedor com rua, número e bairro.');
+    const oque = txt(dados?.oque, 300);
+    if (oque.length < 2) throw new Erro(422, 'descricao_invalida', 'Diga o que o motoboy vai buscar.');
+    await acharNoMapa(coleta);
+    const entrega = { endereco: txt(fixa.endereco, 200), lat: fixa.lat ?? null, lon: fixa.lon ?? null, contato: txt(fixa.contato, 120) };
+    const km = await distancia(coleta, entrega);
+    const autoriza = txt(dados?.autoriza, 80);
+    const tamanhoGrande = ['grande', 'maior', 'g', 'gg'].includes(String(dados?.tamanho || ''));
+    const descricao = [
+      `📦 ${oque}`,
+      autoriza && `✅ Pedido por ${autoriza} (${cli.nome}). No balcão, informe o seu nome: a retirada já está autorizada.`,
+      '🧾 Material já faturado pelo fornecedor: não paga nada na retirada.',
+    ].filter(Boolean).join(' · ');
+    const d = servico.criarPedido({
+      cliente: cli.nome, telefone: cli.telefone, descricao, requisito: tamanhoGrande ? 'bau' : 'qualquer', tamanho: dados?.tamanho,
+      urgente: false, km, email: cli.email, coleta, entrega, hora_tipo: dados?.hora_tipo, hora: dados?.hora, agendada_para: dados?.agendada_para,
+    }, 'empresa', { retida: !cli.libera_direto, pagamento: 'faturado' });
+    q('UPDATE clientes SET pedidos = pedidos + 1 WHERE id = ?').run(cli.id);
+    avisarAdmin([
+      `🏭 ${cli.nome} lançou a busca #${d.id}${cli.libera_direto ? ' (já foi para os motoboys)' : ': aprove no painel'}.`,
+      `📦 Coleta: ${d.coleta_endereco || '-'}`, `🏁 Entrega: ${d.entrega_endereco || '-'}`, `📝 ${oque}`,
+      d.km != null ? `📏 ${String(d.km).replace('.', ',')} km` : '', d.valor != null ? `💰 ${reais(d.valor)} (fatura)` : '',
+      d.status === 'sem_local' ? '⚠️ Não achei o fornecedor no mapa: marque no painel.' : '',
+    ].filter(Boolean).join('\n'));
+    return { id: d.id, codigo: d.codigo, status: d.status, valor: d.valor, km: d.km };
+  }
+
+  // Loja com coleta fixa (ex.: Enxoval): só diz para onde vai e quem recebe. A loja paga no fechamento.
+  async function pedidoLoja(cli, cf, dados) {
+    const entrega = lerPontoPublico(dados?.entrega);
+    if (entrega.endereco.length < 6) throw new Erro(422, 'endereco_invalido', 'Escreva o endereço de entrega com rua, número e bairro.');
+    const recebe = txt(dados?.recebe, 80);
+    if (recebe.length < 2) throw new Erro(422, 'recebedor_invalido', 'Diga quem vai receber.');
+    entrega.contato = [recebe, txt(dados?.fone, 30)].filter(Boolean).join(' · ');
+    await acharNoMapa(entrega);
+    const coleta = { endereco: txt(cf.endereco, 200), lat: cf.lat ?? null, lon: cf.lon ?? null, contato: txt(cf.contato, 120) };
+    if (coleta.lat == null) {
+      const p = { endereco: cf.busca || cf.endereco, lat: null };
+      await acharNoMapa(p);
+      if (p.lat != null) {
+        coleta.lat = p.lat; coleta.lon = p.lon;
+        q('UPDATE clientes SET coleta_fixa = ? WHERE id = ?').run(JSON.stringify({ ...cf, lat: p.lat, lon: p.lon }), cli.id);
+      }
+    }
+    const km = await distancia(coleta, entrega);
+    const oque = txt(dados?.oque, 300);
+    const autoriza = txt(dados?.autoriza, 80);
+    const grande = ['grande', 'maior', 'g', 'gg'].includes(String(dados?.tamanho || ''));
+    const semanal = cli.fechamento === 'semanal';
+    const descricao = [
+      oque && `📦 ${oque}`,
+      cf.obs && `🏬 ${txt(cf.obs, 200)}`,
+      autoriza && `✅ Pedido por ${autoriza} (${cli.nome}).`,
+      `💳 Pago pela ${cli.nome} (fechamento ${semanal ? 'semanal' : 'mensal'}): não cobrar de quem recebe.`,
+    ].filter(Boolean).join(' · ');
+    const d = servico.criarPedido({
+      cliente: cli.nome, telefone: cli.telefone, descricao, requisito: grande ? 'bau' : 'qualquer', tamanho: dados?.tamanho,
+      urgente: false, km, email: cli.email, coleta, entrega, hora_tipo: dados?.hora_tipo, hora: dados?.hora, agendada_para: dados?.agendada_para,
+    }, 'empresa', { retida: !cli.libera_direto, pagamento: 'faturado' });
+    q('UPDATE clientes SET pedidos = pedidos + 1 WHERE id = ?').run(cli.id);
+    avisarAdmin([
+      `🏬 ${cli.nome} lançou a entrega #${d.id}${cli.libera_direto ? ' (já foi para os motoboys)' : ': aprove no painel'}.`,
+      `📦 Coleta: ${d.coleta_endereco || '-'}`, `🏁 Entrega: ${d.entrega_endereco || '-'} (${entrega.contato})`, oque ? `📝 ${oque}` : '',
+      d.km != null ? `📏 ${String(d.km).replace('.', ',')} km` : '', d.valor != null ? `💰 ${reais(d.valor)} (fechamento ${semanal ? 'semanal' : 'mensal'})` : '',
+      d.status === 'sem_local' ? '⚠️ Não achei o endereço no mapa: marque no painel.' : '',
+    ].filter(Boolean).join('\n'));
+    return { id: d.id, codigo: d.codigo, status: d.status, valor: d.valor, km: d.km };
+  }
+  // Lista das entregas da empresa no período (a "planilha" do fechamento).
+  function entregasEmpresa(k, periodo) {
+    const cli = empresaDaChave(k);
+    const H3 = 3 * 3600e3;
+    const DIA = 86400e3;
+    const br = new Date(agora() - H3);
+    const y = br.getUTCFullYear();
+    const m = br.getUTCMonth();
+    const segunda = Date.UTC(y, m, br.getUTCDate() - ((br.getUTCDay() + 6) % 7)) + H3;
+    const SEMPRE = Number.MAX_SAFE_INTEGER;
+    const faixas = {
+      semana: [segunda, SEMPRE], passada: [segunda - 7 * DIA, segunda],
+      mes: [Date.UTC(y, m, 1) + H3, SEMPRE], mes_passado: [Date.UTC(y, m - 1, 1) + H3, Date.UTC(y, m, 1) + H3],
+    };
+    const qual = faixas[periodo] ? periodo : (cli.fechamento === 'semanal' ? 'semana' : 'mes');
+    const [ini, fim] = faixas[qual];
+    const linhas = q(`SELECT id, codigo, criada_em, entregue_em, status, retida, coleta_endereco, entrega_endereco, entrega_contato, valor, km
+      FROM demandas WHERE cliente_telefone = ? AND criada_em >= ? AND criada_em < ? ORDER BY id`).all(cli.telefone, ini, fim);
+    const validas = linhas.filter((l) => l.status !== 'cancelada');
+    const total = Math.round(validas.reduce((s, l) => s + (Number(l.valor) || 0), 0) * 100) / 100;
+    return {
+      nome: cli.nome, periodo: qual, de: ini, ate: fim === SEMPRE ? null : fim, quantidade: validas.length, total,
+      entregas: linhas.map((l) => ({
+        id: l.id, codigo: l.codigo, criado_em: l.criada_em, entregue_em: l.entregue_em, status: l.status, retida: Boolean(l.retida),
+        de: l.coleta_endereco, para: l.entrega_endereco, quem: l.entrega_contato, km: l.km, valor: l.status === 'cancelada' ? 0 : l.valor,
+      })),
+    };
+  }
+
   function lerPontoPublico(p) {
     const lat = p?.lat == null || p.lat === '' ? null : Number(p.lat);
     const lon = p?.lon == null || p.lon === '' ? null : Number(p.lon);
     const ok = lat != null && lon != null && coordValida(lat, lon);
     return { endereco: txt(p?.endereco, 200), contato: txt(p?.contato, 120), lat: ok ? lat : null, lon: ok ? lon : null };
+  }
+  // Sugestões de endereço enquanto o cliente digita (Places API New, com a chave do painel).
+  async function sugerirPublico(texto, ip) {
+    const q = txt(texto, 120);
+    if (q.length < 4) return { sugestoes: [] };
+    limitar(`sugerir:${ip}`, 120, 15 * MIN);
+    const c = cfgBruta();
+    if (!c.google_chave) return { sugestoes: [] };
+    try {
+      const r = await fetch('https://places.googleapis.com/v1/places:autocomplete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': c.google_chave },
+        body: JSON.stringify({
+          input: q, languageCode: 'pt-BR', includedRegionCodes: ['br'],
+          locationBias: { circle: { center: { latitude: Number(c.mapa_lat) || -20.3358, longitude: Number(c.mapa_lon) || -40.2969 }, radius: 40000 } },
+        }),
+        signal: AbortSignal.timeout(6000),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { console.error('[google autocomplete]', r.status, String(j?.error?.message || '').slice(0, 160)); return { sugestoes: [] }; }
+      const sugestoes = (j.suggestions || []).map((s) => s.placePrediction?.text?.text).filter(Boolean).slice(0, 5)
+        .map((s) => s.replace(/, Brasil$/, ''));
+      return { sugestoes };
+    } catch (e) {
+      console.error('[google autocomplete]', e.message);
+      return { sugestoes: [] };
+    }
   }
   async function cotarPublico(dados, ip) {
     if (cfgBruta().pedidos_site !== '1') throw new Erro(403, 'desligado', 'Pedidos pelo site estão desligados.');
@@ -656,8 +806,9 @@ export function criarAtendimento({
     }
     const cot = servico.cotar(coleta, entrega, {
       km: await distancia(coleta, entrega), servicoId: dados?.servico_id, telefone: normalizarTelefone(dados?.telefone),
+      tamanho: dados?.tamanho,
     });
-    return { coleta, entrega, km: cot.km, valor: cot.valor };
+    return { coleta, entrega, km: cot.km, valor: cot.valor, zona_sul: Boolean(cot.zona_sul), tamanho_extra: cot.tamanho_extra || 0, longa: Boolean(cot.longa) };
   }
   async function pedidoSite(dados, ip) {
     const c = cfgBruta();
@@ -666,7 +817,10 @@ export function criarAtendimento({
     const nome = txt(dados?.nome, 80);
     const telefone = normalizarTelefone(dados?.telefone);
     if (nome.length < 2) throw new Erro(422, 'nome_invalido', 'Informe seu nome.');
-    if (!telefone) throw new Erro(422, 'telefone_invalido', 'Informe seu WhatsApp com DDD.');
+    // Sem telefone só quando o site avisa que o cliente segue para o WhatsApp da empresa:
+    // o número chega pela conversa e é gravado depois (definirContato).
+    const semTelefone = !telefone && dados?.contato_whatsapp === true && txt(dados?.telefone, 30) === '';
+    if (!telefone && !semTelefone) throw new Erro(422, 'telefone_invalido', 'Informe seu WhatsApp com DDD.');
     const recusa = motivoRecusa(telefone);
     if (recusa) throw new Erro(409, 'recusado', recusa.replace(/\s*😴/, ''));
     limitar(`pedir:${ip}`, 8, 60 * MIN);
@@ -675,10 +829,16 @@ export function criarAtendimento({
     const entrega = lerPontoPublico(dados?.entrega);
     await acharNoMapa(coleta);
     await acharNoMapa(entrega);
-    if (!coleta.contato) coleta.contato = `${nome} ${telefone}`;
+    if (!coleta.contato) coleta.contato = `${nome} ${telefone}`.trim();
     const km = await distancia(coleta, entrega);
-    const previa = servico.cotar(coleta, entrega, { km, servicoId: dados?.servico_id, telefone });
-    const fixo = clienteFixo(telefone);
+    const tarifaUrgente = dados?.urgente === true; // só a chave "Entrega urgente" do site cobra a tarifa urgente
+    const previa = servico.cotar(coleta, entrega, { km, servicoId: dados?.servico_id, telefone, urgente: tarifaUrgente, tamanho: dados?.tamanho });
+    // Corrida longa não entra como urgente: não dá para cumprir o prazo prometido.
+    const kmMaxUrgente = Number(c.urgente_km_max || 0);
+    if (tarifaUrgente && kmMaxUrgente && previa.km != null && previa.km > kmMaxUrgente) {
+      throw new Erro(422, 'urgente_longe', `Entrega urgente (em até ${c.urgente_prazo_min} min) só vale para corridas de até ${kmMaxUrgente} km. Para essa distância, peça como Normal.`);
+    }
+    const fixo = telefone ? clienteFixo(telefone) : null;
     const email = txt(dados?.email, 120).toLowerCase();
     // Cliente fixo não paga na hora, mas precisa provar que é ele (qualquer um pode digitar o telefone dele).
     let modo = fixo ? (ligado() ? 'whatsapp' : 'painel') : modoConfirmacao();
@@ -689,19 +849,32 @@ export function criarAtendimento({
     // A IA confere antes de cobrar: se a descrição é de outro tipo de serviço, o cliente vê o preço certo primeiro.
     const analise = await conferirIA({ coleta, entrega, km: previa.km, servicoId: previa.servico?.id, descricao: dados?.descricao });
     if (analise?.servico_id && analise.servico_id !== (previa.servico?.id ?? null)) {
-      const certo = servico.cotar(coleta, entrega, { km, servicoId: analise.servico_id, telefone });
+      const certo = servico.cotar(coleta, entrega, { km, servicoId: analise.servico_id, telefone, urgente: tarifaUrgente, tamanho: dados?.tamanho });
       throw new Erro(409, 'servico_diferente',
         `Pelo que você descreveu, o serviço é "${certo.servico.nome}". Atualizamos o valor: confira e confirme de novo.`,
         { servico_id: analise.servico_id, km: certo.km, valor: certo.valor });
     }
     if (analise && !analise.aprovado) modo = 'painel';
+    // Todo pedido do site com valor já mostra o Pix (a entrega só finaliza depois de pago).
+    // Urgente: além disso, sai na hora para o motoboy.
+    const pixNaHora = !fixo && c.pix_chave !== '' && previa.valor != null && !(analise && !analise.aprovado);
+    const pixUrgente = pixNaHora && tarifaUrgente;
+    if (pixUrgente) modo = 'nenhuma';
     const d = servico.criarPedido({
       cliente: fixo?.nome || nome, telefone, descricao: dados?.descricao, requisito: dados?.requisito ?? 'qualquer',
-      urgente: true, servico_id: dados?.servico_id, km, email, coleta, entrega,
+      urgente: dados?.urgente !== false, tarifa_urgente: tarifaUrgente, tamanho: dados?.tamanho, servico_id: dados?.servico_id, km, email, coleta, entrega,
+      hora_tipo: dados?.hora_tipo, hora: dados?.hora, agendada_para: dados?.agendada_para,
     }, 'site', { retida: modo !== 'nenhuma', pagamento: fixo ? 'faturado' : '', ia: analise });
-    lembrarCliente(telefone, nome, coleta, email);
+    if (telefone) lembrarCliente(telefone, nome, coleta, email);
 
     let pix = null;
+    if (pixNaHora) pix = servico.gerarPixManual(d.id);
+    if (pixUrgente) {
+      avisarAdmin([
+        `⚡💰 URGENTE #${d.id} de ${d.cliente}: já foi para o motoboy. Pix de ${reais(d.valor)} enviado ao cliente. Quando cair, confirme no painel (Confirmar pagamento) — sem isso o motoboy não finaliza.`,
+        `📦 Coleta: ${d.coleta_endereco || '-'}`, `🏁 Entrega: ${d.entrega_endereco || '-'}`, d.descricao ? `📝 ${d.descricao}` : '',
+      ].filter(Boolean).join('\n'));
+    }
     if (modo === 'pagamento') {
       try {
         pix = await gerarPix(d);
@@ -711,9 +884,18 @@ export function criarAtendimento({
       }
     }
     if (modo === 'painel') {
-      avisarAdmin(analise && !analise.aprovado
+      // Dados do pedido junto do aviso: quem recebe (ex.: n8n) pode conferir sem entrar no painel.
+      const detalhes = [
+        telefone ? `📞 ${telefone}` : '📞 chega pelo WhatsApp (cliente envia a mensagem do pedido)',
+        `📦 Coleta: ${d.coleta_endereco || '-'}`,
+        `🏁 Entrega: ${d.entrega_endereco || '-'}`,
+        d.descricao ? `📝 ${d.descricao}` : '',
+        d.km != null ? `📏 ${String(d.km).replace('.', ',')} km` : '',
+        `💰 ${d.valor != null ? reais(d.valor) : 'valor a combinar'}`,
+      ].filter(Boolean).join('\n');
+      avisarAdmin((analise && !analise.aprovado
         ? `🔎 A IA pediu conferência do pedido #${d.id} de ${d.cliente}: ${analise.motivos.join('; ') || 'sem detalhe'}. Aprove ou cancele no painel.`
-        : `🆕 Pedido #${d.id} de ${d.cliente} chegou pelo site e espera sua aprovação no painel.`);
+        : `🆕 Pedido #${d.id} de ${d.cliente} chegou pelo site e espera sua aprovação no painel.`) + `\n${detalhes}`);
     }
 
     if (modo === 'whatsapp') {
@@ -798,8 +980,9 @@ export function criarAtendimento({
   }
 
   return {
+    avisarDono: (texto) => { try { avisarAdmin(texto); } catch { /* aviso é cortesia */ } },
     definirOrigem, receber, segredoConfere, webhookAutorizado, despacharSaida, rotina,
-    infoPublica, cotarPublico, pedidoSite, pedidoVivo, webhookPagamento, expirarPagamentos,
+    infoPublica, sugerirPublico, cotarPublico, pedidoSite, pedidoVivo, empresaPublica, pedidoEmpresa, entregasEmpresa, webhookPagamento, expirarPagamentos,
     resumo, responder, modoConversa, testar, testarIA, analisarArquivos, analisarConversa, listarAnalises,
   };
 }

@@ -174,6 +174,22 @@ CREATE TABLE IF NOT EXISTS analises (
   pergunta TEXT NOT NULL DEFAULT '',
   resultado TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS candidatos (
+  id INTEGER PRIMARY KEY,
+  nome TEXT NOT NULL,
+  telefone TEXT NOT NULL,
+  documento TEXT NOT NULL DEFAULT '',
+  placa TEXT NOT NULL DEFAULT '',
+  veiculo TEXT NOT NULL DEFAULT 'moto',
+  tem_bau INTEGER NOT NULL DEFAULT 0,
+  tem_bag INTEGER NOT NULL DEFAULT 0,
+  tipo TEXT NOT NULL DEFAULT 'avulso',
+  indicacao TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pendente',
+  motoboy_id INTEGER,
+  criado_em INTEGER NOT NULL,
+  decidido_em INTEGER
+);
 CREATE TABLE IF NOT EXISTS auditoria (
   id INTEGER PRIMARY KEY,
   ts INTEGER NOT NULL,
@@ -223,6 +239,24 @@ export const CONFIG_PADRAO = {
   preco_km_incluso: '0',
   preco_km: '0',
   preco_minimo: '0',
+  // Acréscimo ao cliente quando a coleta ou a entrega cai na zona sul de Vila Velha (o motoboy não recebe).
+  preco_zona_sul: '15',
+  // Tarifa urgente (chave do site): % a mais sobre o valor, com mínimo em R$; parte do extra que vai ao motoboy.
+  urgente_pct: '20',
+  urgente_min: '10',
+  urgente_repasse_pct: '70',
+  // Tamanho da mercadoria: % a mais para G (até 40 cm) e GG (mais de 40 cm); parte do extra que vai ao motoboy.
+  tam_g_pct: '10',
+  tam_gg_pct: '20',
+  tam_repasse_pct: '60',
+  // Corrida longa (coleta → entrega): até o 1º limite vale a tabela normal; cada km acima dele paga o valor
+  // da faixa (suave, sem salto);
+  // o motoboy avulso leva um % do valor total da corrida.
+  longa_km1: '30',
+  longa_preco1: '2.5',
+  longa_km2: '50',
+  longa_preco2: '3',
+  longa_repasse_pct: '70',
   // Pedido pelo site: 'painel' (admin aprova), 'whatsapp' (cliente confirma no WhatsApp) ou 'nenhuma'.
   pedidos_site: '1',
   site_confirmacao: 'painel',
@@ -241,19 +275,32 @@ export const CONFIG_PADRAO = {
   avisos_cliente: '1',
   admin_telefone: '',
   convocacao_auto: '0',
+  // '1' = demanda normal vai direto para o motoboy de diária mais perto; '0' = todo mundo recebe a oferta e quem aceitar leva.
+  atribuir_auto: '1',
+  // Diária só entra no dia em que for convocada? '0' = entra quando quiser (como o avulso, mas com turno fixo).
+  convocacao_obrigatoria: '0',
   convocacao_auto_max: '3',
   convocacao_auto_espera_min: '3',
   // Entrega urgente: prazo prometido na página, repasse ao motoboy avulso e ofertas.
   urgente_prazo_min: '30',
   repasse_pct: '60',
   repasse_minimo: '15',
+  repasse_base: '0',
+  repasse_km: '0',
   oferta_raio_km: '5',
+  // Urgente só até esta distância (0 = sem limite). Conta de motoboy do dono (0 = nenhuma) e quanto a entrega comum
+  // espera antes de tocar para ele. Diária em turno sem entrega lançada: avisa depois destes minutos (0 = não avisa).
+  urgente_km_max: '30',
+  dono_motoboy_id: '0',
+  dono_espera_min: '10',
+  sem_lancamento_min: '120',
   oferta_alerta_min: '5',
   avulso_max_horas: '12',
   // Pix pelo Mercado Pago (token secreto) e rota real pelas ruas (OpenRouteService, opcional).
   mp_token: '',
   pagamento_validade_min: '30',
   ors_chave: '',
+  google_chave: '',
   // Pix direto na conta da empresa (sem taxa de intermediário; confirmação manual pelo comprovante).
   pix_tipo: 'cnpj',
   pix_chave: '',
@@ -276,14 +323,16 @@ const SERVICOS_PADRAO = [
 const COLUNAS_NOVAS = {
   demandas: {
     codigo: 'TEXT', cliente_telefone: "TEXT NOT NULL DEFAULT ''", valor: 'REAL', km: 'REAL',
-    retida: 'INTEGER NOT NULL DEFAULT 0',
-    urgente: 'INTEGER NOT NULL DEFAULT 0', servico: "TEXT NOT NULL DEFAULT ''", repasse: 'REAL',
+    retida: 'INTEGER NOT NULL DEFAULT 0', cancel_motivo: 'TEXT',
+    urgente: 'INTEGER NOT NULL DEFAULT 0', servico: "TEXT NOT NULL DEFAULT ''", repasse: 'REAL', repasse_padrao: 'REAL', bonus_urgente: 'REAL', foto_em: 'INTEGER', rastreio_livre: 'INTEGER NOT NULL DEFAULT 0', repasse_manual: 'INTEGER NOT NULL DEFAULT 0', tamanho: "TEXT NOT NULL DEFAULT ''", tarifa_urgente: 'INTEGER NOT NULL DEFAULT 0', agendada_para: 'INTEGER', reservada_por: 'INTEGER',
     pagamento: "TEXT NOT NULL DEFAULT ''", pag_id: 'TEXT', pag_pix: 'TEXT', pag_qr: 'TEXT', pag_expira: 'INTEGER',
-    pago_em: 'INTEGER', fila_em: 'INTEGER', comprovante_em: 'INTEGER', ia_ok: 'INTEGER', ia_obs: 'TEXT', email: "TEXT NOT NULL DEFAULT ''", sem_aceite_avisado: 'INTEGER NOT NULL DEFAULT 0',
+    pago_em: 'INTEGER', fila_em: 'INTEGER', comprovante_em: 'INTEGER', ia_ok: 'INTEGER', ia_obs: 'TEXT', email: "TEXT NOT NULL DEFAULT ''", sem_aceite_avisado: 'INTEGER NOT NULL DEFAULT 0', hora_tipo: "TEXT NOT NULL DEFAULT ''", hora_limite: 'INTEGER',
   },
-  motoboys: { tipo: "TEXT NOT NULL DEFAULT 'diaria'" },
+  motoboys: { tipo: "TEXT NOT NULL DEFAULT 'diaria'", pin_claro: 'TEXT', documento: "TEXT NOT NULL DEFAULT ''", placa: "TEXT NOT NULL DEFAULT ''", diaria_valor: 'REAL', repasse_base: 'REAL', repasse_km: 'REAL', ve_valores: 'INTEGER NOT NULL DEFAULT 0', reserva_bloqueio_ate: 'INTEGER' },
   turnos: { tipo: "TEXT NOT NULL DEFAULT 'diaria'" },
-  clientes: { faturado: 'INTEGER NOT NULL DEFAULT 0', preco_pct: 'REAL NOT NULL DEFAULT 100', email: "TEXT NOT NULL DEFAULT ''" },
+  clientes: { faturado: 'INTEGER NOT NULL DEFAULT 0', preco_pct: 'REAL NOT NULL DEFAULT 100', email: "TEXT NOT NULL DEFAULT ''",
+    chave: 'TEXT', cnpj: "TEXT NOT NULL DEFAULT ''", entrega_fixa: 'TEXT', libera_direto: 'INTEGER NOT NULL DEFAULT 0', fechamento: "TEXT NOT NULL DEFAULT ''", coleta_fixa: 'TEXT', preco_fixo: 'REAL', motoboy_id: 'INTEGER' },
+  servicos: { preco_fixo: 'REAL', repasse_fixo: 'REAL' },
   convocacoes: { origem: "TEXT NOT NULL DEFAULT 'admin'" },
   conversas: {
     telefone: 'TEXT', destino: 'TEXT', etapa: "TEXT NOT NULL DEFAULT ''", dados: "TEXT NOT NULL DEFAULT '{}'",
@@ -322,6 +371,14 @@ export function abrirBanco(arquivo) {
   if (db.prepare('SELECT COUNT(*) AS n FROM servicos').get().n === 0) {
     const novo = db.prepare('INSERT INTO servicos (nome, ordem) VALUES (?, ?)');
     SERVICOS_PADRAO.forEach((nome, i) => novo.run(nome, i));
+  }
+  // Correios: preço fixo em qualquer distância (código pronto / preencher à mão). Cria uma vez só.
+  if (!db.prepare("SELECT 1 FROM config WHERE chave = 'servicos_correios'").get()) {
+    const ordem = db.prepare('SELECT COALESCE(MAX(ordem), 0) AS n FROM servicos').get().n;
+    const novo = db.prepare('INSERT INTO servicos (nome, adicional, preco_fixo, repasse_fixo, ordem) VALUES (?, 0, ?, ?, ?)');
+    novo.run('Correios — postagem com código pronto', 45, 30, ordem + 1);
+    novo.run('Correios — preencher os dados à mão', 65, 45, ordem + 2);
+    db.prepare("INSERT INTO config (chave, valor) VALUES ('servicos_correios', '1')").run();
   }
   return db;
 }

@@ -5,6 +5,7 @@ import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
+import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
@@ -16,9 +17,12 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
+import android.provider.MediaStore;
 import android.provider.Settings;
 import android.text.InputType;
 import android.webkit.JavascriptInterface;
+import android.webkit.ValueCallback;
+import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
@@ -37,6 +41,9 @@ import java.util.Locale;
  */
 public class MainActivity extends Activity {
     private static final int PEDIDO_PERMISSAO = 10;
+    private static final int PEDIDO_FOTO = 11;
+    private ValueCallback<Uri[]> retornoArquivo;
+    private Uri fotoUri;
     private static final String PAGINA_ERRO = "speed://";
 
     private WebView web;
@@ -61,7 +68,9 @@ public class MainActivity extends Activity {
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         web.addJavascriptInterface(new Ponte(), "SpeedNativo");
         web.setWebViewClient(new Cliente());
+        web.setWebChromeClient(new Arquivos());
 
+        tokenDoLink = lerTokenDoLink(getIntent());
         if (Prefs.servidor(this).isEmpty()) pedirServidor();
         else carregar();
     }
@@ -73,13 +82,92 @@ public class MainActivity extends Activity {
         if (Prefs.turnoAtivo(this) && !RastreioService.ativo && temLocal()) iniciarServico();
     }
 
+    /** Campo de foto da tela: abre a câmera (Android 10+) ou o seletor de arquivos. */
+    private final class Arquivos extends WebChromeClient {
+        @Override
+        public boolean onShowFileChooser(WebView v, ValueCallback<Uri[]> retorno, FileChooserParams params) {
+            if (retornoArquivo != null) retornoArquivo.onReceiveValue(null);
+            retornoArquivo = retorno;
+            fotoUri = null;
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    ContentValues cv = new ContentValues();
+                    cv.put(MediaStore.Images.Media.DISPLAY_NAME, "entrega-" + System.currentTimeMillis() + ".jpg");
+                    cv.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
+                    fotoUri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, cv);
+                }
+                if (fotoUri != null) {
+                    Intent camera = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+                    camera.putExtra(MediaStore.EXTRA_OUTPUT, fotoUri);
+                    camera.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    startActivityForResult(camera, PEDIDO_FOTO);
+                } else {
+                    startActivityForResult(params.createIntent(), PEDIDO_FOTO);
+                }
+                return true;
+            } catch (Exception e) {
+                descartarFoto();
+                try {
+                    startActivityForResult(params.createIntent(), PEDIDO_FOTO);
+                    return true;
+                } catch (Exception e2) {
+                    retornoArquivo = null;
+                    return false;
+                }
+            }
+        }
+    }
+
+    private void descartarFoto() {
+        if (fotoUri != null) {
+            try { getContentResolver().delete(fotoUri, null, null); } catch (Exception e) { /* já não existe */ }
+            fotoUri = null;
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int pedido, int resultado, Intent dados) {
+        super.onActivityResult(pedido, resultado, dados);
+        if (pedido != PEDIDO_FOTO || retornoArquivo == null) return;
+        Uri[] escolhido = null;
+        if (resultado == RESULT_OK) {
+            if (dados != null && dados.getData() != null) { escolhido = new Uri[] { dados.getData() }; descartarFoto(); }
+            else if (fotoUri != null) escolhido = new Uri[] { fotoUri };
+        } else {
+            descartarFoto();
+        }
+        retornoArquivo.onReceiveValue(escolhido);
+        retornoArquivo = null;
+        fotoUri = null;
+    }
+
     @Override
     public void onBackPressed() {
         moveTaskToBack(true); // voltar não fecha o app nem o turno
     }
 
+    /** Sessão vinda do botão "Abrir o app" do navegador (speedy://entrar?t=...). */
+    private String tokenDoLink;
+
+    private static String lerTokenDoLink(Intent i) {
+        Uri u = i == null ? null : i.getData();
+        if (u == null || !"speedy".equals(u.getScheme())) return null;
+        String t = u.getQueryParameter("t");
+        return t != null && t.matches("[A-Za-z0-9._~-]{16,300}") ? t : null;
+    }
+
+    @Override
+    protected void onNewIntent(Intent i) {
+        super.onNewIntent(i);
+        setIntent(i);
+        String t = lerTokenDoLink(i);
+        if (t != null && !Prefs.servidor(this).isEmpty()) { tokenDoLink = t; carregar(); }
+    }
+
     private void carregar() {
-        web.loadUrl(Prefs.servidor(this) + "/app/");
+        String t = tokenDoLink;
+        tokenDoLink = null;
+        web.loadUrl(Prefs.servidor(this) + "/app/" + (t != null ? "?e=" + System.currentTimeMillis() + "#t=" + t : ""));
     }
 
     private void pedirServidor() {
@@ -238,6 +326,7 @@ public class MainActivity extends Activity {
                 o.put("gpsLigado", gpsLigado());
                 o.put("bateriaLivre", bateriaLivre());
                 o.put("servicoAtivo", RastreioService.ativo);
+                o.put("camera", true);
                 return o.toString();
             } catch (Exception e) {
                 return "{}";

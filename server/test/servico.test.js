@@ -37,6 +37,7 @@ test('login só com convocação, termo aceito e senha certa', () => {
   const { s, novoMotoboy } = montar();
   const id = novoMotoboy('Ana', '11999990001');
   const dados = { telefone: '(11) 99999-0001', pin: '123456', aceito_termo: true, dispositivo: 'a', origem: 'app' };
+  s.salvarConfig({ convocacao_obrigatoria: '1' }, 'teste');
   assert.throws(() => s.loginMotoboy(dados, 'ip'), { codigo: 'sem_convocacao' });
   s.convocar(id, 'teste');
   assert.throws(() => s.loginMotoboy({ ...dados, aceito_termo: false }, 'ip'), { codigo: 'termo_obrigatorio' });
@@ -267,4 +268,155 @@ test('entrada automática: endereço em texto vira ponto; sem resultado fica par
   const chave = s.gerarChaveApi('teste');
   assert.equal(s.chaveApiValida(chave), true);
   assert.equal(s.chaveApiValida('errada-errada-errada-errada'), false);
+});
+
+test('avulso: rota da mesma coleta paga só o que a rota cresce', () => {
+  const { s, novoMotoboy, posicao, demanda } = montar();
+  s.salvarConfig({ preco_base: '25', preco_km: '2', preco_minimo: '25', repasse_base: '15', repasse_km: '1.5', preco_km_incluso: '10' }, 'teste');
+  novoMotoboy('Bia', '11999990009', { tipo: 'avulso' });
+  const { token } = s.loginMotoboy({ telefone: '11999990009', pin: '123456', aceito_termo: true, dispositivo: 'b', origem: 'app' }, '1.1.1.1');
+  const turno = () => s.autenticarMotoboy(token);
+  posicao(token, P(0));
+  const id = (x) => (typeof x === 'object' ? x.id : x);
+  const d1 = id(demanda(0, 5));
+  const o1 = s.estadoMotoboy(turno()).ofertas.find((o) => o.demanda_id === d1);
+  assert.equal(o1.na_rota, false);
+  s.responderOferta(turno(), { oferta_id: o1.id, acao: 'aceitar' });
+  const d2 = id(demanda(0, 8));
+  const o2 = s.estadoMotoboy(turno()).ofertas.find((o) => o.demanda_id === d2);
+  // rota coleta→5→8: 10,8 km = R$ 16,20; só a primeira (6,75 km) = R$ 15. A segunda soma R$ 1,20.
+  assert.equal(o2.na_rota, true);
+  assert.equal(o2.repasse, 1, `extra da rota ${o2.repasse}`); // 16,20 - 15 = 1,20, sem centavos
+  const extra = o2.repasse;
+  s.responderOferta(turno(), { oferta_id: o2.id, acao: 'aceitar' });
+  const ganhos = s.estadoMotoboy(turno()).rota.filter((p) => p.tipo === 'entrega').map((p) => p.repasse).sort((a, b) => a - b);
+  assert.deepEqual(ganhos, [extra, 15]);
+});
+
+test('tarifa urgente: +20% (mínimo R$ 10) e 70% do extra para o motoboy', () => {
+  const { s } = montar();
+  s.salvarConfig({ preco_base: '25', preco_km: '2', preco_minimo: '25', preco_km_incluso: '10', repasse_base: '15', repasse_km: '1.5' }, 'teste');
+  const normal = s.cotar(P(0), P(5), { km: 8 });
+  const urg = s.cotar(P(0), P(5), { km: 8, urgente: true });
+  assert.equal(normal.valor, 25);
+  assert.equal(urg.valor, 35);
+  assert.equal(urg.repasse, 22);
+  const longe = s.cotar(P(0), P(20), { km: 30, urgente: true });
+  assert.equal(longe.valor, 78); // 65 + 13
+  assert.equal(longe.repasse, 54); // 45 + 9,10, sem centavos
+});
+
+test('agendada: fica fora do despacho, reserva, expira sem confirmar e bloqueia 1 dia', () => {
+  const { s, db, relogio, avancar, novoMotoboy, posicao, demanda } = montar();
+  s.salvarConfig({ preco_base: '25', preco_km: '2', preco_minimo: '25', repasse_base: '15', repasse_km: '1.5', preco_km_incluso: '10' }, 'teste');
+  const mb = novoMotoboy('Caio', '11999990010', { tipo: 'avulso' });
+  const { token } = s.loginMotoboy({ telefone: '11999990010', pin: '123456', aceito_termo: true, dispositivo: 'c', origem: 'app' }, '1.1.1.1');
+  const turno = () => s.autenticarMotoboy(token);
+  posicao(token, P(0));
+  const r = demanda(0, 5, { agendada_para: relogio.t + 6 * 60 * MIN });
+  const id = typeof r === 'object' ? r.id : r;
+  let e = s.estadoMotoboy(turno());
+  assert.equal(e.ofertas.length, 0);
+  assert.equal(e.agendadas.length, 1);
+  s.agendadaMotoboy(turno(), { demanda_id: id, acao: 'reservar' });
+  e = s.estadoMotoboy(turno());
+  assert.equal(e.agendadas[0].minha, true);
+  assert.equal(e.agendadas[0].pode_confirmar, false);
+  assert.throws(() => s.agendadaMotoboy(turno(), { demanda_id: id, acao: 'confirmar' }), /2 horas/);
+  avancar(5 * 60 + 1); // passou de 1h antes sem confirmar
+  posicao(token, P(0));
+  s.rotina();
+  const d = db.prepare('SELECT reservada_por FROM demandas WHERE id = ?').get(id);
+  assert.equal(d.reservada_por, null);
+  assert.ok(db.prepare('SELECT reserva_bloqueio_ate FROM motoboys WHERE id = ?').get(mb).reserva_bloqueio_ate > relogio.t);
+});
+
+test('agendada: confirmar na janela entra na rota do motoboy', () => {
+  const { s, relogio, avancar, novoMotoboy, posicao, demanda } = montar();
+  novoMotoboy('Dani', '11999990011', { tipo: 'avulso' });
+  const { token } = s.loginMotoboy({ telefone: '11999990011', pin: '123456', aceito_termo: true, dispositivo: 'd', origem: 'app' }, '1.1.1.1');
+  const turno = () => s.autenticarMotoboy(token);
+  posicao(token, P(0));
+  const r = demanda(0, 5, { agendada_para: relogio.t + 3 * 60 * MIN });
+  const id = typeof r === 'object' ? r.id : r;
+  s.agendadaMotoboy(turno(), { demanda_id: id, acao: 'reservar' });
+  avancar(90);
+  posicao(token, P(0));
+  s.agendadaMotoboy(turno(), { demanda_id: id, acao: 'confirmar' });
+  const e = s.estadoMotoboy(turno());
+  assert.equal(e.rota.length, 2);
+  assert.ok(e.previsao_fim > relogio.t);
+});
+
+test('central finaliza a entrega com motivo', () => {
+  const { s, db, demanda } = montar();
+  const r = demanda(0, 5);
+  const id = typeof r === 'object' ? r.id : r;
+  s.finalizarDemanda(id, 'motoboy esqueceu de marcar', 'admin:teste');
+  const d = db.prepare('SELECT status, entregue_em, entrega_justificativa FROM demandas WHERE id = ?').get(id);
+  assert.equal(d.status, 'entregue');
+  assert.ok(d.entregue_em > 0);
+  assert.match(d.entrega_justificativa, /Finalizada pela central: motoboy esqueceu/);
+  assert.throws(() => s.finalizarDemanda(id, '', 'admin:teste'), /finalizada/);
+});
+
+const TABELA = { preco_base: '25', preco_km: '2', preco_minimo: '25', preco_km_incluso: '10', repasse_base: '15', repasse_km: '1.5', tam_g_pct: '20', tam_gg_pct: '40' };
+
+test('tamanho G/GG: % a mais sobre o base, 60% do extra ao motoboy, soma com a urgente', () => {
+  const { s } = montar();
+  s.salvarConfig(TABELA, 'teste');
+  const normal = s.cotar(P(0), P(5), { km: 15, tamanho: 'medio' });
+  assert.equal(normal.valor, 35);
+  assert.equal(normal.repasse, 22); // 22,50 sem centavos
+  const g = s.cotar(P(0), P(5), { km: 15, tamanho: 'grande' });
+  assert.equal(g.valor, 42);
+  assert.equal(g.repasse, 26);
+  assert.equal(g.tamanho_extra, 7);
+  const gg = s.cotar(P(0), P(5), { km: 15, tamanho: 'gg' });
+  assert.equal(gg.valor, 49);
+  assert.equal(gg.repasse, 30);
+  const tudo = s.cotar(P(0), P(5), { km: 15, tamanho: 'maior', urgente: true });
+  assert.equal(tudo.valor, 59); // 35 + 10 (urgente: 20% = 7, mínimo 10) + 14 (GG)
+  assert.equal(tudo.repasse, 37); // 22,50 + 7 + 8,40 = 37,90
+  const d = s.criarPedido({ cliente: 'Loja Teste', telefone: '27999990000', coleta: { endereco: 'Rua A, 1', ...P(0) }, entrega: { endereco: 'Rua B, 2', ...P(5) }, km: 15, tamanho: 'maior' }, 'site', {});
+  assert.equal(d.valor, 49);
+  assert.equal(d.tamanho, 'gg');
+  assert.equal(d.repasse, 30);
+});
+
+test('corrida longa suave: tabela até 30 km, R$ 2,50 por km até 50, R$ 3 acima; 70% para o motoboy', () => {
+  const { s } = montar();
+  s.salvarConfig(TABELA, 'teste');
+  const caso = (km, valor, repasse, extra = {}) => {
+    const c = s.cotar(P(0), P(5), { km, ...extra });
+    assert.equal(c.valor, valor, `valor ${km} km`);
+    assert.equal(c.repasse, repasse, `repasse ${km} km`);
+  };
+  caso(30, 65, 45); // até 30 km: tabela normal
+  caso(31, 67, 47); // 65 + 2,50 = 67,50; motoboy 47,25
+  caso(36, 80, 56); // Jacaraípe: 65 + 6 × 2,50
+  caso(50, 115, 80);
+  caso(60, 145, 101); // 115 + 10 × 3
+  caso(120, 325, 227);
+  caso(60, 145, 101, { tamanho: 'gg' }); // corrida longa não cobra tamanho
+  caso(30, 91, 60, { tamanho: 'gg' }); // até 30 km cobra: 65 + 26; motoboy 45 + 15,60
+  s.salvarConfig({ longa_km1: '0', longa_km2: '0' }, 'teste'); // desligada: volta a tabela normal
+  caso(60, 125, 90);
+});
+
+test('central edita o valor: cliente e motoboy, travado, não muda depois de finalizada', () => {
+  const { s } = montar();
+  s.salvarConfig(TABELA, 'teste');
+  const d = s.criarPedido({ cliente: 'Cliente Desconto', telefone: '27999990001', coleta: { endereco: 'Rua A, 1', ...P(0) }, entrega: { endereco: 'Rua B, 2', ...P(5) }, km: 15 }, 'site', { retida: true });
+  assert.equal(d.valor, 35);
+  const e = s.editarValor(d.id, { valor: '30,50', motivo: 'desconto' }, 'teste');
+  assert.equal(e.valor, 30.5);
+  assert.equal(e.repasse, 22); // motoboy não muda sozinho
+  assert.equal(e.repasse_manual, 1);
+  const f = s.editarValor(d.id, { valor: 30.5, repasse: 20 }, 'teste');
+  assert.equal(f.repasse, 20);
+  assert.throws(() => s.editarValor(d.id, { valor: 0 }, 'teste'), /inválido/);
+  assert.throws(() => s.editarValor(d.id, { valor: 'abc' }, 'teste'), /inválido/);
+  s.finalizarDemanda(d.id, '', 'teste');
+  assert.throws(() => s.editarValor(d.id, { valor: 40 }, 'teste'), /finalizada/);
 });

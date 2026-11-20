@@ -4,6 +4,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { betaJSONSchemaOutputFormat } from '@anthropic-ai/sdk/helpers/beta/json-schema';
 
+const PONTE_URL = (process.env.PONTE_URL || 'https://ponte.srv2150999.hstgr.cloud').replace(/\/+$/, '');
 export const MODELOS_IA = ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'];
 
 const ESQUEMA = {
@@ -98,6 +99,24 @@ export function criarIA({ criarCliente = (apiKey) => new Anthropic({ apiKey, tim
   // Uma pergunta à IA com resposta em JSON no formato pedido. Lança erro com motivo em português.
   async function pedir(cfg, { instrucoes, conteudo, esquema, maxTokens, esforco, tempoMs }) {
     const modelo = MODELOS_IA.includes(cfg.ia_modelo) ? cfg.ia_modelo : MODELOS_IA[0];
+    // Chave no formato "ponte:<token>": pergunta ao Claude da assinatura pela Ponte Speed (sem custo por uso).
+    if (String(cfg.ia_chave).startsWith('ponte:')) {
+      try {
+        const r = await fetch(`${PONTE_URL}/api/entrada/despacho_ia`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Ponte-Token': String(cfg.ia_chave).slice(6) },
+          body: JSON.stringify({ instrucoes, conteudo, esquema, modelo, tempo_s: Math.round(Math.max(tempoMs, 90_000) / 1000) }),
+          signal: AbortSignal.timeout(Math.max(tempoMs, 90_000) + 10_000),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || !j.saida) throw new Error(j.erro || `a ponte respondeu erro ${r.status}`);
+        ultimoErro = '';
+        return j.saida;
+      } catch (e) {
+        ultimoErro = `Ponte: ${String(e.message || e).slice(0, 180)}`;
+        throw new Error(ultimoErro);
+      }
+    }
     try {
       const resposta = await criarCliente(cfg.ia_chave).beta.messages.parse({
         model: modelo,
