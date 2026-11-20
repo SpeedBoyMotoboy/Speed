@@ -6,6 +6,8 @@ import crypto from 'node:crypto';
 import { distM, distRuaKm, coordValida } from './geo.js';
 import { PROVEDORES, normalizarTelefone } from './mensageiro.js';
 import { TIPOS_CHAVE, normalizarChave, brCode } from './pix.js';
+import { criarRelatorios } from './relatorios.js';
+import { criarConversas } from './conversas.js';
 import { createRequire } from 'node:module';
 const qrcode = createRequire(import.meta.url)('qrcode-generator');
 // QR Code do Pix em imagem (data URL), para o site e a página de acompanhamento mostrarem.
@@ -17,7 +19,6 @@ function qrDataUrl(texto) {
 }
 import { MODELOS_IA } from './ia.js';
 import { atende, escolherMotoboy, melhorInsercao, REQUISITOS } from './despacho.js';
-import { lerConversa, textoDoZip, nomeDaConversa } from './whatsapp.js';
 
 export class Erro extends Error {
   constructor(status, codigo, mensagem, extra = {}) {
@@ -1800,122 +1801,10 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     };
   }
 
-  function relatorio(de, ate) {
-    const c = cfgBruta();
-    const porDiaria = Number(c.diaria_valor) + Number(c.almoco_valor);
-    const linhas = q(`
-      SELECT m.id AS motoboy_id, m.nome, m.diaria_valor AS diaria_propria,
-        COALESCE(SUM(t.tipo = 'diaria'), 0) AS diarias,
-        (SELECT COALESCE(SUM(d.repasse), 0) FROM demandas d JOIN turnos t5 ON t5.id = d.turno_id
-          WHERE t5.motoboy_id = m.id AND t5.tipo = 'avulso' AND d.status = 'entregue' AND t5.inicio >= ? AND t5.inicio < ?) AS repasses,
-        COALESCE(SUM(COALESCE(t.fim_real, ?) - t.inicio), 0) AS ms_turno,
-        COALESCE(SUM(t.km), 0) AS km,
-        (SELECT COUNT(*) FROM demandas d JOIN turnos t2 ON t2.id = d.turno_id
-          WHERE t2.motoboy_id = m.id AND d.status = 'entregue' AND t2.inicio >= ? AND t2.inicio < ?) AS entregas,
-        (SELECT COALESCE(SUM(COALESCE(a.fim, ?) - a.inicio), 0) FROM alertas a JOIN turnos t3 ON t3.id = a.turno_id
-          WHERE t3.motoboy_id = m.id AND a.tipo = 'parado' AND t3.inicio >= ? AND t3.inicio < ?) AS ms_parado,
-        (SELECT COUNT(*) FROM alertas a JOIN turnos t4 ON t4.id = a.turno_id
-          WHERE t4.motoboy_id = m.id AND t4.inicio >= ? AND t4.inicio < ?) AS alertas
-      FROM motoboys m JOIN turnos t ON t.motoboy_id = m.id
-      WHERE t.inicio >= ? AND t.inicio < ?
-      GROUP BY m.id ORDER BY m.nome`).all(de, ate, agora(), de, ate, agora(), de, ate, de, ate, de, ate);
-    return linhas.map((l) => ({
-      motoboy_id: l.motoboy_id,
-      nome: l.nome,
-      diarias: l.diarias,
-      horas: Math.round((l.ms_turno / 3_600_000) * 10) / 10,
-      km: Math.round(l.km * 10) / 10,
-      entregas: l.entregas,
-      min_parado: Math.round(l.ms_parado / MIN),
-      alertas: l.alertas,
-      repasses: Math.round(l.repasses * 100) / 100,
-      valor: Math.round((l.diarias * (l.diaria_propria != null ? l.diaria_propria + Number(c.almoco_valor) : porDiaria) + l.repasses) * 100) / 100,
-    }));
-  }
-  // Cada entrega concluída: quanto o cliente pagou, quanto vai para o motoboy avulso e o que fica.
-  function relatorioEntregas(de, ate) {
-    return q(`SELECT d.id, d.entregue_em, d.cliente, d.servico, d.km, d.valor, d.pagamento, m.nome AS motoboy, t.tipo,
-        CASE WHEN t.tipo = 'avulso' THEN COALESCE(d.repasse, 0) ELSE 0 END AS repasse
-      FROM demandas d LEFT JOIN turnos t ON t.id = d.turno_id LEFT JOIN motoboys m ON m.id = d.motoboy_id
-      WHERE d.status = 'entregue' AND d.entregue_em >= ? AND d.entregue_em < ?
-      ORDER BY d.entregue_em DESC LIMIT 2000`).all(de, ate)
-      .map((l) => ({ ...l, margem: l.valor == null ? null : Math.round((l.valor - l.repasse) * 100) / 100 }));
-  }
+  const { relatorio, relatorioEntregas, fechamento, relatorioClientes } = criarRelatorios({ q, cfgBruta, agora });
 
-  // Fechamento do período: o que entrou, o que sai para motoboy e o que sobra (sem gasolina nem anúncio).
-  function fechamento(de, ate) {
-    const dono = Number(cfgBruta().dono_motoboy_id || 0);
-    const ent = relatorioEntregas(de, ate);
-    const faturado = ent.reduce((s, x) => s + (x.valor || 0), 0);
-    const repasses = ent.reduce((s, x) => s + x.repasse, 0);
-    const diarias = relatorio(de, ate).filter((l) => l.motoboy_id !== dono).reduce((s, l) => s + (l.valor - l.repasses), 0);
-    const canc = q("SELECT COUNT(*) AS n, COALESCE(SUM(valor), 0) AS v FROM demandas WHERE status = 'cancelada' AND cancelada_em >= ? AND cancelada_em < ?").get(de, ate);
-    const r2 = (v) => Math.round(v * 100) / 100;
-    return {
-      entregas: ent.length, faturado: r2(faturado), repasses: r2(repasses), diarias: r2(diarias), lucro: r2(faturado - repasses - diarias),
-      cancelados: canc.n, cancelado_valor: r2(canc.v),
-      em_aberto: q("SELECT COUNT(*) AS n FROM demandas WHERE status IN ('aguardando','atribuida','coletada') AND criada_em < ?").get(ate).n,
-      sem_foto: q("SELECT COUNT(*) AS n FROM demandas WHERE status = 'entregue' AND foto_em IS NULL AND entregue_em >= ? AND entregue_em < ?").get(de, ate).n,
-    };
-  }
-  // Entregas concluídas no período, somadas por cliente (para cobrar).
-  function relatorioClientes(de, ate) {
-    return q(`SELECT cliente, cliente_telefone AS telefone, COUNT(*) AS entregas,
-        COALESCE(SUM(km), 0) AS km, COALESCE(SUM(valor), 0) AS valor
-      FROM demandas WHERE status = 'entregue' AND entregue_em >= ? AND entregue_em < ?
-      GROUP BY cliente, cliente_telefone ORDER BY valor DESC, entregas DESC`).all(de, ate)
-      .map((l) => ({ ...l, km: Math.round(l.km * 10) / 10, valor: Math.round(l.valor * 100) / 100 }));
-  }
-
-  // ------------------------------------------- conversas do WhatsApp
-  // Importa a conversa exportada. Reimportar a mesma conversa só acrescenta o que é novo.
-  function importarWhatsapp({ arquivo, conteudo }, ator) {
-    const buf = Buffer.from(String(conteudo || ''), 'base64');
-    if (!buf.length) throw new Erro(422, 'arquivo_vazio', 'Arquivo vazio.');
-    let texto;
-    try {
-      texto = buf.readUInt32LE(0) === 0x04034b50 ? textoDoZip(buf) : buf.toString('utf8');
-    } catch (e) {
-      throw new Erro(422, 'arquivo_invalido', `Não consegui abrir o arquivo: ${e.message}.`);
-    }
-    const lista = lerConversa(texto);
-    if (!lista.length) {
-      throw new Erro(422, 'sem_mensagens', 'Não achei mensagens. Use "Exportar conversa" do WhatsApp e envie o .txt ou o .zip.');
-    }
-    const nome = nomeDaConversa(arquivo);
-    return tx(() => {
-      const t = agora();
-      q(`INSERT INTO conversas (nome, criada_em, atualizada_em) VALUES (?,?,?)
-         ON CONFLICT(nome) DO UPDATE SET atualizada_em = excluded.atualizada_em`).run(nome, t, t);
-      const conversa = q('SELECT id FROM conversas WHERE nome = ?').get(nome);
-      const inserir = q('INSERT OR IGNORE INTO mensagens (conversa_id, ts, autor, texto) VALUES (?,?,?,?)');
-      let novas = 0;
-      for (const m of lista) novas += inserir.run(conversa.id, m.ts, m.autor ?? '', m.texto).changes;
-      auditar(ator, 'whatsapp_importado', `${nome}: ${novas} nova(s)`);
-      return { conversa_id: conversa.id, nome, lidas: lista.length, novas };
-    });
-  }
-  function listarConversas() {
-    return q(`SELECT c.id, c.nome, c.atualizada_em, c.telefone, c.humano, c.pendente, c.pausa_ate, COUNT(m.id) AS total,
-        MIN(m.ts) AS primeira, MAX(m.ts) AS ultima, COUNT(m.demanda_id) AS demandas
-      FROM conversas c LEFT JOIN mensagens m ON m.conversa_id = c.id
-      GROUP BY c.id ORDER BY c.pendente DESC, c.atualizada_em DESC LIMIT 300`).all();
-  }
-  function mensagensDaConversa(conversaId, busca = '') {
-    const termo = `%${String(busca).trim().slice(0, 100).replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
-    return q(`SELECT id, ts, autor, texto, demanda_id, direcao FROM mensagens
-      WHERE conversa_id = ? AND (texto LIKE ? ESCAPE '\\' OR autor LIKE ? ESCAPE '\\')
-      ORDER BY ts DESC, id DESC LIMIT 500`).all(conversaId, termo, termo);
-  }
-  function excluirConversa(conversaId, ator) {
-    const c = q('SELECT nome FROM conversas WHERE id = ?').get(conversaId);
-    if (!c) throw new Erro(404, 'nao_encontrado', 'Conversa não encontrada.');
-    tx(() => {
-      q('DELETE FROM mensagens WHERE conversa_id = ?').run(conversaId);
-      q('DELETE FROM conversas WHERE id = ?').run(conversaId);
-      auditar(ator, 'whatsapp_excluido', c.nome);
-    });
-  }
+  // ------------------------------------------- conversas do WhatsApp (ver conversas.js)
+  const { importarWhatsapp, listarConversas, mensagensDaConversa, excluirConversa } = criarConversas({ q, tx, agora, auditar, Erro });
 
   // Convocação automática: demanda esperando e ninguém em turno que atenda -> chama o próximo do rodízio.
   function convocarSozinho(t) {

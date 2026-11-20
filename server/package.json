@@ -9,11 +9,17 @@
   },
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning src/index.js",
-    "test": "node --disable-warning=ExperimentalWarning --test \"test/*.test.js\""
+    "test": "node --disable-warning=ExperimentalWarning --test \"test/*.test.js\"",
+    "lint": "eslint ."
   },
   "dependencies": {
     "@anthropic-ai/sdk": "1.9.0",
     "leaflet": "1.9.4",
     "qrcode-generator": "2.0.4"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "eslint": "^9.39.5",
+    "globals": "^17.14.0"
   }
 }
