@@ -126,3 +126,9 @@ a.botao-link.claro { background: var(--cartao); color: var(--texto); border: 2px
 
 /* Foto da fachada enviada pelo cliente */
 .foto-fachada { width: 100%; border-radius: 10px; margin-top: 8px; display: block; }
+
+/* Aviso do dia do pagamento (laranja, bem visível) */
+.aviso-quarta { background: #fff1e6; border-left: 6px solid #ea580c; color: #9a3412; border-radius: 10px; padding: 12px 14px; margin: 14px 0; line-height: 1.45; }
+.aviso-quarta b { color: #c2410c; }
+.aviso-quarta .marcar { color: inherit; font-weight: 600; margin-top: 10px; }
+:root[data-tema="escuro"] .aviso-quarta { background: #3a1d0a; color: #fdba74; } :root[data-tema="escuro"] .aviso-quarta b { color: #fb923c; }

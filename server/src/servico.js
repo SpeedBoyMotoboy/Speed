@@ -564,6 +564,24 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
 
   // ------------------------------------------- cadastro público de motoboy
   // O motoboy preenche a página /cadastro/; fica pendente até o dono aceitar ou recusar no painel.
+  // Como o motoboy recebe: chave Pix, titular, banco e o "estou ciente" do pagamento às quartas.
+  function lerRecebimento(d) {
+    const chave = txt(d?.pix_chave, 100);
+    const titular = txt(d?.pix_titular, 80);
+    const banco = txt(d?.pix_banco, 40);
+    if (chave.length < 5) throw new Erro(422, 'pix_invalido', 'Informe a sua chave Pix (CPF, telefone, e-mail ou chave aleatória).');
+    if (titular.length < 5 || !titular.includes(' ')) throw new Erro(422, 'pix_invalido', 'Informe o nome completo do dono da conta.');
+    if (banco.length < 2) throw new Erro(422, 'pix_invalido', 'Informe o banco da conta.');
+    if (d?.ciente !== true) throw new Erro(422, 'pix_ciente', 'Marque que está ciente: o pagamento é toda quarta-feira, em horário comercial.');
+    return { chave, titular, banco };
+  }
+  function salvarRecebimento(turno, d) {
+    const r = lerRecebimento(d);
+    q('UPDATE motoboys SET pix_chave = ?, pix_titular = ?, pix_banco = ?, pag_ciente_em = ? WHERE id = ?')
+      .run(r.chave, r.titular, r.banco, agora(), turno.motoboy_id);
+    auditar(`motoboy:${turno.motoboy_id}`, 'recebimento_salvo', r.banco);
+    return { ok: true };
+  }
   function candidatar(d, ip) {
     exigirNaoBloqueado(`cad:${ip}`, 6);
     registrarFalha(`cad:${ip}`);
@@ -578,17 +596,18 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     if (veiculo === 'moto' && placa.length < 7) throw new Erro(422, 'placa_invalida', 'Informe a placa da moto (7 letras e números).');
     const tipo = d?.tipo === 'diaria' ? 'diaria' : 'avulso';
     const indicacao = txt(d?.indicacao, 160);
+    const rec = lerRecebimento(d);
     if (q('SELECT id FROM motoboys WHERE telefone = ?').get(telefone)) {
       throw new Erro(409, 'ja_cadastrado', 'Esse WhatsApp já tem cadastro na SpeedBoy. Fale com a gente se esqueceu a senha.');
     }
-    const campos = [nome, documento, placa, veiculo, d?.tem_bau ? 1 : 0, d?.tem_bag ? 1 : 0, tipo, indicacao];
+    const campos = [nome, documento, placa, veiculo, d?.tem_bau ? 1 : 0, d?.tem_bag ? 1 : 0, tipo, indicacao, rec.chave, rec.titular, rec.banco, agora()];
     const pendente = q("SELECT id FROM candidatos WHERE telefone = ? AND status = 'pendente'").get(telefone);
     if (pendente) {
-      q('UPDATE candidatos SET nome=?, documento=?, placa=?, veiculo=?, tem_bau=?, tem_bag=?, tipo=?, indicacao=? WHERE id=?').run(...campos, pendente.id);
+      q('UPDATE candidatos SET nome=?, documento=?, placa=?, veiculo=?, tem_bau=?, tem_bag=?, tipo=?, indicacao=?, pix_chave=?, pix_titular=?, pix_banco=?, pag_ciente_em=? WHERE id=?').run(...campos, pendente.id);
       return { ok: true, id: pendente.id, novo: false, nome, tipo };
     }
-    const r = q(`INSERT INTO candidatos (nome, documento, placa, veiculo, tem_bau, tem_bag, tipo, indicacao, telefone, status, criado_em)
-                 VALUES (?,?,?,?,?,?,?,?,?,'pendente',?)`).run(...campos, telefone, agora());
+    const r = q(`INSERT INTO candidatos (nome, documento, placa, veiculo, tem_bau, tem_bag, tipo, indicacao, pix_chave, pix_titular, pix_banco, pag_ciente_em, telefone, status, criado_em)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'pendente',?)`).run(...campos, telefone, agora());
     auditar('publico', 'cadastro_recebido', nome);
     return { ok: true, id: Number(r.lastInsertRowid), novo: true, nome, tipo };
   }
@@ -606,7 +625,8 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     const pin = pinFacil();
     return tx(() => {
       const motoboyId = criarMotoboy({ nome: c.nome, telefone: c.telefone, pin, veiculo: c.veiculo, tipo: c.tipo, tem_bau: c.tem_bau, tem_bag: c.tem_bag }, ator);
-      q('UPDATE motoboys SET documento = ?, placa = ? WHERE id = ?').run(c.documento, c.placa, motoboyId);
+      q('UPDATE motoboys SET documento = ?, placa = ?, pix_chave = ?, pix_titular = ?, pix_banco = ?, pag_ciente_em = ? WHERE id = ?')
+        .run(c.documento, c.placa, c.pix_chave || '', c.pix_titular || '', c.pix_banco || '', c.pag_ciente_em ?? null, motoboyId);
       q("UPDATE candidatos SET status = 'aceito', decidido_em = ?, motoboy_id = ? WHERE id = ?").run(agora(), motoboyId, c.id);
       auditar(ator, 'cadastro_aceito', c.nome);
       return { ok: true, aceito: true, motoboy_id: motoboyId, nome: c.nome, telefone: c.telefone, tipo: c.tipo, pin };
@@ -1553,7 +1573,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
 
   // ------------------------------------------------------- telas (leitura)
   function estadoMotoboy(turno) {
-    const m = q('SELECT nome, veiculo, repasse_base, repasse_km, ve_valores FROM motoboys WHERE id = ?').get(turno.motoboy_id);
+    const m = q('SELECT nome, veiculo, repasse_base, repasse_km, ve_valores, pix_chave, pix_titular, pix_banco, pag_ciente_em FROM motoboys WHERE id = ?').get(turno.motoboy_id);
     const c = cfg();
     const avulso = turno.tipo === 'avulso';
     // Conta do dono (ve_valores): vê em cada entrega o que o cliente paga e o repasse do avulso.
@@ -1579,7 +1599,8 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
         WHERE turno_id = ? AND status = 'entregue' ORDER BY entregue_em DESC`).all(turno.id) : [];
     return {
       agora: agora(),
-      motoboy: { nome: m.nome, veiculo: m.veiculo, tipo: turno.tipo },
+      motoboy: { nome: m.nome, veiculo: m.veiculo, tipo: turno.tipo,
+        recebimento: { pix_chave: m.pix_chave, pix_titular: m.pix_titular, pix_banco: m.pix_banco, ciente_em: m.pag_ciente_em ?? null } },
       ofertas,
       agendadas: agendadasPara(turno, paga),
       previsao_fim: previsaoFim(turno),
@@ -1632,7 +1653,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
   function estadoAdmin() {
     const c = cfg();
     const hoje = inicioDoDia();
-    const motoboys = q('SELECT id, nome, telefone, veiculo, tem_bau, tem_bag, ativo, tipo, pin_claro, documento, placa, diaria_valor, repasse_base, repasse_km FROM motoboys ORDER BY nome').all()
+    const motoboys = q('SELECT id, nome, telefone, veiculo, tem_bau, tem_bag, ativo, tipo, pin_claro, documento, placa, diaria_valor, repasse_base, repasse_km, pix_chave, pix_titular, pix_banco, pag_ciente_em FROM motoboys ORDER BY nome').all()
       .map((m) => {
         const turno = turnoAtivoDoMotoboy(m.id);
         const conv = turno ? null : convocacaoValida(m.id);
@@ -1970,7 +1991,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
   return {
     cfg, lerConfig, salvarConfig, gerarChaveApi, chaveApiValida,
     garantirAdmin, loginAdmin, autenticarAdmin, sairAdmin, trocarSenhaAdmin,
-    criarMotoboy, atualizarMotoboy, candidatar, decidirCandidato, convocar, cancelarConvocacao,
+    criarMotoboy, atualizarMotoboy, candidatar, decidirCandidato, salvarRecebimento, convocar, cancelarConvocacao,
     loginMotoboy, autenticarMotoboy, almoco, encerrarTurno, registrarPosicoes,
     criarDemanda, criarDemandaExterna, definirLocais, cancelarDemanda, fechamento, reatribuir, confirmarParada,
     despacharPendentes, estadoMotoboy, estadoAdmin, trilha, relatorio, rotina,

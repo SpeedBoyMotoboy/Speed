@@ -66,3 +66,9 @@ label.marcar input { width: 22px; height: 22px; flex: none; margin: 0; }
 /* Campos de texto longo com a mesma letra do resto */
 textarea { font: inherit; width: 100%; box-sizing: border-box; }
 main h2 { margin-top: 22px; }
+
+/* Aviso do dia do pagamento (laranja, bem visível) */
+.aviso-quarta { background: #fff1e6; border-left: 6px solid #ea580c; color: #9a3412; border-radius: 10px; padding: 12px 14px; margin: 14px 0; line-height: 1.45; }
+.aviso-quarta b { color: #c2410c; }
+.aviso-quarta .marcar { color: inherit; font-weight: 600; margin-top: 10px; }
+@media (prefers-color-scheme: dark) { .aviso-quarta { background: #3a1d0a; color: #fdba74; } .aviso-quarta b { color: #fb923c; } }

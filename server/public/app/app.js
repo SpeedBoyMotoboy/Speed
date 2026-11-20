@@ -370,10 +370,56 @@ function cartaoBaixarApp() {
   return cartao;
 }
 
+// ── Como receber: chave Pix + ciente do pagamento às quartas. Obrigatório antes de usar o app. ──
+function avisoQuarta(ciente) {
+  return h('div', { class: 'aviso-quarta' },
+    h('div', null, '💰 ', h('b', null, 'O pagamento é feito toda QUARTA-FEIRA'), ', por Pix, em horário comercial.'),
+    h('div', null, 'É automático: não precisa cobrar. Entra só a entrega registrada e concluída no app.'),
+    h('label', { class: 'marcar' }, ciente, ' Estou ciente de que o pagamento é feito toda quarta-feira, em horário comercial.'));
+}
+function telaRecebimento(podeVoltar = false) {
+  formAberto = true;
+  const r = estado?.motoboy?.recebimento || {};
+  const chave = h('input', { maxlength: 100, autocomplete: 'off', placeholder: 'CPF, telefone, e-mail ou chave aleatória', value: r.pix_chave || '' });
+  const titular = h('input', { maxlength: 80, autocomplete: 'name', placeholder: 'Nome completo do dono da conta', value: r.pix_titular || '' });
+  const banco = h('input', { maxlength: 40, placeholder: 'Ex.: Nubank, Caixa, Inter', value: r.pix_banco || '' });
+  const ciente = h('input', { type: 'checkbox' });
+  const erro = h('div', { class: 'erro', role: 'alert' });
+  const salvar = h('button', { class: 'primario grande', type: 'submit' }, 'Salvar e continuar');
+  const form = h('form', {
+    onsubmit: async (ev) => {
+      ev.preventDefault();
+      erro.textContent = '';
+      if (!ciente.checked) { erro.textContent = 'Marque que está ciente do pagamento às quartas-feiras.'; return; }
+      salvar.disabled = true;
+      try {
+        await api('POST', '/api/motoboy/recebimento', { pix_chave: chave.value, pix_titular: titular.value, pix_banco: banco.value, ciente: true });
+        formAberto = false;
+        buscarEstado();
+      } catch (e) { erro.textContent = e.message; salvar.disabled = false; }
+    },
+  },
+  h('label', null, 'Chave Pix'), chave,
+  h('label', null, 'Nome de quem é a conta'), titular,
+  h('label', null, 'Banco'), banco,
+  avisoQuarta(ciente),
+  erro,
+  h('div', { class: 'botoes' }, salvar,
+    podeVoltar && h('button', { type: 'button', onclick: () => { formAberto = false; desenharTurno(); } }, 'Voltar')));
+  trocar(raiz,
+    h('div', { class: 'topo' }, h('div', { class: 'nome' }, estado?.motoboy?.nome || 'Speed Motoboy'), h('div', { class: 'info' }, 'Como receber seu pagamento')),
+    h('div', { class: 'conteudo' }, h('div', { class: 'cartao' },
+      h('b', null, 'Onde você quer receber?'),
+      h('p', { class: 'nota' }, 'Preencha uma vez. Dá para mudar depois no botão Recebimento.'),
+      form)));
+}
+
 function desenharTurno() {
   const { turno, rota, motoboy, ofertas, ganhos } = estado;
   const [atual, ...proximas] = rota;
   const partes = [];
+  // Sem chave Pix ou sem o "estou ciente" do pagamento às quartas: nada mais abre antes disso.
+  if (!motoboy.recebimento?.ciente_em) { telaRecebimento(false); return; }
   // No app: sem tirar a economia de bateria o Android mata o rastreio. Só libera a tela depois de liberar.
   if (nativo && infoNativo().bateriaLivre === false) {
     trocar(raiz,
@@ -460,7 +506,9 @@ function desenharTurno() {
         ? `Online · ${rota.length} parada(s)`
         : `Turno até ${hora(turno.fim_previsto)} · ${rota.length} parada(s)`)),
     faixaSinal(),
-    h('div', { class: 'conteudo' }, partes));
+    h('div', { class: 'conteudo' }, partes,
+      h('div', { class: 'botoes' }, h('button', { class: 'leve', onclick: () => telaRecebimento(true) }, '💰 Recebimento (Pix)')),
+      h('p', { class: 'nota' }, 'Pagamento toda quarta-feira, em horário comercial.')));
 }
 
 // ── Quadro de entregas: ofertas agrupadas por loja/coleta e entregas agendadas ──

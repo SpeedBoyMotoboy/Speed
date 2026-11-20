@@ -3,6 +3,11 @@
 const L = window.L;
 const raiz = document.getElementById('raiz');
 
+// Como o motoboy recebe e quando ele marcou que está ciente do pagamento às quartas.
+const pixTxt = (m) => (m.pix_chave
+  ? `Pix ${m.pix_chave} · ${m.pix_titular || '—'} · ${m.pix_banco || '—'}${m.pag_ciente_em ? ` · ciente em ${new Date(m.pag_ciente_em).toLocaleDateString('pt-BR')}` : ''}`
+  : 'Pix: ainda não informou');
+
 function h(tag, attrs, ...filhos) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs || {})) {
@@ -1041,6 +1046,7 @@ function desenharMotoboys() {
         h('div', { class: 'cresce' },
           h('div', null, h('strong', null, c.nome), ` · ${c.tipo === 'diaria' ? 'Fixo (diária)' : 'Avulso'}`),
           h('div', { class: 'sub' }, `${telefoneFmt(c.telefone)} · Doc ${c.documento || '—'} · ${c.veiculo === 'bike' ? 'Bike' : `Moto ${c.placa || '—'}`}${c.tem_bau ? ' · baú' : ''}${c.tem_bag ? ' · bag' : ''}`),
+          h('div', { class: 'sub' }, pixTxt(c)),
           c.indicacao && h('div', { class: 'sub' }, `Indicação / de onde veio: ${c.indicacao}`),
           h('div', { class: 'nota' }, `Recebido ${dataHora(c.criado_em)}`)),
         h('button', { class: 'pequeno primario', onclick: () => decidirCadastro(c, true) }, 'Aceitar'),
@@ -1053,9 +1059,9 @@ function desenharMotoboys() {
     h('p', { class: 'nota' }, 'Diária: só faz login no dia em que for convocado e cumpre o turno. Avulso: entra e sai quando quiser, aceita as entregas perto dele e recebe o repasse de cada uma.'),
     estado.motoboys.length === 0 ? h('div', { class: 'vazio' }, 'Nenhum motoboy cadastrado ainda.')
       : h('table', null,
-        h('thead', null, h('tr', null, ['Nome', 'Telefone', 'Senha', 'Equipamento', 'Situação', ''].map((c) => h('th', null, c)))),
+        h('thead', null, h('tr', null, ['Nome', 'Telefone', 'Senha', 'Pix', 'Equipamento', 'Situação', ''].map((c) => h('th', null, c)))),
         h('tbody', null, estado.motoboys.map((m) => h('tr', null,
-          h('td', null, m.nome), h('td', null, telefoneFmt(m.telefone)), h('td', null, m.pin_claro || '—'), h('td', null, equipamento(m)), h('td', null, situacao(m)),
+          h('td', null, m.nome), h('td', null, telefoneFmt(m.telefone)), h('td', null, m.pin_claro || '—'), h('td', { class: 'sub' }, pixTxt(m)), h('td', null, equipamento(m)), h('td', null, situacao(m)),
           h('td', null, h('div', { class: 'linha' },
             m.ativo && m.tipo !== 'avulso' && !m.turno && !m.convocado_ate && h('button', { class: 'pequeno primario', onclick: () => convocar(m.id) }, 'Convocar'),
             m.convocado_ate && h('button', {
