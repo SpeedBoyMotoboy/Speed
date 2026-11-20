@@ -1044,3 +1044,50 @@ test('diária entra sem convocação, salvo se a convocação for obrigatória',
   s.salvarConfig({ convocacao_obrigatoria: '1' }, 'teste');
   assert.throws(() => s.loginMotoboy({ telefone: '27999990012', pin: '123456', aceito_termo: true, dispositivo: 'b' }), { codigo: 'sem_convocacao' });
 });
+
+test('link do cliente da loja: retirada é sempre a loja, o cliente só diz onde entregar e vê o valor', async () => {
+  const { s, a, demandas, enviadas, banco } = montar();
+  // Ficha: endereço de retirada cria os dois links.
+  await assert.throws(() => s.salvarCliente({ nome: 'Enxoval Bom', telefone: '11955551234', loja_endereco: 'rua' }, 'teste'), { codigo: 'endereco_invalido' });
+  s.salvarCliente({ nome: 'Enxoval Bom', telefone: '11955551234', faturado: true, loja_endereco: 'Rua da Coleta, 10, Centro', loja_contato: 'Marina', loja_obs: '2º piso, balcão', fechamento: 'semanal', libera_direto: true }, 'teste');
+  const cli = s.listarClientes().find((c) => c.nome === 'Enxoval Bom');
+  assert.ok(cli.chave.length >= 16 && cli.chave_cliente.length >= 10, 'gera as duas chaves');
+  assert.notEqual(cli.chave, cli.chave_cliente, 'o link do cliente não abre a área da loja');
+  assert.equal(cli.fechamento, 'semanal');
+  assert.equal(cli.libera_direto, 1);
+  // Salvar de novo não troca os links.
+  s.salvarCliente({ nome: 'Enxoval Bom', telefone: '11955551234', faturado: true, loja_endereco: 'Rua da Coleta, 10, Centro' }, 'teste');
+  assert.equal(s.listarClientes().find((c) => c.nome === 'Enxoval Bom').chave_cliente, cli.chave_cliente);
+
+  assert.deepEqual(a.lojaPublica(cli.chave_cliente), { nome: 'Enxoval Bom', coleta: { endereco: 'Rua da Coleta, 10, Centro' } });
+  assert.throws(() => a.lojaPublica('nao-existe-123'), { codigo: 'link_invalido' });
+  assert.throws(() => a.lojaPublica(cli.chave), { codigo: 'link_invalido' }); // a chave da loja não vale no link do cliente
+  assert.throws(() => a.empresaPublica(cli.chave_cliente), { codigo: 'link_invalido' }); // e a do cliente não abre a área da loja
+
+  // Cotação: ignora qualquer retirada que venha do navegador.
+  const cot = await a.cotarPublico({ loja: cli.chave_cliente, coleta: { endereco: 'Rua Falsa, 999', lat: 0, lon: 0 }, entrega: { endereco: 'Rua da Entrega, 20, Centro' } }, 'ip');
+  assert.equal(cot.coleta.endereco, 'Rua da Coleta, 10, Centro');
+  assert.equal(cot.coleta.lat, P(0).lat);
+  assert.equal(cot.valor, 12);
+  await assert.rejects(a.cotarPublico({ loja: 'nao-existe-123', entrega: { endereco: 'Rua da Entrega, 20, Centro' } }, 'ip'), { codigo: 'link_invalido' });
+
+  const r = await a.pedidoSite({ loja: cli.chave_cliente, nome: 'Paula Reis', telefone: '(11) 96666-0002', descricao: '2 jogos de lençol',
+    coleta: { endereco: 'Rua Falsa, 999' }, entrega: cot.entrega }, 'ip');
+  const d = demandas()[0];
+  assert.equal(d.coleta_endereco, 'Rua da Coleta, 10, Centro');
+  assert.equal(d.coleta_contato, 'Marina');
+  assert.equal(d.cliente, 'Paula Reis');
+  assert.match(d.descricao, /🏬 Cliente da Enxoval Bom · 2º piso, balcão · 2 jogos de lençol/);
+  assert.match(d.entrega_contato, /Paula Reis/);
+  assert.equal(d.retida, 1, 'pedido do cliente final espera aprovação, mesmo com a loja em "direto"');
+  assert.equal(d.pagamento === 'faturado', false, 'quem paga é o cliente final, não a fatura da loja');
+  assert.equal(r.valor, 12);
+  assert.equal(s.listarClientes().find((c) => c.nome === 'Enxoval Bom').pedidos, 1);
+  await a.despacharSaida();
+  assert.ok(enviadas.some((m) => /Cliente da Enxoval Bom/.test(m.texto)), 'o aviso ao responsável diz de qual loja é');
+  assert.equal(banco.cobrancas.length, 0);
+
+  // Tirar o endereço desliga o link do cliente.
+  s.salvarCliente({ nome: 'Enxoval Bom', telefone: '11955551234', faturado: true, loja_endereco: '' }, 'teste');
+  assert.throws(() => a.lojaPublica(cli.chave_cliente), { codigo: 'link_invalido' });
+});

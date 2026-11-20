@@ -8,11 +8,14 @@ let info = { empresa: 'SpeedBoy', ativo: true, fechado: '', mapa: { lat: -23.550
 let pedido = null; // { coleta, entrega, km, valor }
 let servicoId = null;
 let espera = null; // conferência do pagamento
+// Link do cliente da loja (/pedir/?loja=CÓDIGO): a retirada é a loja; o cliente só diz onde entregar.
+const codLoja = new URLSearchParams(location.search).get('loja') || '';
+let loja = null; // { nome, coleta: { endereco } }
 
 function moldura(...conteudo) {
   trocar(raiz,
     h('header', { class: 'topo' }, h('div', { class: 'dentro' },
-      h('div', { class: 'logo' }, info.empresa), h('div', { class: 'sub' }, 'Entrega urgente'))),
+      h('div', { class: 'logo' }, info.empresa), h('div', { class: 'sub' }, loja ? `Entrega da ${loja.nome}` : 'Entrega urgente'))),
     h('main', null, conteudo));
 }
 
@@ -48,10 +51,10 @@ function telaEnderecos(mensagem = '') {
       seguir.disabled = true;
       seguir.textContent = 'Procurando os endereços…';
       try {
-        servicoId = info.servicos.length ? Number(servico.value) : null;
-        pedido = await api('POST', '/api/publico/cotar', {
-          coleta: { endereco: coleta.value, ...(aqui || {}) }, entrega: { endereco: entrega.value }, servico_id: servicoId,
-        });
+        servicoId = info.servicos.length ? Number(loja ? info.servicos[0].id : servico.value) : null;
+        pedido = await api('POST', '/api/publico/cotar', loja
+          ? { loja: codLoja, entrega: { endereco: entrega.value }, servico_id: servicoId }
+          : { coleta: { endereco: coleta.value, ...(aqui || {}) }, entrega: { endereco: entrega.value }, servico_id: servicoId });
         telaConfirmar();
       } catch (e) {
         erro.textContent = e.message;
@@ -60,11 +63,16 @@ function telaEnderecos(mensagem = '') {
       }
     },
   },
-  h('label', { for: 'coleta' }, 'Onde coletamos?'), coleta, botaoAqui,
-  h('label', { for: 'entrega' }, 'Onde entregamos?'), entrega,
-  info.servicos.length > 1 && [h('label', { for: 'servico' }, 'O que você precisa?'), servico],
+  !loja && [h('label', { for: 'coleta' }, 'Onde coletamos?'), coleta, botaoAqui],
+  h('label', { for: 'entrega' }, loja ? 'Onde você quer receber?' : 'Onde entregamos?'), entrega,
+  !loja && info.servicos.length > 1 && [h('label', { for: 'servico' }, 'O que você precisa?'), servico],
   seguir, erro);
 
+  if (loja) {
+    moldura(h('h1', null, `Receba sua compra da ${loja.nome}`),
+      h('p', { class: 'nota' }, 'Diga onde entregar e veja o valor do frete na hora. O motoboy retira na loja e leva até você.'), form);
+    return;
+  }
   moldura(h('h1', null, `Motoboy em até ${info.prazo_min} minutos`),
     h('p', { class: 'nota' }, info.pagamento
       ? 'Informe os endereços, veja o valor na hora e pague por Pix. O motoboy sai assim que o pagamento cair.'
@@ -82,25 +90,26 @@ function telaConfirmar() {
   const desenharLinhas = () => {
     for (const [qual, letra] of [['coleta', 'C'], ['entrega', 'E']]) {
       const p = pedido[qual];
+      const daLoja = loja && qual === 'coleta';
       trocar(linhas[qual], h('div', { class: 'linha-end' },
         h('div', { class: `ponto ${qual}` }, letra),
-        h('div', null, p.endereco,
-          p.lat == null && h('div', { class: 'falta' }, `Não achamos no mapa: toque no mapa para marcar a ${qual}.`))));
+        h('div', null, daLoja ? `Retirada na ${loja.nome}` : p.endereco,
+          p.lat == null && !daLoja && h('div', { class: 'falta' }, `Não achamos no mapa: toque no mapa para marcar a ${qual}.`))));
     }
-    alvo = pedido.coleta.lat == null ? 'coleta' : pedido.entrega.lat == null ? 'entrega' : null;
+    alvo = pedido.coleta.lat == null && !loja ? 'coleta' : pedido.entrega.lat == null ? 'entrega' : null;
     trocar(preco,
       h('span', { class: 'nota' }, pedido.km != null ? `Distância aproximada: ${km(pedido.km)}` : 'Marque os dois pontos para ver o valor'),
       h('b', null, pedido.valor != null ? reais(pedido.valor) : pedido.km != null ? 'Valor a combinar' : ''));
   };
   const recotar = async () => {
-    try { pedido = await api('POST', '/api/publico/cotar', { coleta: pedido.coleta, entrega: pedido.entrega, servico_id: servicoId }); } catch { /* mantém o que tinha */ }
+    try { pedido = await api('POST', '/api/publico/cotar', { ...(loja ? { loja: codLoja } : { coleta: pedido.coleta }), entrega: pedido.entrega, servico_id: servicoId }); } catch { /* mantém o que tinha */ }
     desenharLinhas();
   };
   const marcar = (qual, lat, lon) => {
     pedido[qual].lat = lat;
     pedido[qual].lon = lon;
     if (marcadores[qual]) marcadores[qual].remove();
-    marcadores[qual] = L.marker([lat, lon], { icon: icone(L, `ponto ${qual}`, qual === 'coleta' ? 'C' : 'E'), draggable: true }).addTo(mapa);
+    marcadores[qual] = L.marker([lat, lon], { icon: icone(L, `ponto ${qual}`, qual === 'coleta' ? 'C' : 'E'), draggable: !(loja && qual === 'coleta') }).addTo(mapa);
     marcadores[qual].on('dragend', (ev) => {
       const pos = ev.target.getLatLng();
       pedido[qual].lat = pos.lat;
@@ -112,7 +121,7 @@ function telaConfirmar() {
   const nome = h('input', { id: 'nome', maxlength: 80, autocomplete: 'name', required: true, value: guardado.nome || '' });
   const telefone = h('input', { id: 'telefone', type: 'tel', inputmode: 'tel', autocomplete: 'tel-national', required: true, placeholder: '(11) 99999-0000', value: guardado.telefone || '' });
   const email = h('input', { id: 'email', type: 'email', inputmode: 'email', autocomplete: 'email', maxlength: 120, required: info.pede_email, value: guardado.email || '' });
-  const descricao = h('input', { id: 'descricao', maxlength: 300, required: true, placeholder: 'Ex.: envelope para reconhecer firma' });
+  const descricao = h('input', { id: 'descricao', maxlength: 300, required: true, placeholder: loja ? 'Ex.: 2 jogos de lençol, pedido 1234' : 'Ex.: envelope para reconhecer firma' });
   const contato = h('input', { id: 'contato', maxlength: 120, placeholder: 'Nome e telefone de quem recebe' });
   const requisito = h('select', { id: 'requisito' },
     h('option', { value: 'qualquer' }, 'Cabe na mochila / não precisa de nada especial'),
@@ -132,9 +141,9 @@ function telaConfirmar() {
         const r = await api('POST', '/api/publico/pedidos', {
           nome: nome.value, telefone: telefone.value, email: email.value, descricao: descricao.value, requisito: requisito.value,
           servico_id: servicoId, site: isca.value,
-          coleta: pedido.coleta, entrega: { ...pedido.entrega, contato: contato.value },
+          ...(loja ? { loja: codLoja } : { coleta: pedido.coleta }), entrega: { ...pedido.entrega, contato: contato.value },
         });
-        try { localStorage.setItem('speed_cliente', JSON.stringify({ nome: nome.value, telefone: telefone.value, email: email.value, coleta: pedido.coleta.endereco })); } catch { /* sem armazenamento */ }
+        try { localStorage.setItem('speed_cliente', JSON.stringify({ nome: nome.value, telefone: telefone.value, email: email.value, coleta: loja ? (guardado.coleta || '') : pedido.coleta.endereco })); } catch { /* sem armazenamento */ }
         if (r.pix) telaPix(r); else telaPronto(r);
       } catch (e) {
         // A conferência viu que a descrição é de outro tipo de serviço: mostra o valor certo e pede novo clique.
@@ -153,9 +162,9 @@ function telaConfirmar() {
   h('label', { for: 'nome' }, 'Seu nome'), nome,
   h('label', { for: 'telefone' }, 'Seu WhatsApp (com DDD)'), telefone,
   info.pede_email && [h('label', { for: 'email' }, 'Seu e-mail (para o comprovante do Pix)'), email],
-  h('label', { for: 'descricao' }, 'Descreva o serviço'), descricao,
+  h('label', { for: 'descricao' }, loja ? 'O que você comprou? (a loja separa mais rápido)' : 'Descreva o serviço'), descricao,
   h('label', { for: 'requisito' }, 'Tamanho'), requisito,
-  h('label', { for: 'contato' }, 'Quem recebe na entrega? (opcional)'), contato,
+  h('label', { for: 'contato' }, loja ? 'Outra pessoa vai receber? Nome e telefone (opcional)' : 'Quem recebe na entrega? (opcional)'), contato,
   h('div', { class: 'isca', 'aria-hidden': 'true' }, isca),
   enviar, erro);
 
@@ -240,8 +249,14 @@ function telaPronto(r) {
 }
 
 try { info = await api('GET', '/api/publico/info'); } catch { /* usa o padrão */ }
-document.title = `Pedir motoboy — ${info.empresa}`;
-if (!info.ativo) {
+let linkRuim = '';
+if (codLoja) {
+  try { loja = await api('GET', `/api/publico/loja?l=${encodeURIComponent(codLoja)}`); } catch (e) { linkRuim = e.message || 'Link inválido.'; }
+}
+document.title = loja ? `Entrega da ${loja.nome} — ${info.empresa}` : `Pedir motoboy — ${info.empresa}`;
+if (linkRuim) {
+  moldura(h('h1', null, 'Link inválido'), h('p', { class: 'nota' }, 'Peça o link certo à loja onde você comprou.'));
+} else if (!info.ativo) {
   moldura(h('h1', null, 'Pedidos pelo site indisponíveis'), h('p', { class: 'nota' }, 'Fale com a gente pelo WhatsApp.'));
 } else if (info.fechado) {
   moldura(h('h1', null, 'Estamos fechados agora'), h('p', { class: 'nota' }, `Nosso horário de atendimento: ${info.fechado}.`));
