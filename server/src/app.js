@@ -196,6 +196,18 @@ export function criarApp({ servico, atendimento, geocodificar, vigia = null, con
     servico.fachadaGravada(id);
     return { ok: true };
   }, 3 * 1024 * 1024);
+  // Comprovante do Pix enviado pela página do pedido: foto (jpeg/png) ou PDF, até 3 MB.
+  rota('POST', '/api/publico/pedidos/comprovante', 'publico', ({ corpo, ip }) => {
+    const m = /^data:(image\/jpeg|image\/png|application\/pdf);base64,([A-Za-z0-9+/=]+)$/.exec(String(corpo?.arquivo || ''));
+    if (!m || m[2].length < 1300 || m[2].length > 4.1 * 1024 * 1024) throw new Erro(422, 'arquivo_invalido', 'Envie a foto ou o PDF do comprovante (até 3 MB).');
+    return atendimento.comprovantePublico(corpo?.codigo, { mime: m[1], base64: m[2] }, ip);
+  }, 5 * 1024 * 1024);
+  rota('POST', '/api/publico/pedidos/nota', 'publico', ({ corpo, ip }) => atendimento.notaPublica(corpo?.codigo, corpo, ip));
+  // Aviso do banco vindo da Ponte (mesmo servidor): vale a chave de API ou o segredo interno no cabeçalho.
+  rota('POST', '/api/entrada/pix-recebido', 'publico', ({ corpo, req }) => {
+    if (!servico.chaveApiValida(req.headers['x-api-key']) && !atendimento.segredoConfere(req.headers['x-speed-segredo'])) throw new Erro(401, 'chave_invalida', 'Chave inválida.');
+    return atendimento.receberPix(corpo);
+  });
   rota('GET', '/api/motoboy/fachada/:id', 'motoboy', ({ turno, p }) => verFachada(servico.fachadaDoMotoboy(turno, p.id)));
   rota('GET', '/api/admin/demandas/:id/fachada', 'admin', ({ p }) => verFachada(p.id));
   rota('GET', '/api/admin/demandas/:id/foto', 'admin', ({ p }) => {

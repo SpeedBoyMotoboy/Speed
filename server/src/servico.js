@@ -1753,6 +1753,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       id: d.id, status: d.status, retida: Boolean(d.retida), descricao: d.descricao, valor: d.valor, km: d.km,
       servico: d.servico, urgente: Boolean(d.urgente), prazo_min: Number(cfgBruta().urgente_prazo_min),
       pagamento: d.pagamento,
+      paga_final: Boolean(d.paga_final), falta_nota: Boolean(d.paga_final) && !d.nf_doc && !['entregue', 'cancelada'].includes(d.status),
       pix: pixAtual(d) ? {
         codigo: d.pag_pix, qr: d.pag_qr, expira: d.pag_expira,
         // Pix na chave da empresa: o cliente manda o comprovante e a equipe confirma.

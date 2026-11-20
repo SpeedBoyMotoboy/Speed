@@ -98,3 +98,15 @@ test('estáticos: páginas servidas com CSP e sem escapar da pasta pública', as
   assert.equal((await chamar('GET', '/vendor/leaflet/..%2f..%2f..%2fpackage.json')).status, 404);
   assert.equal((await chamar('GET', '/')).status, 302);
 });
+
+test('API: aviso de Pix do banco só entra com a chave de API ou o segredo interno', async (t) => {
+  const { app, servico, chamar } = await subir();
+  t.after(() => app.close());
+  const corpo = { valor: 25, pagador: 'Paula Reis' };
+  assert.equal((await chamar('POST', '/api/entrada/pix-recebido', { corpo })).status, 401);
+  assert.equal((await chamar('POST', '/api/entrada/pix-recebido', { corpo, extra: { 'x-speed-segredo': 'errado' } })).status, 401);
+  const segredo = servico.lerConfig().whats_segredo;
+  const r = await chamar('POST', '/api/entrada/pix-recebido', { corpo, extra: { 'x-speed-segredo': segredo } });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.ok, true);
+});

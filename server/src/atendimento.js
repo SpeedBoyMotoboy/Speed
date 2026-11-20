@@ -405,6 +405,78 @@ export function criarAtendimento({
     avisarAdmin(linhas.filter(Boolean).join('\n'));
   }
 
+  // ------------------------------------- Pix conferido sozinho (aviso do banco + comprovante)
+  // Regra: o pedido só é liberado quando as DUAS coisas existem: o comprovante enviado para aquele pedido
+  // e um Pix do mesmo valor que caiu na conta (aviso do banco lido no celular do dono). Cada Pix vale para um pedido só.
+  const primeiroNome = (s) => semAcento(String(s || '')).trim().split(/\s+/)[0] || '';
+  function tentarLiberar(id) {
+    const d = q('SELECT * FROM demandas WHERE id = ?').get(id);
+    if (!d || d.pagamento !== 'pendente' || d.pag_id || d.status === 'cancelada' || d.comprovante_em == null || d.valor == null) return false;
+    if (d.comp_valor != null && Math.abs(d.comp_valor - d.valor) > 0.009) return false; // a IA leu outro valor no comprovante
+    const cand = q('SELECT * FROM pix_recebidos WHERE demanda_id IS NULL AND ts >= ? AND ABS(valor - ?) < 0.009 ORDER BY ts')
+      .all(d.criada_em - 10 * MIN, d.valor);
+    if (!cand.length) return false;
+    const nomes = [d.comp_pagador, d.nf_nome, d.cliente].map(primeiroNome).filter(Boolean);
+    const pix = cand.find((p) => nomes.includes(primeiroNome(p.pagador))) || cand[0];
+    q('UPDATE pix_recebidos SET demanda_id = ? WHERE id = ?').run(d.id, pix.id);
+    if (!servico.marcarPago(d.id, 'pix:banco+comprovante')) return false;
+    avisarAdmin(`✅ Pedido #${d.id} liberado sozinho: o Pix de ${reais(d.valor)}${pix.pagador ? ` de ${pix.pagador}` : ''} caiu no banco e o comprovante confere.`);
+    return true;
+  }
+  // Aviso do banco ("Pix recebido") que o celular do dono mandou.
+  function receberPix(dados) {
+    const valor = Math.round(Number(dados?.valor) * 100) / 100;
+    if (!(valor > 0)) throw new Erro(422, 'valor_invalido', 'Valor inválido.');
+    const pagador = txt(dados?.pagador, 80);
+    const ts = Number(dados?.ts) > 0 ? Number(dados.ts) : agora();
+    if (q('SELECT id FROM pix_recebidos WHERE ABS(valor - ?) < 0.009 AND pagador = ? AND ABS(ts - ?) < 5000').get(valor, pagador, ts)) return { ok: true, repetido: true };
+    q('INSERT INTO pix_recebidos (ts, valor, pagador, texto, origem) VALUES (?,?,?,?,?)').run(ts, valor, pagador, txt(dados?.texto, 300), txt(dados?.origem, 60));
+    const esperando = q(`SELECT id FROM demandas WHERE pagamento = 'pendente' AND (pag_id IS NULL OR pag_id = '')
+        AND status IN ('sem_local','aguardando') AND ABS(valor - ?) < 0.009 ORDER BY (comprovante_em IS NULL), id`).all(valor);
+    for (const e of esperando) if (tentarLiberar(e.id)) return { ok: true, liberado: e.id };
+    if (esperando.length) avisarAdmin(`💰 Caiu um Pix de ${reais(valor)}${pagador ? ` de ${pagador}` : ''}. O pedido #${esperando[0].id} espera esse valor, mas ainda falta o comprovante. Para liberar já: *pago ${esperando[0].id}*.`);
+    return { ok: true, liberado: null };
+  }
+  // Comprovante enviado pela página do pedido (já chega ligado ao pedido certo).
+  async function comprovantePublico(codigo, arq, ip) {
+    limitar(`comp:${ip}`, 20, 60 * MIN);
+    const d = typeof codigo === 'string' ? q('SELECT * FROM demandas WHERE codigo = ?').get(codigo) : null;
+    if (!d) throw new Erro(404, 'nao_encontrado', 'Pedido não encontrado.');
+    if (d.pagamento === 'pago') return { ok: true, liberado: true };
+    if (d.pagamento !== 'pendente' || d.pag_id || d.status === 'cancelada') throw new Erro(409, 'sem_pix', 'Este pedido não está esperando pagamento.');
+    q('UPDATE demandas SET comprovante_em = ? WHERE id = ?').run(agora(), d.id);
+    let leitura = '';
+    if (iaLigada()) {
+      try {
+        const r = await ia.analisar(cfgBruta(), {
+          arquivos: [{ nome: 'comprovante enviado pelo cliente', tipo: arq.mime === 'application/pdf' ? 'pdf' : 'imagem', mime: arq.mime, base64: arq.base64 }],
+          contexto: contextoIA(), pergunta: `Este é o comprovante do pedido #${d.id}, de ${reais(d.valor)}. Confere?`,
+        });
+        const cp = r.comprovante;
+        if (cp) {
+          q('UPDATE demandas SET comp_valor = ?, comp_pagador = ? WHERE id = ?').run(cp.valor ?? null, txt(cp.pagador, 80), d.id);
+          leitura = ` A IA leu: ${cp.valor != null ? reais(cp.valor) : 'valor ilegível'}${cp.valor != null && Math.abs(cp.valor - d.valor) > 0.009 ? ' ⚠️ DIFERENTE do pedido' : ''}, pagador ${cp.pagador || '?'}, recebedor ${cp.recebedor || '?'}${cp.confere_recebedor ? '' : ' ⚠️ não parece ser a empresa'}.`;
+        } else leitura = ' ⚠️ A IA não reconheceu o arquivo como comprovante.';
+      } catch (e) { console.error('[comprovante]', e.message); }
+    }
+    const liberado = tentarLiberar(d.id);
+    if (!liberado) avisarAdmin(`🧾 Comprovante do pedido #${d.id} (${reais(d.valor)}) chegou pela página.${leitura} Ainda não vi esse Pix cair no banco: libero sozinho quando o aviso chegar. Para liberar já: *pago ${d.id}*.`);
+    return { ok: true, liberado };
+  }
+  // Dados da nota fiscal de quem paga o frete (cliente final da loja), informados na página do pedido.
+  function notaPublica(codigo, dados, ip) {
+    limitar(`nota:${ip}`, 30, 60 * MIN);
+    const d = typeof codigo === 'string' ? q('SELECT * FROM demandas WHERE codigo = ?').get(codigo) : null;
+    if (!d || !d.paga_final || ['entregue', 'cancelada'].includes(d.status)) throw new Erro(404, 'nao_encontrado', 'Pedido não encontrado.');
+    const doc = docFiscal(dados?.nf_doc);
+    const nome = txt(dados?.nf_nome, 80);
+    if (!doc) throw new Erro(422, 'doc_invalido', 'CPF ou CNPJ inválido. Confira os números.');
+    if (nome.length < 3) throw new Erro(422, 'nome_invalido', 'Informe o nome completo ou a razão social.');
+    servico.gravarNota(d.id, doc, nome);
+    avisarAdmin(`🧾 Nota do frete #${d.id} (cliente final de ${d.cliente}): ${nome} · ${doc.length === 11 ? 'CPF' : 'CNPJ'} ${docFmt(doc)}`);
+    return { ok: true };
+  }
+
   // ----------------------------------------------------- robô do WhatsApp
   let silenciarCancelamento = false;
   function ajudas(msg) {
@@ -749,18 +821,36 @@ export function criarAtendimento({
     const autoriza = txt(dados?.autoriza, 80);
     const grande = ['grande', 'maior', 'g', 'gg'].includes(String(dados?.tamanho || ''));
     const semanal = cli.fechamento === 'semanal';
+    // Caixinha "o cliente final paga o frete": o pedido fica retido até o Pix ser conferido; não entra na conta da loja.
+    const clientePaga = dados?.cliente_paga === true;
+    if (clientePaga && !cfgBruta().pix_chave) throw new Erro(422, 'sem_pix', 'O pagamento pelo cliente ainda não está disponível. Fale com a SpeedBoy.');
     const descricao = [
       oque && `📦 ${oque}`,
       cf.obs && `🏬 ${txt(cf.obs, 200)}`,
       autoriza && `✅ Pedido por ${autoriza} (${cli.nome}).`,
       como && `📍 Na entrega: ${como}`,
-      `💳 Pago pela ${cli.nome} (fechamento ${semanal ? 'semanal' : 'mensal'}): não cobrar de quem recebe.`,
+      clientePaga ? '💳 Frete pago pelo cliente final por Pix (antes da coleta): não cobrar na entrega.'
+        : `💳 Pago pela ${cli.nome} (fechamento ${semanal ? 'semanal' : 'mensal'}): não cobrar de quem recebe.`,
     ].filter(Boolean).join(' · ');
     const d = servico.criarPedido({
       cliente: cli.nome, telefone: cli.telefone, descricao, requisito: grande ? 'bau' : 'qualquer', tamanho: dados?.tamanho,
       urgente: false, km, email: cli.email, coleta, entrega, hora_tipo: dados?.hora_tipo, hora: dados?.hora, agendada_para: dados?.agendada_para,
-    }, 'empresa', { retida: !cli.libera_direto, pagamento: 'faturado' });
+    }, 'empresa', { retida: clientePaga ? true : !cli.libera_direto, pagamento: clientePaga ? '' : 'faturado' });
     q('UPDATE clientes SET pedidos = pedidos + 1 WHERE id = ?').run(cli.id);
+    if (clientePaga) {
+      q('UPDATE demandas SET paga_final = 1 WHERE id = ?').run(d.id);
+      if (d.valor != null) {
+        const c = cfgBruta();
+        const codigo = brCode({ chave: c.pix_chave, nome: c.pix_nome || c.empresa_nome, cidade: c.pix_cidade, valor: d.valor, txid: `PEDIDO${d.id}` });
+        servico.registrarPix(d.id, { pagId: '', pix: codigo, qr: '', expira: agora() + 24 * 60 * MIN });
+      }
+      avisarAdmin([
+        `🏬💰 ${cli.nome} lançou a entrega #${d.id} com o FRETE PAGO PELO CLIENTE FINAL${d.valor != null ? ` (${reais(d.valor)})` : ''}.`,
+        `🏁 Entrega: ${d.entrega_endereco || '-'} (${entrega.contato})`,
+        d.valor != null ? 'Fica retida até o Pix cair e o comprovante conferir. Libera sozinha.' : '⚠️ Não achei o endereço no mapa: sem valor, sem Pix. Marque no painel.',
+      ].join('\n'));
+      return { id: d.id, codigo: d.codigo, status: d.status, valor: d.valor, km: d.km, cliente_paga: true };
+    }
     avisarAdmin([
       `🏬 ${cli.nome} lançou a entrega #${d.id}${cli.libera_direto ? ' (já foi para os motoboys)' : ': aprove no painel'}.`,
       `📦 Coleta: ${d.coleta_endereco || '-'}`, `🏁 Entrega: ${d.entrega_endereco || '-'} (${entrega.contato})`, oque ? `📝 ${oque}` : '',
@@ -785,15 +875,15 @@ export function criarAtendimento({
     };
     const qual = faixas[periodo] ? periodo : (cli.fechamento === 'semanal' ? 'semana' : 'mes');
     const [ini, fim] = faixas[qual];
-    const linhas = q(`SELECT id, codigo, criada_em, entregue_em, status, retida, coleta_endereco, entrega_endereco, entrega_contato, valor, km
+    const linhas = q(`SELECT id, codigo, criada_em, entregue_em, status, retida, coleta_endereco, entrega_endereco, entrega_contato, valor, km, paga_final
       FROM demandas WHERE cliente_telefone = ? AND criada_em >= ? AND criada_em < ? ORDER BY id`).all(cli.telefone, ini, fim);
-    const validas = linhas.filter((l) => l.status !== 'cancelada');
+    const validas = linhas.filter((l) => l.status !== 'cancelada' && !l.paga_final); // frete pago pelo cliente final não entra na conta da loja
     const total = Math.round(validas.reduce((s, l) => s + (Number(l.valor) || 0), 0) * 100) / 100;
     return {
       nome: cli.nome, periodo: qual, de: ini, ate: fim === SEMPRE ? null : fim, quantidade: validas.length, total,
       entregas: linhas.map((l) => ({
         id: l.id, codigo: l.codigo, criado_em: l.criada_em, entregue_em: l.entregue_em, status: l.status, retida: Boolean(l.retida),
-        de: l.coleta_endereco, para: l.entrega_endereco, quem: l.entrega_contato, km: l.km, valor: l.status === 'cancelada' ? 0 : l.valor,
+        de: l.coleta_endereco, para: l.entrega_endereco, quem: l.entrega_contato, km: l.km, valor: l.status === 'cancelada' || l.paga_final ? 0 : l.valor, cliente_paga: Boolean(l.paga_final),
       })),
     };
   }
@@ -1039,7 +1129,7 @@ export function criarAtendimento({
   return {
     avisarDono: (texto) => { try { avisarAdmin(texto); } catch { /* aviso é cortesia */ } },
     definirOrigem, receber, segredoConfere, webhookAutorizado, despacharSaida, rotina,
-    limitarPublico, infoPublica, sugerirPublico, cotarPublico, pedidoSite, pedidoVivo, empresaPublica, lojaPublica, pedidoEmpresa, entregasEmpresa, webhookPagamento, expirarPagamentos,
+    limitarPublico, infoPublica, sugerirPublico, cotarPublico, pedidoSite, pedidoVivo, empresaPublica, lojaPublica, pedidoEmpresa, entregasEmpresa, webhookPagamento, expirarPagamentos, receberPix, comprovantePublico, notaPublica,
     resumo, responder, modoConversa, testar, testarIA, analisarArquivos, analisarConversa, listarAnalises,
   };
 }
