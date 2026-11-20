@@ -21,6 +21,10 @@ function telaFormulario() {
   const bau = h('input', { type: 'checkbox', id: 'bau' });
   const bag = h('input', { type: 'checkbox', id: 'bag' });
   const indicacao = h('input', { id: 'indicacao', maxlength: 160, placeholder: 'Quem indicou ou em qual grupo você viu' });
+  const pixChave = h('input', { id: 'pix_chave', maxlength: 100, autocomplete: 'off', placeholder: 'CPF, telefone, e-mail ou chave aleatória' });
+  const pixTitular = h('input', { id: 'pix_titular', maxlength: 80, placeholder: 'Nome completo do dono da conta' });
+  const pixBanco = h('input', { id: 'pix_banco', maxlength: 40, placeholder: 'Ex.: Nubank, Caixa, Inter' });
+  const ciente = h('input', { type: 'checkbox', id: 'ciente' });
   const erro = h('div', { class: 'erro', role: 'alert' });
   const enviar = h('button', { class: 'primario', type: 'submit' }, 'Enviar cadastro');
 
@@ -28,11 +32,13 @@ function telaFormulario() {
     onsubmit: async (ev) => {
       ev.preventDefault();
       erro.textContent = '';
+      if (!ciente.checked) { erro.textContent = 'Marque que está ciente do pagamento às quartas-feiras.'; return; }
       enviar.disabled = true;
       try {
         await api('POST', '/api/publico/cadastro', {
           nome: nome.value, telefone: telefone.value, documento: documento.value, veiculo: veiculo.value, placa: placa.value,
           tem_bau: bau.checked, tem_bag: bag.checked, indicacao: indicacao.value,
+          pix_chave: pixChave.value, pix_titular: pixTitular.value, pix_banco: pixBanco.value, ciente: ciente.checked,
         });
         telaEnviado(nome.value);
       } catch (e) {
@@ -49,6 +55,14 @@ function telaFormulario() {
   h('label', { class: 'marcar' }, bau, ' Tenho baú'),
   h('label', { class: 'marcar' }, bag, ' Tenho bag'),
   h('label', { for: 'indicacao' }, 'Indicação'), indicacao,
+  h('h3', null, 'Como receber seu pagamento'),
+  h('label', { for: 'pix_chave' }, 'Chave Pix'), pixChave,
+  h('label', { for: 'pix_titular' }, 'Nome de quem é a conta'), pixTitular,
+  h('label', { for: 'pix_banco' }, 'Banco'), pixBanco,
+  h('div', { class: 'aviso-quarta' },
+    h('div', null, '💰 ', h('b', null, 'O pagamento é feito toda QUARTA-FEIRA'), ', por Pix, em horário comercial.'),
+    h('div', null, 'É automático: não precisa cobrar. Entra só a entrega registrada e concluída no app.'),
+    h('label', { class: 'marcar' }, ciente, ' Estou ciente de que o pagamento é feito toda quarta-feira, em horário comercial.')),
   erro, enviar);
 
   moldura(

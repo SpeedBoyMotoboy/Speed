@@ -420,3 +420,28 @@ test('central edita o valor: cliente e motoboy, travado, não muda depois de fin
   s.finalizarDemanda(d.id, '', 'teste');
   assert.throws(() => s.editarValor(d.id, { valor: 40 }, 'teste'), /finalizada/);
 });
+
+test('recebimento: cadastro exige Pix e ciente da quarta; aprovação leva para o motoboy; app pede antes de tudo', () => {
+  const { s, entrar, novoMotoboy } = montar();
+  const base = { nome: 'Carlos Souza', telefone: '27999990077', documento: '12345678900', veiculo: 'moto', placa: 'ABC1D23' };
+  assert.throws(() => s.candidatar(base, '9.9.9.1'), /chave Pix/);
+  const pix = { pix_chave: '27999990077', pix_titular: 'Carlos Souza', pix_banco: 'Nubank' };
+  assert.throws(() => s.candidatar({ ...base, ...pix }, '9.9.9.2'), /ciente/);
+  const c = s.candidatar({ ...base, ...pix, ciente: true }, '9.9.9.3');
+  const r = s.decidirCandidato(c.id, true, 'teste');
+  const { token: tokenNovo } = s.loginMotoboy({ telefone: '27999990077', pin: r.pin, aceito_termo: true, dispositivo: 'b', origem: 'app' }, '1.1.1.2');
+  const rec = s.estadoMotoboy(s.autenticarMotoboy(tokenNovo)).motoboy.recebimento;
+  assert.equal(rec.pix_chave, '27999990077');
+  assert.equal(rec.pix_banco, 'Nubank');
+  assert.ok(rec.ciente_em);
+
+  // Motoboy antigo, sem Pix: o estado avisa que falta; depois de salvar, fica gravado.
+  const id = novoMotoboy('Ana Lima', '11999990009');
+  const turno = s.autenticarMotoboy(entrar(id, '11999990009'));
+  assert.equal(s.estadoMotoboy(turno).motoboy.recebimento.ciente_em, null);
+  assert.throws(() => s.salvarRecebimento(turno, { ...pix, pix_titular: 'Ana Lima' }), /ciente/);
+  s.salvarRecebimento(turno, { pix_chave: 'ana@email.com', pix_titular: 'Ana Lima', pix_banco: 'Caixa', ciente: true });
+  const depois = s.estadoMotoboy(turno).motoboy.recebimento;
+  assert.equal(depois.pix_chave, 'ana@email.com');
+  assert.ok(depois.ciente_em);
+});
