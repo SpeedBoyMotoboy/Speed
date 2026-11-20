@@ -1427,10 +1427,24 @@ async function desenharConfig() {
     const email = h('input', { type: 'email', maxlength: 120, value: cl?.email || '' });
     const pct = h('input', { type: 'number', step: 1, min: 1, max: 300, value: cl?.preco_pct ?? 100 });
     const faturado = h('input', { type: 'checkbox', checked: cl ? cl.faturado : true });
+    // Ficha da loja: com o endereço de retirada preenchido, o sistema cria os dois links.
+    let cf = null;
+    try { cf = JSON.parse(cl?.coleta_fixa || 'null'); } catch { cf = null; }
+    const lojaEndereco = h('input', { maxlength: 200, value: cf?.endereco || '', placeholder: 'Rua, número, bairro, cidade (vazio = não é loja)' });
+    const lojaContato = h('input', { maxlength: 120, value: cf?.contato || '', placeholder: 'Ex.: Marina (27) 99999-0000' });
+    const lojaObs = h('input', { maxlength: 200, value: cf?.obs || '', placeholder: 'Ex.: 2º piso, loja 14, retirar no balcão' });
+    const fechamento = h('select', null, [['mensal', 'Mensal'], ['semanal', 'Semanal (toda segunda)']].map(([v, r]) => h('option', { value: v, selected: (cl?.fechamento || 'mensal') === v }, r)));
+    const direto = h('input', { type: 'checkbox', checked: Boolean(cl?.libera_direto) });
+    const linha = (rotulo, url) => [h('div', { class: 'nota' }, rotulo), h('div', { class: 'codigo' }, url),
+      h('button', { type: 'button', class: 'pequeno', onclick: async (ev) => { try { await navigator.clipboard.writeText(url); ev.target.textContent = 'Copiado ✓'; } catch { /* seleciona à mão */ } } }, 'Copiar link')];
     const ok = h('button', {
       class: 'primario',
       onclick: () => dlg.executar(async () => {
-        await api('POST', '/api/admin/clientes', { nome: nome.value, telefone: telefone.value, email: email.value, preco_pct: pct.value, faturado: faturado.checked });
+        await api('POST', '/api/admin/clientes', {
+          nome: nome.value, telefone: telefone.value, email: email.value, preco_pct: pct.value, faturado: faturado.checked,
+          loja_endereco: lojaEndereco.value, loja_contato: lojaContato.value, loja_obs: lojaObs.value,
+          fechamento: fechamento.value, libera_direto: direto.checked,
+        });
         desenharConfig();
       }, ok),
     }, 'Salvar');
@@ -1442,6 +1456,17 @@ async function desenharConfig() {
       h('label', null, 'Paga quanto da tabela? (%)'), pct,
       h('div', { class: 'nota' }, '100 = preço cheio. 80 = 20% de desconto.'),
       h('label', { class: 'marcar' }, faturado, 'Fatura mensal (não paga Pix na hora)'),
+      h('h3', null, 'É loja? Preencha a retirada'),
+      h('label', null, 'Endereço de retirada da loja'), lojaEndereco,
+      h('div', { class: 'grade2' },
+        h('div', null, h('label', null, 'Com quem o motoboy fala'), lojaContato),
+        h('div', null, h('label', null, 'Como retirar'), lojaObs)),
+      h('div', { class: 'grade2' },
+        h('div', null, h('label', null, 'Fechamento da fatura'), fechamento),
+        h('div', null, h('label', { class: 'marcar' }, direto, 'Pedido da loja vai direto ao motoboy (sem eu aprovar)'))),
+      cl?.chave_cliente && cf?.endereco && linha('Link para a loja mandar ao CLIENTE dela (o cliente diz onde entregar, vê o valor e paga o frete):', `${location.origin}/pedir/?loja=${cl.chave_cliente}`),
+      cl?.chave && cl.faturado && linha('Link da própria loja (ela lança a entrega e paga no fechamento):', `${location.origin}/empresa/?k=${cl.chave}`),
+      !(cl?.chave_cliente && cf?.endereco) && h('div', { class: 'nota' }, 'Salve com o endereço de retirada e abra de novo: os links aparecem aqui.'),
       h('div', { class: 'linha fim' }, h('button', { onclick: dlg.fechar }, 'Voltar'), ok)];
   });
   const campos = {};
@@ -1577,7 +1602,7 @@ async function desenharConfig() {
       : h('table', null,
         h('thead', null, h('tr', null, h('th', null, 'Cliente'), h('th', null, 'WhatsApp'), h('th', { class: 'num' }, 'Pedidos'), h('th', null, 'Cobrança'), h('th', null, ''))),
         h('tbody', null, clientes.slice(0, 100).map((cl) => h('tr', null,
-          h('td', null, cl.nome), h('td', null, telefoneFmt(cl.telefone)), h('td', { class: 'num' }, cl.pedidos),
+          h('td', null, cl.nome, cl.chave_cliente && cl.coleta_fixa && [' ', chip('Loja com link', 'entregue')]), h('td', null, telefoneFmt(cl.telefone)), h('td', { class: 'num' }, cl.pedidos),
           h('td', null, cl.faturado ? chip(`Fatura · ${cl.preco_pct}% da tabela`, 'entregue') : 'Pix na hora'),
           h('td', null, h('button', { class: 'pequeno', onclick: () => janelaCliente(cl) }, 'Editar')))))),
     h('div', { class: 'linha' }, h('button', { class: 'pequeno', onclick: () => janelaCliente() }, '+ Novo cliente fixo')),

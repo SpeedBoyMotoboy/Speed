@@ -108,6 +108,7 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
   rota('POST', '/api/publico/cotar', 'publico', ({ corpo, ip }) => atendimento.cotarPublico(corpo, ip));
   rota('POST', '/api/publico/pedidos', 'publico', ({ corpo, ip }) => atendimento.pedidoSite(corpo, ip));
   rota('GET', '/api/publico/empresa', 'publico', ({ url }) => atendimento.empresaPublica(url.searchParams.get('k')));
+  rota('GET', '/api/publico/loja', 'publico', ({ url }) => atendimento.lojaPublica(url.searchParams.get('l')));
   rota('POST', '/api/publico/empresa/pedidos', 'publico', ({ corpo, ip }) => atendimento.pedidoEmpresa(corpo, ip));
   rota('GET', '/api/publico/empresa/entregas', 'publico', ({ url }) => atendimento.entregasEmpresa(url.searchParams.get('k'), url.searchParams.get('periodo')));
   // Cadastro de motoboy pela página pública: fica pendente até o dono responder no painel.
@@ -152,6 +153,7 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
 
   rota('POST', '/api/entrada/coleta-fixa', 'api', ({ corpo }) => servico.coletaFixa(corpo));
   rota('POST', '/api/entrada/demandas/:id/contato', 'api', ({ p, corpo }) => servico.definirContato(p.id, corpo?.telefone, 'api'));
+  rota('POST', '/api/entrada/contato/pedidos', 'api', ({ corpo }) => servico.pedidosDoContato(corpo?.telefone));
 
   // -------------------------------------------------------------- motoboy
   rota('GET', '/api/motoboy/estado', 'motoboy', ({ turno }) => servico.estadoMotoboy(turno));

@@ -692,14 +692,8 @@ export function criarAtendimento({
     return { id: d.id, codigo: d.codigo, status: d.status, valor: d.valor, km: d.km };
   }
 
-  // Loja com coleta fixa (ex.: Enxoval): só diz para onde vai e quem recebe. A loja paga no fechamento.
-  async function pedidoLoja(cli, cf, dados) {
-    const entrega = lerPontoPublico(dados?.entrega);
-    if (entrega.endereco.length < 6) throw new Erro(422, 'endereco_invalido', 'Escreva o endereço de entrega com rua, número e bairro.');
-    const recebe = txt(dados?.recebe, 80);
-    if (recebe.length < 2) throw new Erro(422, 'recebedor_invalido', 'Diga quem vai receber.');
-    entrega.contato = [recebe, txt(dados?.fone, 30)].filter(Boolean).join(' · ');
-    await acharNoMapa(entrega);
+  // Ponto de retirada da loja. Na primeira vez procura no mapa e guarda na ficha.
+  async function pontoDaLoja(cli, cf) {
     const coleta = { endereco: txt(cf.endereco, 200), lat: cf.lat ?? null, lon: cf.lon ?? null, contato: txt(cf.contato, 120) };
     if (coleta.lat == null) {
       const p = { endereco: cf.busca || cf.endereco, lat: null };
@@ -709,6 +703,30 @@ export function criarAtendimento({
         q('UPDATE clientes SET coleta_fixa = ? WHERE id = ?').run(JSON.stringify({ ...cf, lat: p.lat, lon: p.lon }), cli.id);
       }
     }
+    return coleta;
+  }
+  // ── Link do cliente da loja (/pedir/?loja=CÓDIGO): a loja manda o link, o cliente dela diz onde entregar,
+  //    vê o valor e paga o frete. A retirada é sempre o endereço da ficha da loja, nunca o que vier do navegador. ──
+  function lojaDoCodigo(l) {
+    const cod = txt(l, 40);
+    const cli = cod.length >= 10 ? q('SELECT * FROM clientes WHERE chave_cliente = ?').get(cod) : null;
+    const cf = cli ? coletaFixa(cli) : null;
+    if (!cf?.endereco) throw new Erro(404, 'link_invalido', 'Link inválido. Peça o link certo à loja.');
+    return { cli, cf };
+  }
+  function lojaPublica(l) {
+    const { cli, cf } = lojaDoCodigo(l);
+    return { nome: cli.nome, coleta: { endereco: cf.endereco } };
+  }
+  // Loja com coleta fixa (ex.: Enxoval): só diz para onde vai e quem recebe. A loja paga no fechamento.
+  async function pedidoLoja(cli, cf, dados) {
+    const entrega = lerPontoPublico(dados?.entrega);
+    if (entrega.endereco.length < 6) throw new Erro(422, 'endereco_invalido', 'Escreva o endereço de entrega com rua, número e bairro.');
+    const recebe = txt(dados?.recebe, 80);
+    if (recebe.length < 2) throw new Erro(422, 'recebedor_invalido', 'Diga quem vai receber.');
+    entrega.contato = [recebe, txt(dados?.fone, 30)].filter(Boolean).join(' · ');
+    await acharNoMapa(entrega);
+    const coleta = await pontoDaLoja(cli, cf);
     const km = await distancia(coleta, entrega);
     const oque = txt(dados?.oque, 300);
     const autoriza = txt(dados?.autoriza, 80);
@@ -798,9 +816,10 @@ export function criarAtendimento({
   async function cotarPublico(dados, ip) {
     if (cfgBruta().pedidos_site !== '1') throw new Erro(403, 'desligado', 'Pedidos pelo site estão desligados.');
     limitar(`cotar:${ip}`, 30, 15 * MIN);
-    const coleta = lerPontoPublico(dados?.coleta);
+    const loja = dados?.loja ? lojaDoCodigo(dados.loja) : null;
+    const coleta = loja ? await pontoDaLoja(loja.cli, loja.cf) : lerPontoPublico(dados?.coleta);
     const entrega = lerPontoPublico(dados?.entrega);
-    for (const [p, nome] of [[coleta, 'coleta'], [entrega, 'entrega']]) {
+    for (const [p, nome] of loja ? [[entrega, 'entrega']] : [[coleta, 'coleta'], [entrega, 'entrega']]) {
       if (p.endereco.length < 6) throw new Erro(422, 'endereco_invalido', `Escreva o endereço de ${nome} com rua, número e bairro.`);
       await acharNoMapa(p);
     }
@@ -825,11 +844,16 @@ export function criarAtendimento({
     if (recusa) throw new Erro(409, 'recusado', recusa.replace(/\s*😴/, ''));
     limitar(`pedir:${ip}`, 8, 60 * MIN);
 
-    const coleta = lerPontoPublico(dados?.coleta);
+    const loja = dados?.loja ? lojaDoCodigo(dados.loja) : null;
+    const coleta = loja ? await pontoDaLoja(loja.cli, loja.cf) : lerPontoPublico(dados?.coleta);
     const entrega = lerPontoPublico(dados?.entrega);
-    await acharNoMapa(coleta);
+    if (!loja) await acharNoMapa(coleta);
     await acharNoMapa(entrega);
-    if (!coleta.contato) coleta.contato = `${nome} ${telefone}`.trim();
+    if (loja) {
+      // Quem recebe é o próprio cliente, salvo se ele indicou outra pessoa.
+      if (!entrega.contato) entrega.contato = `${nome} ${telefone}`.trim();
+      dados = { ...dados, descricao: [`🏬 Cliente da ${loja.cli.nome}`, txt(loja.cf.obs, 200), txt(dados?.descricao, 300)].filter(Boolean).join(' · ') };
+    } else if (!coleta.contato) coleta.contato = `${nome} ${telefone}`.trim();
     const km = await distancia(coleta, entrega);
     const tarifaUrgente = dados?.urgente === true; // só a chave "Entrega urgente" do site cobra a tarifa urgente
     const previa = servico.cotar(coleta, entrega, { km, servicoId: dados?.servico_id, telefone, urgente: tarifaUrgente, tamanho: dados?.tamanho });
@@ -865,7 +889,7 @@ export function criarAtendimento({
       urgente: dados?.urgente !== false, tarifa_urgente: tarifaUrgente, tamanho: dados?.tamanho, servico_id: dados?.servico_id, km, email, coleta, entrega,
       hora_tipo: dados?.hora_tipo, hora: dados?.hora, agendada_para: dados?.agendada_para,
     }, 'site', { retida: modo !== 'nenhuma', pagamento: fixo ? 'faturado' : '', ia: analise });
-    if (telefone) lembrarCliente(telefone, nome, coleta, email);
+    if (telefone && !loja) lembrarCliente(telefone, nome, coleta, email); // no link da loja a retirada não é do cliente
 
     let pix = null;
     if (pixNaHora) pix = servico.gerarPixManual(d.id);
@@ -909,6 +933,7 @@ export function criarAtendimento({
         '', 'Foi você? Responda:', '*1* - Confirmar', '*2* - Cancelar',
       ].filter((l) => l !== null).join('\n'), 'robo', 'Robô');
     }
+    if (loja) q('UPDATE clientes SET pedidos = pedidos + 1 WHERE id = ?').run(loja.cli.id);
     return { id: d.id, codigo: d.codigo, status: d.status, valor: d.valor, confirmacao: modo, pix };
   }
 
@@ -982,7 +1007,7 @@ export function criarAtendimento({
   return {
     avisarDono: (texto) => { try { avisarAdmin(texto); } catch { /* aviso é cortesia */ } },
     definirOrigem, receber, segredoConfere, webhookAutorizado, despacharSaida, rotina,
-    infoPublica, sugerirPublico, cotarPublico, pedidoSite, pedidoVivo, empresaPublica, pedidoEmpresa, entregasEmpresa, webhookPagamento, expirarPagamentos,
+    infoPublica, sugerirPublico, cotarPublico, pedidoSite, pedidoVivo, empresaPublica, lojaPublica, pedidoEmpresa, entregasEmpresa, webhookPagamento, expirarPagamentos,
     resumo, responder, modoConversa, testar, testarIA, analisarArquivos, analisarConversa, listarAnalises,
   };
 }
