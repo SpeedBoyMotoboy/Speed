@@ -1091,3 +1091,20 @@ test('link do cliente da loja: retirada é sempre a loja, o cliente só diz onde
   s.salvarCliente({ nome: 'Enxoval Bom', telefone: '11955551234', faturado: true, loja_endereco: '' }, 'teste');
   assert.throws(() => a.lojaPublica(cli.chave_cliente), { codigo: 'link_invalido' });
 });
+
+test('robô: pedidos em andamento de um telefone, com o link de acompanhamento', async () => {
+  const { s, a, relogio } = montar();
+  assert.throws(() => s.pedidosDoContato('123'), { codigo: 'telefone_invalido' });
+  assert.deepEqual(s.pedidosDoContato('5511966660002'), { pedidos: [] });
+  const r = await a.pedidoSite({ nome: 'Bruno', telefone: '(11) 96666-0002', descricao: 'Envelope', coleta: { endereco: 'Rua da Coleta, 10, Centro' }, entrega: { endereco: 'Rua da Entrega, 20, Centro' } }, 'ip');
+  const { pedidos } = s.pedidosDoContato('5511966660002'); // o WhatsApp manda com DDI
+  assert.equal(pedidos.length, 1);
+  assert.equal(pedidos[0].id, r.id);
+  assert.equal(pedidos[0].link, `https://speed.exemplo/acompanhar/?c=${r.codigo}`);
+  assert.equal(pedidos[0].aguardando_aprovacao, true);
+  assert.deepEqual(Object.keys(pedidos[0]).sort(), ['aguardando_aprovacao', 'id', 'link', 'status'], 'sem endereço nem valor');
+  assert.deepEqual(s.pedidosDoContato('11955550000'), { pedidos: [] }, 'outro telefone não vê');
+  s.cancelarDemanda(r.id, 'teste', 'teste');
+  assert.deepEqual(s.pedidosDoContato('11966660002'), { pedidos: [] }, 'cancelado some');
+  relogio.t += 60_000;
+});

@@ -1675,6 +1675,17 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
   }
 
   // O que o cliente vê na página de acompanhamento (link com código secreto).
+  // Robô do WhatsApp: pedidos em andamento de um telefone (para responder "cadê meu pedido" com o link).
+  // Entra o que está em aberto e o que foi entregue nas últimas 2 horas. Só o necessário, sem endereço nem valor.
+  function pedidosDoContato(telefoneBruto) {
+    const telefone = normalizarTelefone(telefoneBruto);
+    if (!telefone) throw new Erro(422, 'telefone_invalido', 'Telefone inválido.');
+    const base = String(cfgBruta().url_publica || '').replace(/\/+$/, '');
+    const linhas = q(`SELECT id, codigo, status, retida, entregue_em FROM demandas
+      WHERE cliente_telefone = ? AND status <> 'cancelada' AND (status <> 'entregue' OR entregue_em >= ?)
+      ORDER BY id DESC LIMIT 3`).all(telefone, agora() - 2 * 3600e3);
+    return { pedidos: linhas.map((d) => ({ id: d.id, status: d.status, aguardando_aprovacao: Boolean(d.retida), link: `${base}/acompanhar/?c=${d.codigo}` })) };
+  }
   function pedidoPublico(codigo) {
     const d = typeof codigo === 'string' && codigo.length >= 8
       ? q('SELECT * FROM demandas WHERE codigo = ?').get(codigo) : null;
@@ -1945,7 +1956,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     criarDemanda, criarDemandaExterna, definirLocais, cancelarDemanda, fechamento, reatribuir, confirmarParada,
     despacharPendentes, estadoMotoboy, estadoAdmin, trilha, relatorio, rotina,
     importarWhatsapp, listarConversas, mensagensDaConversa, excluirConversa,
-    aoEvento, cotar, agendadaMotoboy, problemaMotoboy, finalizarDemanda, editarValor, editarDados, liberarRastreio, fotoPermitida, fotoGravada, foraDoHorario, criarPedido, coletaFixa, gerarPixManual, liberarDemanda, fecharPedido, definirContato, pedidoPublico, relatorioClientes, relatorioEntregas,
+    aoEvento, cotar, pedidosDoContato, agendadaMotoboy, problemaMotoboy, finalizarDemanda, editarValor, editarDados, liberarRastreio, fotoPermitida, fotoGravada, foraDoHorario, criarPedido, coletaFixa, gerarPixManual, liberarDemanda, fecharPedido, definirContato, pedidoPublico, relatorioClientes, relatorioEntregas,
     listarServicos, salvarServico, listarClientes, salvarCliente, registrarPix, marcarPago,
     responderOferta, encerrarPeloMotoboy, modoPagamento,
     interno: { q, tx, cfgBruta, auditar, agora, exigirNaoBloqueado, registrarFalha },

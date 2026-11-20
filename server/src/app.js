@@ -153,6 +153,7 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
 
   rota('POST', '/api/entrada/coleta-fixa', 'api', ({ corpo }) => servico.coletaFixa(corpo));
   rota('POST', '/api/entrada/demandas/:id/contato', 'api', ({ p, corpo }) => servico.definirContato(p.id, corpo?.telefone, 'api'));
+  rota('POST', '/api/entrada/contato/pedidos', 'api', ({ corpo }) => servico.pedidosDoContato(corpo?.telefone));
 
   // -------------------------------------------------------------- motoboy
   rota('GET', '/api/motoboy/estado', 'motoboy', ({ turno }) => servico.estadoMotoboy(turno));
