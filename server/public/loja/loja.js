@@ -28,6 +28,37 @@ const tamanho = (id) => TAMANHOS.find((t) => t[0] === id) || TAMANHOS[0];
 
 const ler = () => { try { return JSON.parse(localStorage.getItem(CHAVE) || 'null'); } catch { return null; } };
 const gravar = (l) => { try { localStorage.setItem(CHAVE, JSON.stringify(l)); } catch { /* sem armazenamento */ } };
+// Entregas que a loja já lançou neste aparelho (só o código de acompanhamento): ela acompanha depois, sem perder o link.
+const CHAVE_PEDIDOS = 'speed_loja_pedidos';
+const SETE_DIAS = 7 * 24 * 3600 * 1000;
+const lerPedidos = () => {
+  try { return (JSON.parse(localStorage.getItem(CHAVE_PEDIDOS) || '[]') || []).filter((p) => p && p.codigo && Date.now() - p.ts < SETE_DIAS); } catch { return []; }
+};
+const guardarPedidos = (novos) => {
+  const lista = [...novos, ...lerPedidos().filter((p) => !novos.some((n) => n.codigo === p.codigo))].slice(0, 40);
+  try { localStorage.setItem(CHAVE_PEDIDOS, JSON.stringify(lista)); } catch { /* sem armazenamento */ }
+};
+const ROTULO = { sem_local: 'Conferindo endereço', aguardando: 'Chamando motoboy', atribuida: 'Motoboy a caminho da coleta', coletada: 'Saiu para entrega', entregue: 'Entregue', cancelada: 'Cancelada' };
+function cartaoMinhas() {
+  const lista = lerPedidos();
+  if (!lista.length) return null;
+  const corpo = h('div', null, h('p', { class: 'nota' }, 'Carregando…'));
+  const hora = (t) => new Date(t).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  (async () => {
+    const linhas = [];
+    for (const p of lista.slice(0, 15)) {
+      let st = null;
+      try { st = await api('GET', `/api/publico/pedido?c=${encodeURIComponent(p.codigo)}`); } catch { /* sumiu: não mostra */ }
+      if (!st) continue;
+      const rot = st.retida && !['entregue', 'cancelada'].includes(st.status) ? 'Aguardando confirmação' : ROTULO[st.status] || st.status;
+      linhas.push(h('a', { class: 'botao minha', href: `/acompanhar/?c=${encodeURIComponent(p.codigo)}` },
+        h('b', null, `#${st.id} · ${rot}`),
+        h('div', { class: 'nota' }, `${hora(st.criada_em)} · ${(st.entrega?.endereco || '').slice(0, 60)}`)));
+    }
+    trocar(corpo, linhas.length ? linhas : h('p', { class: 'nota' }, 'Nenhuma entrega recente.'));
+  })();
+  return h('div', { class: 'cartao' }, h('h2', null, 'Minhas entregas'), h('p', { class: 'nota' }, 'Toque para acompanhar.'), corpo);
+}
 let loja = ler();
 
 function moldura(...conteudo) {
@@ -229,7 +260,8 @@ function telaEntregas(mensagem = '') {
         loja.falar && h('div', { class: 'nota' }, `Falar com: ${loja.falar}`),
         loja.nf && h('div', { class: 'nota' }, `Nota fiscal: CNPJ ${loja.nf.cnpj}`)),
       h('button', { type: 'button', class: 'leve', onclick: () => { cartoes.forEach((c) => c.ler()); telaLoja(); } }, 'Trocar')),
-    form);
+    form,
+    cartaoMinhas());
   cartoes[cartoes.length - 1].foco();
 }
 
@@ -263,7 +295,10 @@ function telaConfirmar() {
     try {
       // Cada entrega enviada fica marcada: um novo clique não manda de novo.
       for (let i = 0; i < cotadas.length; i++) {
-        if (!cotadas[i].feito) cotadas[i].feito = await api('POST', '/api/publico/pedidos', montarPedido(i));
+        if (!cotadas[i].feito) {
+          cotadas[i].feito = await api('POST', '/api/publico/pedidos', montarPedido(i));
+          if (cotadas[i].feito?.codigo) guardarPedidos([{ codigo: cotadas[i].feito.codigo, ts: Date.now() }]);
+        }
       }
       telaPronto(cotadas.map((c) => c.feito));
     } catch (e) {

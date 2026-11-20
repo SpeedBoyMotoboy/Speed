@@ -28,3 +28,6 @@ button.mais { width: 58px; height: 58px; border-radius: 50%; padding: 0; backgro
 /* paleta oficial: topo verde, destaque ouro, ações em azul */
 .topo { background: #333F22; }
 .linha-mais { color: #333F22; }
+
+a.botao.minha { text-align: left; color: inherit; }
+a.botao.minha b { display: block; }
