@@ -203,7 +203,11 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
     return atendimento.comprovantePublico(corpo?.codigo, { mime: m[1], base64: m[2] }, ip);
   }, 5 * 1024 * 1024);
   rota('POST', '/api/publico/pedidos/nota', 'publico', ({ corpo, ip }) => atendimento.notaPublica(corpo?.codigo, corpo, ip));
-  rota('POST', '/api/entrada/pix-recebido', 'api', ({ corpo }) => atendimento.receberPix(corpo));
+  // Aviso do banco vindo da Ponte (mesmo servidor): vale a chave de API ou o segredo interno no cabeçalho.
+  rota('POST', '/api/entrada/pix-recebido', 'publico', ({ corpo, req }) => {
+    if (!servico.chaveApiValida(req.headers['x-api-key']) && !atendimento.segredoConfere(req.headers['x-speed-segredo'])) throw new Erro(401, 'chave_invalida', 'Chave inválida.');
+    return atendimento.receberPix(corpo);
+  });
   rota('GET', '/api/motoboy/fachada/:id', 'motoboy', ({ turno, p }) => verFachada(servico.fachadaDoMotoboy(turno, p.id)));
   rota('GET', '/api/admin/demandas/:id/fachada', 'admin', ({ p }) => verFachada(p.id));
   rota('GET', '/api/admin/demandas/:id/foto', 'admin', ({ p }) => {
