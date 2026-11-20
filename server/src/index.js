@@ -7,6 +7,7 @@ const { criarApp } = await import('./app.js');
 const { criarAtendimento } = await import('./atendimento.js');
 const { criarGeocodificador } = await import('./geo.js');
 const { senhaAleatoria } = await import('./auth.js');
+const { criarVigia, lerAlvos } = await import('./vigia.js');
 
 const PORTA = Number(process.env.PORT || 3000);
 const DADOS = process.env.DADOS_DIR || './dados';
@@ -31,8 +32,16 @@ if (servico.garantirAdmin(usuario, senhaInicial)) {
 
 const atendimento = criarAtendimento({ servico, geocodificar });
 
+// Serviços vizinhos que o painel vigia (aviso em "Atenção agora" quando algum para de responder).
+const vigia = criarVigia({
+  alvos: lerAlvos(process.env.VIGIA_ALVOS ?? (producao
+    ? 'Site speedboy.com.br|https://speedboy.com.br,Robô do WhatsApp (n8n)|https://n8n-un0s.srv2150999.hstgr.cloud/healthz,Ponte|https://ponte.srv2150999.hstgr.cloud'
+    : '')),
+});
+
 const app = criarApp({
   servico,
+  vigia,
   atendimento,
   geocodificar,
   confiarProxy: process.env.TRUST_PROXY === '1',
@@ -52,6 +61,9 @@ const envio = setInterval(() => {
   atendimento.despacharSaida().catch((e) => console.error('[envio]', e));
 }, 5_000);
 
+const ronda = setInterval(() => { vigia.conferir().catch((e) => console.error('[vigia]', e)); }, 120_000);
+vigia.conferir().catch(() => {});
+
 app.listen(PORTA, () => console.log(`Speed Despacho em http://localhost:${PORTA}`));
 
 for (const sinal of ['SIGINT', 'SIGTERM']) {
@@ -59,6 +71,7 @@ for (const sinal of ['SIGINT', 'SIGTERM']) {
     clearInterval(rotina);
     clearInterval(envio);
     clearInterval(ofertas);
+    clearInterval(ronda);
     app.close(() => { db.close(); process.exit(0); });
     setTimeout(() => process.exit(0), 3000).unref();
   });

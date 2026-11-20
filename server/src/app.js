@@ -27,7 +27,7 @@ const CSP = [
 // Sites que podem chamar as rotas públicas direto do navegador (formulário de pedido no site da empresa).
 const ORIGENS_PADRAO = 'https://www.speedboy.com.br,https://speedboy.com.br';
 
-export function criarApp({ servico, atendimento, geocodificar, confiarProxy = false, cookieSeguro = false, origensSite = ORIGENS_PADRAO }) {
+export function criarApp({ servico, atendimento, geocodificar, vigia = null, confiarProxy = false, cookieSeguro = false, origensSite = ORIGENS_PADRAO }) {
   const origens = new Set(String(origensSite || '').split(',').map((o) => o.trim().replace(/\/+$/, '')).filter(Boolean));
   const rotas = [];
   const rota = (metodo, caminho, acesso, fn, max = CORPO_MAX) => {
@@ -226,7 +226,10 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
 
   // ---------------------------------------------------------------- admin
   const ator = (admin) => `admin:${admin.usuario}`;
-  rota('GET', '/api/admin/estado', 'admin', () => ({ ...servico.estadoAdmin(), ...atendimento.resumo() }));
+  rota('GET', '/api/admin/estado', 'admin', () => {
+    const e = servico.estadoAdmin();
+    return { ...e, ...atendimento.resumo(), avisos: [...(vigia ? vigia.avisos() : []), ...(e.avisos || [])] };
+  });
   rota('POST', '/api/admin/demandas/:id/liberar', 'admin', ({ admin, p }) => ({ resultado: servico.liberarDemanda(p.id, ator(admin)) }));
   rota('POST', '/api/admin/whatsapp/:id/responder', 'admin', ({ admin, corpo, p }) => {
     atendimento.responder(p.id, corpo.texto, ator(admin));
