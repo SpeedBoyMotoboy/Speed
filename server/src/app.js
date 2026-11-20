@@ -407,7 +407,7 @@ export function criarApp({ servico, atendimento, geocodificar, vigia = null, con
 
     if (req.method !== 'GET' && req.method !== 'HEAD') throw new Erro(405, 'metodo', 'Método não permitido.');
     if (caminho === '/') { res.writeHead(302, { Location: '/painel/' }); return res.end(); }
-    if (['/painel', '/app', '/pedir', '/acompanhar', '/cadastro', '/loja', '/empresa'].includes(caminho)) { res.writeHead(302, { Location: `${caminho}/${url.search}` }); return res.end(); }
+    if (['/painel', '/app', '/pedir', '/acompanhar', '/cadastro', '/loja', '/empresa', '/privacidade'].includes(caminho)) { res.writeHead(302, { Location: `${caminho}/${url.search}` }); return res.end(); }
     if (caminho.startsWith('/vendor/leaflet/')) {
       if (servirArquivo(res, LEAFLET, caminho.slice('/vendor/leaflet/'.length), req.method)) return undefined;
     } else if (caminho === '/vendor/qrcode/qrcode.mjs') {

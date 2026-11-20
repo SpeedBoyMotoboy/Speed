@@ -93,6 +93,8 @@ test('estáticos: páginas servidas com CSP e sem escapar da pasta pública', as
   assert.equal(painel.status, 200);
   assert.match(painel.headers.get('content-security-policy'), /default-src 'self'/);
   assert.equal((await chamar('GET', '/app/')).status, 200);
+  assert.equal((await chamar('GET', '/privacidade/')).status, 200);
+  assert.equal((await chamar('GET', '/privacidade')).status, 302);
   assert.equal((await chamar('GET', '/vendor/leaflet/leaflet.js')).status, 200);
   assert.equal((await chamar('GET', '/..%2f..%2fpackage.json')).status, 404);
   assert.equal((await chamar('GET', '/vendor/leaflet/..%2f..%2f..%2fpackage.json')).status, 404);
