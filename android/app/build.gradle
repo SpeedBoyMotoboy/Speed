@@ -16,14 +16,14 @@ def arquivoChave = System.getenv('SPEED_KEYSTORE')
 
 android {
     namespace 'br.com.speedboy.motoboy'
-    compileSdk 35
+    compileSdk 36
 
     defaultConfig {
         applicationId 'br.com.speedboy.motoboy'
         minSdk 26
-        targetSdk 35
-        versionCode 2
-        versionName '1.1'
+        targetSdk 36
+        versionCode 3
+        versionName '1.2'
         buildConfigField 'String', 'SERVIDOR', "\"${servidor}\""
     }
 

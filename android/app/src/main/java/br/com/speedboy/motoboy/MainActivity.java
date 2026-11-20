@@ -58,6 +58,15 @@ public class MainActivity extends Activity {
         super.onCreate(estado);
         web = new WebView(this);
         setContentView(web);
+        // Android 15+ desenha o app atrás da barra de status e da barra de navegação:
+        // afasta o conteúdo para nada ficar escondido embaixo delas.
+        web.setOnApplyWindowInsetsListener((v, insets) -> {
+            if (Build.VERSION.SDK_INT >= 30) {
+                android.graphics.Insets i = insets.getInsets(android.view.WindowInsets.Type.systemBars() | android.view.WindowInsets.Type.ime());
+                v.setPadding(i.left, i.top, i.right, i.bottom);
+            }
+            return insets;
+        });
 
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
