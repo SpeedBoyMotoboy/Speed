@@ -173,6 +173,30 @@ export function criarApp({ servico, atendimento, geocodificar, confiarProxy = fa
     servico.fotoGravada(id);
     return { ok: true };
   }, 3 * 1024 * 1024);
+  // Foto da fachada (quem pediu manda pelo link; motoboy e painel veem)
+  const PASTA_FACHADAS = path.join(process.env.DADOS_DIR || './dados', 'fachadas');
+  const lerJpeg = (foto) => {
+    const m = /^data:image\/jpeg;base64,([A-Za-z0-9+/=]+)$/.exec(String(foto || ''));
+    const dados = m ? Buffer.from(m[1], 'base64') : null;
+    if (!dados || dados.length < 1000 || dados.length > 2 * 1024 * 1024 || dados[0] !== 0xff || dados[1] !== 0xd8) throw new Erro(422, 'foto_invalida', 'Foto inválida. Tente outra.');
+    return dados;
+  };
+  const verFachada = (id) => {
+    const arq = path.join(PASTA_FACHADAS, `${Number(id)}.jpg`);
+    if (!fs.existsSync(arq)) throw new Erro(404, 'sem_fachada', 'Sem foto da fachada.');
+    return { foto: `data:image/jpeg;base64,${fs.readFileSync(arq).toString('base64')}` };
+  };
+  rota('POST', '/api/publico/pedidos/fachada', 'publico', ({ corpo, ip }) => {
+    atendimento.limitarPublico(`fachada:${ip}`, 20, 60);
+    const id = servico.fachadaPermitida(corpo?.codigo);
+    const dados = lerJpeg(corpo?.foto);
+    fs.mkdirSync(PASTA_FACHADAS, { recursive: true });
+    fs.writeFileSync(path.join(PASTA_FACHADAS, `${id}.jpg`), dados);
+    servico.fachadaGravada(id);
+    return { ok: true };
+  }, 3 * 1024 * 1024);
+  rota('GET', '/api/motoboy/fachada/:id', 'motoboy', ({ turno, p }) => verFachada(servico.fachadaDoMotoboy(turno, p.id)));
+  rota('GET', '/api/admin/demandas/:id/fachada', 'admin', ({ p }) => verFachada(p.id));
   rota('GET', '/api/admin/demandas/:id/foto', 'admin', ({ p }) => {
     const arq = path.join(PASTA_FOTOS, `${Number(p.id)}.jpg`);
     if (!fs.existsSync(arq)) throw new Erro(404, 'sem_foto', 'Sem foto desta entrega.');

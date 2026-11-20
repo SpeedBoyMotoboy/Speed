@@ -49,6 +49,22 @@ export function criarAtendimento({
 
   // ------------------------------------------------- limite de uso (páginas públicas)
   const usos = new Map();
+  const limitarPublico = (chave, max, minutos) => limitar(chave, max, minutos * MIN);
+  // CPF ou CNPJ com dígitos conferidos (para a nota fiscal). Devolve só os números, ou '' se inválido.
+  function docFiscal(bruto) {
+    const c = String(bruto || '').replace(/\D/g, '');
+    if (/^(\d)\1+$/.test(c)) return '';
+    if (c.length === 11) {
+      const dv = (n) => { let s = 0; for (let i = 0; i < n; i++) s += Number(c[i]) * (n + 1 - i); const r = (s * 10) % 11; return r === 10 ? 0 : r; };
+      return dv(9) === Number(c[9]) && dv(10) === Number(c[10]) ? c : '';
+    }
+    if (c.length === 14) {
+      const calc = (p) => { let s = 0; for (let i = 0; i < p.length; i++) s += Number(c[i]) * p[i]; const r = s % 11; return r < 2 ? 0 : 11 - r; };
+      return calc([5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]) === Number(c[12]) && calc([6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]) === Number(c[13]) ? c : '';
+    }
+    return '';
+  }
+  const docFmt = (c) => (c.length === 11 ? c.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4') : c.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/, '$1.$2.$3/$4-$5'));
   function limitar(chave, max, janelaMs) {
     const t = agora();
     const lista = (usos.get(chave) || []).filter((x) => x > t - janelaMs);
@@ -724,6 +740,7 @@ export function criarAtendimento({
     if (entrega.endereco.length < 6) throw new Erro(422, 'endereco_invalido', 'Escreva o endereço de entrega com rua, número e bairro.');
     const recebe = txt(dados?.recebe, 80);
     if (recebe.length < 2) throw new Erro(422, 'recebedor_invalido', 'Diga quem vai receber.');
+    const como = txt(dados?.instrucoes, 300);
     entrega.contato = [recebe, txt(dados?.fone, 30)].filter(Boolean).join(' · ');
     await acharNoMapa(entrega);
     const coleta = await pontoDaLoja(cli, cf);
@@ -736,6 +753,7 @@ export function criarAtendimento({
       oque && `📦 ${oque}`,
       cf.obs && `🏬 ${txt(cf.obs, 200)}`,
       autoriza && `✅ Pedido por ${autoriza} (${cli.nome}).`,
+      como && `📍 Na entrega: ${como}`,
       `💳 Pago pela ${cli.nome} (fechamento ${semanal ? 'semanal' : 'mensal'}): não cobrar de quem recebe.`,
     ].filter(Boolean).join(' · ');
     const d = servico.criarPedido({
@@ -849,10 +867,20 @@ export function criarAtendimento({
     const entrega = lerPontoPublico(dados?.entrega);
     if (!loja) await acharNoMapa(coleta);
     await acharNoMapa(entrega);
+    let nf = null;
     if (loja) {
-      // Quem recebe é o próprio cliente, salvo se ele indicou outra pessoa.
-      if (!entrega.contato) entrega.contato = `${nome} ${telefone}`.trim();
-      dados = { ...dados, descricao: [`🏬 Cliente da ${loja.cli.nome}`, txt(loja.cf.obs, 200), txt(dados?.descricao, 300)].filter(Boolean).join(' · ') };
+      // Quem recebe pode ser outra pessoa (parente, porteiro): nome e telefone dela vão para o motoboy.
+      const recebeNome = txt(dados?.recebe_nome, 80) || nome;
+      const recebeFone = normalizarTelefone(dados?.recebe_fone) || telefone;
+      if (!recebeFone) throw new Erro(422, 'telefone_invalido', 'Informe o telefone de quem vai receber.');
+      entrega.contato = `${recebeNome} ${recebeFone}`.trim();
+      const doc = docFiscal(dados?.nf_doc);
+      const nfNome = txt(dados?.nf_nome, 120);
+      if (!doc) throw new Erro(422, 'nf_invalida', 'CPF ou CNPJ inválido. Confira os números: a nota fiscal do frete sai nele.');
+      if (nfNome.length < 3) throw new Erro(422, 'nf_nome', 'Informe o nome completo ou a razão social para a nota fiscal.');
+      nf = { doc, nome: nfNome };
+      const como = txt(dados?.instrucoes, 300);
+      dados = { ...dados, descricao: [`🏬 Cliente da ${loja.cli.nome}`, txt(loja.cf.obs, 200), txt(dados?.descricao, 300), como && `📍 Na entrega: ${como}`].filter(Boolean).join(' · ') };
     } else if (!coleta.contato) coleta.contato = `${nome} ${telefone}`.trim();
     const km = await distancia(coleta, entrega);
     const tarifaUrgente = dados?.urgente === true; // só a chave "Entrega urgente" do site cobra a tarifa urgente
@@ -933,7 +961,11 @@ export function criarAtendimento({
         '', 'Foi você? Responda:', '*1* - Confirmar', '*2* - Cancelar',
       ].filter((l) => l !== null).join('\n'), 'robo', 'Robô');
     }
-    if (loja) q('UPDATE clientes SET pedidos = pedidos + 1 WHERE id = ?').run(loja.cli.id);
+    if (loja) {
+      q('UPDATE clientes SET pedidos = pedidos + 1 WHERE id = ?').run(loja.cli.id);
+      servico.gravarNota(d.id, nf.doc, nf.nome);
+      avisarAdmin(`🧾 Nota do frete #${d.id} (cliente da ${loja.cli.nome}): ${nf.nome} · ${nf.doc.length === 11 ? 'CPF' : 'CNPJ'} ${docFmt(nf.doc)}`);
+    }
     return { id: d.id, codigo: d.codigo, status: d.status, valor: d.valor, confirmacao: modo, pix };
   }
 
@@ -1007,7 +1039,7 @@ export function criarAtendimento({
   return {
     avisarDono: (texto) => { try { avisarAdmin(texto); } catch { /* aviso é cortesia */ } },
     definirOrigem, receber, segredoConfere, webhookAutorizado, despacharSaida, rotina,
-    infoPublica, sugerirPublico, cotarPublico, pedidoSite, pedidoVivo, empresaPublica, lojaPublica, pedidoEmpresa, entregasEmpresa, webhookPagamento, expirarPagamentos,
+    limitarPublico, infoPublica, sugerirPublico, cotarPublico, pedidoSite, pedidoVivo, empresaPublica, lojaPublica, pedidoEmpresa, entregasEmpresa, webhookPagamento, expirarPagamentos,
     resumo, responder, modoConversa, testar, testarIA, analisarArquivos, analisarConversa, listarAnalises,
   };
 }

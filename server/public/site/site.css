@@ -62,3 +62,7 @@ textarea { resize: vertical; font-family: ui-monospace, Menlo, Consolas, monospa
 
 label.marcar { display: flex; align-items: center; gap: 10px; font-size: 16px; color: inherit; margin-top: 14px; }
 label.marcar input { width: 22px; height: 22px; flex: none; margin: 0; }
+
+/* Campos de texto longo com a mesma letra do resto */
+textarea { font: inherit; width: 100%; box-sizing: border-box; }
+main h2 { margin-top: 22px; }

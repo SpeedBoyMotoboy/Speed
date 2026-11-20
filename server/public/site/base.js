@@ -71,3 +71,29 @@ export function icone(L, classe, texto, tamanho = 28) {
   el.style.height = `${tamanho}px`;
   return L.divIcon({ className: '', html: el, iconSize: [tamanho, tamanho], iconAnchor: [tamanho / 2, tamanho / 2] });
 }
+
+// Foto escolhida pelo cliente vira JPEG leve (lado maior 1280 px).
+export async function reduzirFoto(arquivo) {
+  const img = await createImageBitmap(arquivo);
+  const escala = Math.min(1, 1280 / Math.max(img.width, img.height));
+  const tela = document.createElement('canvas');
+  tela.width = Math.round(img.width * escala);
+  tela.height = Math.round(img.height * escala);
+  tela.getContext('2d').drawImage(img, 0, 0, tela.width, tela.height);
+  return tela.toDataURL('image/jpeg', 0.72);
+}
+
+// "Salvar a SpeedBoy no celular": instala a página de pedidos como app quando o navegador deixa.
+let pedidoInstalar = null;
+window.addEventListener('beforeinstallprompt', (ev) => { ev.preventDefault(); pedidoInstalar = ev; });
+export function botaoSalvarApp() {
+  const ajuda = h('p', { class: 'nota', hidden: true }, 'No menu do navegador (⋮ ou compartilhar), toque em "Adicionar à tela inicial".');
+  const botao = h('button', {
+    type: 'button', class: 'leve',
+    onclick: async () => {
+      if (pedidoInstalar) { pedidoInstalar.prompt(); try { await pedidoInstalar.userChoice; } catch { /* fechou */ } pedidoInstalar = null; return; }
+      ajuda.hidden = false;
+    },
+  }, '📲 Salvar a SpeedBoy no celular');
+  return h('div', { class: 'salvar-app' }, botao, ajuda);
+}
