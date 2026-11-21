@@ -21,6 +21,7 @@ const CORPO_MAX = 512 * 1024;
 const CSP = [
   "default-src 'self'", "script-src 'self'", "style-src 'self'",
   "img-src 'self' data: https://tile.openstreetmap.org", "connect-src 'self'",
+  "frame-src https://maps.google.com https://www.google.com", // mapa da parada no app do motoboy
   "frame-ancestors 'none'", "base-uri 'none'", "form-action 'self'", "object-src 'none'",
 ].join('; ');
 
