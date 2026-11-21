@@ -167,3 +167,6 @@ body.tem-barra { padding-bottom: 120px; }
 .resumo-perfil div { background: var(--sutil); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; }
 .resumo-perfil b { font-size: 20px; }
 .resumo-perfil span { font-size: 13px; color: var(--suave); }
+.resumo-perfil .a-receber { grid-column: 1 / -1; background: #fff4d6; border: 2px solid var(--destaque); }
+.resumo-perfil .a-receber b { font-size: 26px; }
+:root[data-tema="escuro"] .resumo-perfil .a-receber { background: #3a300f; }

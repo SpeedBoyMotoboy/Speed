@@ -1027,8 +1027,46 @@ async function decidirCadastro(c, aceitar) {
   } catch (e) { els.conexao.textContent = e.message; }
 }
 
+// Pagamento da quarta: quanto cada motoboy tem a receber, Pix copia e cola e "Marquei pago".
+let pagar = null;
+let pagarEm = 0;
+async function carregarPagar(forcar = false) {
+  if (!forcar && Date.now() - pagarEm < 60_000) return;
+  pagarEm = Date.now();
+  try { pagar = await api('GET', '/api/admin/pagamentos'); } catch { pagar = pagar || { lista: [], pagos: [], erro: true }; }
+  if (abaAtual === 'motoboys') desenharMotoboys();
+}
+function cartaoPagar() {
+  if (!pagar) return h('div', { class: 'cartao' }, h('strong', null, 'A pagar (quarta)'), h('p', { class: 'nota' }, 'Carregando…'));
+  const total = pagar.lista.reduce((s, l) => s + l.valor, 0);
+  return h('div', { class: 'cartao pagar' },
+    h('div', { class: 'linha' }, h('h3', { class: 'cresce' }, `A pagar (quarta) · ${reais(total)}`),
+      h('button', { class: 'pequeno', onclick: () => carregarPagar(true) }, 'Atualizar')),
+    h('p', { class: 'nota' }, 'Tudo feito desde o último pagamento até agora. Pague pelo Pix copia e cola e toque em "Marquei pago".'),
+    pagar.lista.length === 0 ? h('div', { class: 'vazio' }, 'Ninguém a receber agora.')
+      : pagar.lista.map((l) => {
+        const copiar = h('button', { class: 'pequeno primario', disabled: !l.codigo, onclick: async () => {
+          try { await navigator.clipboard.writeText(l.codigo); copiar.textContent = 'Pix copiado ✓'; } catch { window.prompt('Copie o Pix:', l.codigo); }
+        } }, l.codigo ? 'Copiar Pix' : 'Sem chave Pix');
+        const partes = [l.corridas && `${l.corridas} corrida(s)`, l.diarias && `${l.diarias} diária(s)`].filter(Boolean).join(' · ');
+        return h('div', { class: 'linha pagar-linha' },
+          h('div', { class: 'cresce' },
+            h('div', null, h('strong', null, l.nome), ` · ${reais(l.valor)}`),
+            h('div', { class: 'sub' }, `${partes} · desde ${dataHora(l.desde)}`),
+            h('div', { class: 'sub' }, l.pix.chave ? `Pix ${l.pix.tipo || '?'}: ${l.pix.chave} · ${l.pix.titular || ''}${l.pix.banco ? ` · ${l.pix.banco}` : ''}` : 'Sem chave Pix cadastrada'),
+            l.pix.duvida && h('div', { class: 'nota' }, 'Confira: essa chave pode ser CPF. O banco mostra o nome antes de confirmar.')),
+          copiar,
+          h('button', { class: 'pequeno', onclick: () => confirmar('Marcar pago', `Já pagou ${reais(l.valor)} para ${l.nome}?`, 'Marquei pago', async () => {
+            await api('POST', '/api/admin/pagamentos', { motoboy_id: l.motoboy_id, ate: pagar.ate });
+            await carregarPagar(true);
+          }, false) }, 'Marquei pago'));
+      }),
+    pagar.pagos.length > 0 && h('details', null, h('summary', null, 'Últimos pagamentos'),
+      pagar.pagos.map((p) => h('div', { class: 'sub' }, `${dataHora(p.pago_em)} · ${p.nome} · ${reais(p.valor)}`))));
+}
 function desenharMotoboys() {
   if (!estado) return;
+  carregarPagar();
   const situacao = (m) => {
     if (!m.ativo) return chip('Inativo', 'inativo');
     if (m.turno) return chip(m.tipo === 'avulso' ? 'Online' : `Em turno até ${hora(m.turno.fim_previsto)}`, 'em_rota');
@@ -1054,6 +1092,7 @@ function desenharMotoboys() {
     h('div', { class: 'cartao' },
       h('div', { class: 'linha' }, h('div', { class: 'cresce' }, h('strong', null, 'Link de cadastro para novos motoboys'), h('div', { class: 'sub' }, linkCadastro)), copiarLink),
       h('p', { class: 'nota' }, 'Mande esse link no grupo. Quem preencher aparece aqui para você aceitar ou recusar.')),
+    cartaoPagar(),
     h('div', { class: 'linha' }, h('h2', { class: 'cresce' }, 'Motoboys'),
       h('button', { class: 'primario', onclick: () => janelaMotoboy() }, '+ Novo motoboy')),
     h('p', { class: 'nota' }, 'Diária: só faz login no dia em que for convocado e cumpre o turno. Avulso: entra e sai quando quiser, aceita as entregas perto dele e recebe o repasse de cada uma.'),
