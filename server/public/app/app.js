@@ -65,6 +65,7 @@ aplicarTema();
 let estado = null;
 let ciclo = null;
 let formAberto = false; // não redesenhar enquanto o motoboy digita
+let abaParada = 'cliente'; // aba aberta na parada atual (fica entre as atualizações)
 
 class ErroApi extends Error {
   constructor(status, corpo) {
@@ -416,6 +417,7 @@ function telaRecebimento(podeVoltar = false) {
 
 function desenharTurno() {
   const { turno, rota, motoboy, ofertas, ganhos } = estado;
+  document.body.classList.remove('tem-barra');
   const [atual, ...proximas] = rota;
   const partes = [];
   // Sem chave Pix ou sem o "estou ciente" do pagamento às quartas: nada mais abre antes disso.
@@ -628,6 +630,45 @@ function cartaoAgendada(a) {
 }
 
 // Informações da parada em linhas separadas: prazo em destaque, contato com botões, observações em lista.
+// Parada atual dividida em duas abas: o que o motoboy precisa para achar a pessoa (endereço, recado, contato)
+// e o resto (loja, valores, observações).
+function lerParada(p) {
+  const partes = String(p.descricao || '').split(/\s+·\s+|\n+/).map((s) => s.trim()).filter(Boolean);
+  const prazo = partes.filter((s) => /^(⏰|prazo\b)/i.test(s));
+  const recado = partes.filter((s) => /^📍/.test(s)).map((s) => s.replace(/^📍\s*(na entrega:|na coleta:)?\s*/i, ''));
+  const obs = partes.filter((s) => !prazo.includes(s) && !/^📍/.test(s));
+  const achou = String(p.contato || '').match(/(?:\+?55\s*)?\(?\d{2}\)?\s*9?\d{4}[-\s]?\d{4}/);
+  const fone = achou ? achou[0].replace(/\D/g, '') : '';
+  const nome = String(p.contato || '').replace(achou ? achou[0] : '', '').replace(/[·\s-]+$/, '').replace(/^[·\s-]+/, '').trim();
+  return { prazo, recado, obs, nome, f55: fone && (fone.length > 11 ? fone : `55${fone}`) };
+}
+function abaCliente(p, d) {
+  const coleta = p.tipo === 'coleta';
+  return h('div', { class: 'aba-cliente' },
+    p.agendada_para && h('div', { class: 'prazo' }, `Agendada: ${diaHora(p.agendada_para)}`),
+    ...d.prazo.map((s) => h('div', { class: 'prazo' }, s)),
+    h('div', { class: 'end-grande' }, p.endereco),
+    d.recado.map((s) => h('div', { class: 'na-entrega' }, h('b', null, coleta ? 'Na coleta: ' : 'Na entrega: '), s)),
+    (d.nome || d.f55) && h('div', { class: 'quem' },
+      h('div', { class: 'info-rot' }, coleta ? 'Falar com' : 'Quem recebe'),
+      d.nome && h('div', { class: 'nome' }, d.nome),
+      d.f55 && h('div', { class: 'acoes-2' },
+        h('a', { class: 'info-botao', href: `tel:+${d.f55}` }, 'Ligar'),
+        h('a', { class: 'info-botao whats', href: `https://wa.me/${d.f55}`, target: '_blank', rel: 'noopener' }, 'WhatsApp'))),
+    p.fachada && botaoFachada(p.demanda_id));
+}
+function abaDetalhes(p, d) {
+  const linha = (rot, val) => h('div', { class: 'info-linha' }, h('span', { class: 'info-rot' }, rot), h('span', { class: 'info-val' }, val));
+  return h('div', { class: 'info' },
+    linha('Pedido', `#${p.demanda_id}`),
+    linha('Cliente', p.cliente),
+    p.servico && linha('Serviço', p.servico),
+    p.valor_cliente != null && linha('Cliente paga', reais(p.valor_cliente)),
+    p.repasse != null && linha(p.valor_cliente !== undefined ? 'Motoboy recebe' : 'Você recebe', reais(p.repasse)),
+    d.obs.length > 0 && h('div', { class: 'info-obs' },
+      h('div', { class: 'info-rot' }, 'Observações'),
+      ...d.obs.map((s) => h('div', { class: 'info-item' }, `• ${s}`))));
+}
 function blocoInfo(p) {
   const partes = String(p.descricao || '').split(/\s+·\s+|\n+/).map((s) => s.trim()).filter(Boolean);
   const prazo = partes.filter((s) => /^(⏰|prazo\b)/i.test(s));
@@ -681,14 +722,21 @@ function cartaoParada(p) {
     else window.open(`https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lon}`, '_blank', 'noopener');
   };
 
+  const ALERTA = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>';
+  // Fora dos botões iniciais (formulários abertos) a área volta para dentro do cartão.
+  const soltarBarra = () => { area.classList.remove('barra-fixa'); document.body.classList.remove('tem-barra'); };
   function botoesIniciais() {
     formAberto = false;
+    const prob = h('button', { class: 'problema', onclick: () => { soltarBarra(); problema(1); } });
+    prob.innerHTML = ALERTA;
+    prob.append(' Deu problema');
+    area.classList.add('barra-fixa');
+    document.body.classList.add('tem-barra');
     trocar(area, ...[
       !coleta && p.aguarda_pix && h('div', { class: 'faixa aviso' }, '💰 Cliente ainda não pagou o Pix. Só finalize depois que a central confirmar.'),
-      h('button', { onclick: navegar }, 'Abrir rota no mapa'),
-      h('button', { class: `grande ${p.tipo}`, onclick: () => (coleta ? enviar({}) : pedirRecebedor()) },
+      h('button', { class: `grande ${p.tipo}`, onclick: () => { soltarBarra(); return coleta ? enviar({}) : pedirRecebedor(); } },
         coleta ? 'Coletei' : 'Entreguei'),
-      h('button', { class: 'leve', onclick: () => problema(1) }, 'Deu problema')].filter(Boolean));
+      prob].filter(Boolean));
   }
   // "Deu problema": a Speedy guia o motoboy — quem recebe, depois a loja, por fim a central.
   function problema(passo) {
@@ -801,10 +849,26 @@ function cartaoParada(p) {
   }
 
   botoesIniciais();
+  // Mapa da parada no topo (Google Maps) e duas abas: cliente/endereço e detalhes.
+  const d = lerParada(p);
+  const mapa = p.lat != null
+    ? h('div', { class: 'mapa-parada' },
+      h('iframe', { src: `https://maps.google.com/maps?q=${p.lat},${p.lon}&z=16&output=embed`, title: coleta ? 'Mapa da coleta' : 'Mapa da entrega', loading: 'lazy', referrerpolicy: 'no-referrer-when-downgrade' }),
+      h('button', { type: 'button', class: 'abrir-maps', onclick: navegar }, 'Abrir no Maps'))
+    : h('button', { onclick: navegar }, 'Abrir rota no mapa');
+  const conteudo = h('div', null);
+  const botaoAba = (qual, texto) => h('button', { type: 'button', role: 'tab', class: abaParada === qual ? 'ativa' : '', 'aria-selected': abaParada === qual ? 'true' : 'false',
+    onclick: () => { abaParada = qual; desenharAba(); } }, texto);
+  const abas = h('div', { class: 'abas', role: 'tablist' });
+  function desenharAba() {
+    trocar(abas, botaoAba('cliente', coleta ? 'Local e contato' : 'Cliente e endereço'), botaoAba('detalhes', coleta ? 'Detalhes' : 'Entrega'));
+    trocar(conteudo, abaParada === 'cliente' ? abaCliente(p, d) : abaDetalhes(p, d));
+  }
+  desenharAba();
   return h('div', { class: `cartao atual ${p.tipo}` },
+    mapa,
     h('span', { class: `etiqueta ${p.tipo}` }, coleta ? 'AGORA: COLETA' : 'AGORA: ENTREGA'),
-    h('div', { class: 'endereco' }, p.endereco),
-    blocoInfo(p),
+    abas, conteudo,
     area, erro);
 }
 
