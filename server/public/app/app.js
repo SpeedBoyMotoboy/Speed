@@ -563,6 +563,7 @@ async function telaPerfil() {
       h('div', { class: 'resumo-perfil' },
         h('div', null, h('b', null, String(p.resumo.hoje)), h('span', null, 'hoje')),
         h('div', null, h('b', null, String(p.resumo.dias30)), h('span', null, 'em 30 dias')),
+        avulso && h('div', { class: 'a-receber' }, h('b', null, reais(p.resumo.a_receber)), h('span', null, 'a receber na quarta')),
         avulso && h('div', null, h('b', null, reais(p.resumo.valor_hoje)), h('span', null, 'hoje')),
         avulso && h('div', null, h('b', null, reais(p.resumo.valor_30)), h('span', null, 'em 30 dias'))),
       p.corridas.length

@@ -345,6 +345,8 @@ export function criarApp({ servico, atendimento, geocodificar, vigia = null, con
       throw new Erro(502, 'busca_indisponivel', 'Busca de endereço indisponível. Marque o ponto clicando no mapa.');
     }
   });
+  rota('GET', '/api/admin/pagamentos', 'admin', () => servico.aPagar());
+  rota('POST', '/api/admin/pagamentos', 'admin', ({ corpo, admin }) => servico.marcarMotoboyPago(corpo, ator(admin)));
   rota('GET', '/api/admin/relatorio', 'admin', ({ url }) => {
     const de = Number(url.searchParams.get('de'));
     const ate = Number(url.searchParams.get('ate'));

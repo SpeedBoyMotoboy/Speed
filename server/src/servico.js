@@ -5,7 +5,7 @@ import {
 import crypto from 'node:crypto';
 import { distM, distRuaKm, coordValida } from './geo.js';
 import { PROVEDORES, normalizarTelefone } from './mensageiro.js';
-import { TIPOS_CHAVE, normalizarChave, brCode } from './pix.js';
+import { TIPOS_CHAVE, normalizarChave, brCode, chaveDoMotoboy } from './pix.js';
 import { createRequire } from 'node:module';
 const qrcode = createRequire(import.meta.url)('qrcode-generator');
 // QR Code do Pix em imagem (data URL), para o site e a página de acompanhamento mostrarem.
@@ -599,6 +599,49 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     auditar(`motoboy:${turno.motoboy_id}`, 'recebimento_salvo', r.banco);
     return { ok: true };
   }
+  // ── Pagamento dos motoboys (quarta-feira): soma tudo desde o último "pago" até agora ──
+  // Antes do primeiro "pago" registrado, conta a partir do pagamento de 18/11/2026 18h (último feito por fora).
+  const INICIO_PAGAMENTOS = Date.parse('2026-11-18T18:00:00-03:00');
+  const ultimoPago = (id) => Math.max(INICIO_PAGAMENTOS, q('SELECT MAX(ate) AS ate FROM pagos_motoboy WHERE motoboy_id = ?').get(id)?.ate ?? 0);
+  function contaReceber(m, ate) {
+    const c = cfgBruta();
+    const desde = ultimoPago(m.id);
+    const r = q(`SELECT COUNT(*) AS n, COALESCE(SUM(d.repasse), 0) AS v FROM demandas d JOIN turnos t ON t.id = d.turno_id
+        WHERE t.motoboy_id = ? AND t.tipo = 'avulso' AND d.status = 'entregue' AND d.entregue_em > ? AND d.entregue_em <= ?`).get(m.id, desde, ate);
+    const diarias = q("SELECT COUNT(*) AS n FROM turnos WHERE motoboy_id = ? AND tipo = 'diaria' AND inicio > ? AND inicio <= ?").get(m.id, desde, ate).n;
+    const porDiaria = (m.diaria_valor != null ? Number(m.diaria_valor) : Number(c.diaria_valor)) + Number(c.almoco_valor);
+    const valor = Math.round((r.v + diarias * porDiaria) * 100) / 100;
+    return { desde, corridas: r.n, repasses: Math.round(r.v * 100) / 100, diarias, valor };
+  }
+  function aPagar() {
+    const c = cfgBruta();
+    const ate = agora();
+    const lista = q('SELECT id, nome, tipo, diaria_valor, pix_chave, pix_titular, pix_banco FROM motoboys WHERE mensal = 0 ORDER BY nome').all()
+      .map((m) => {
+        const conta = contaReceber(m, ate);
+        if (conta.valor <= 0) return null;
+        const chave = chaveDoMotoboy(m.pix_chave);
+        const codigo = chave && conta.valor > 0
+          ? brCode({ chave: chave.chave, nome: m.pix_titular || m.nome, cidade: c.pix_cidade || 'VITORIA', valor: conta.valor, txid: `MOTO${m.id}` }) : null;
+        return { motoboy_id: m.id, nome: m.nome, tipo: m.tipo, ...conta,
+          pix: { chave: m.pix_chave, titular: m.pix_titular, banco: m.pix_banco, tipo: chave?.tipo ?? null, duvida: Boolean(chave?.duvida) }, codigo };
+      }).filter(Boolean);
+    const pagos = q(`SELECT p.id, p.motoboy_id, m.nome, p.valor, p.ate, p.pago_em FROM pagos_motoboy p JOIN motoboys m ON m.id = p.motoboy_id
+        ORDER BY p.pago_em DESC LIMIT 20`).all();
+    return { ate, lista, pagos };
+  }
+  function marcarMotoboyPago(d, por) {
+    const id = Number(d?.motoboy_id);
+    const ate = Number(d?.ate);
+    const m = q('SELECT id, nome, tipo, diaria_valor FROM motoboys WHERE id = ?').get(id);
+    if (!m) throw new Erro(404, 'nao_encontrado', 'Motoboy não encontrado.');
+    if (!Number.isFinite(ate) || ate > agora() + MIN) throw new Erro(422, 'data_invalida', 'Atualize a lista e tente de novo.');
+    if (ate <= ultimoPago(id)) throw new Erro(409, 'ja_pago', 'Esse pagamento já foi marcado.');
+    const conta = contaReceber(m, ate);
+    q('INSERT INTO pagos_motoboy (motoboy_id, valor, ate, pago_em, por) VALUES (?, ?, ?, ?, ?)').run(id, conta.valor, ate, agora(), String(por || ''));
+    auditar(por, 'motoboy_pago', `${m.nome}: ${conta.valor}`);
+    return { ok: true, valor: conta.valor };
+  }
   // Perfil do motoboy: dados, Pix, corridas dos últimos 30 dias. Valor só para avulso (diária não vê valores).
   function fotoMotoboyGravada(turno) { q('UPDATE motoboys SET foto_em = ? WHERE id = ?').run(agora(), turno.motoboy_id); }
   function perfilMotoboy(turno) {
@@ -615,7 +658,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     return {
       motoboy: { nome: m.nome, telefone: m.telefone, veiculo: m.veiculo, tipo: turno.tipo, foto_em: m.foto_em ?? null },
       recebimento: { pix_chave: m.pix_chave, pix_titular: m.pix_titular, pix_banco: m.pix_banco, ciente_em: m.pag_ciente_em ?? null },
-      resumo: { hoje: deHoje.length, dias30: lista.length, ...(avulso ? { valor_hoje: soma(deHoje), valor_30: soma(lista) } : {}) },
+      resumo: { hoje: deHoje.length, dias30: lista.length, ...(avulso ? { valor_hoje: soma(deHoje), valor_30: soma(lista), a_receber: contaReceber({ id: turno.motoboy_id, diaria_valor: null }, agora()).repasses } : {}) },
       corridas,
     };
   }
@@ -2057,7 +2100,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     cfg, lerConfig, lerVolumes, textoVolumes, salvarConfig, gerarChaveApi, chaveApiValida,
     garantirAdmin, loginAdmin, autenticarAdmin, sairAdmin, trocarSenhaAdmin,
     criarMotoboy, atualizarMotoboy, candidatar, decidirCandidato, salvarRecebimento, convocar, cancelarConvocacao,
-    loginMotoboy, autenticarMotoboy, perfilMotoboy, fotoMotoboyGravada, almoco, encerrarTurno, registrarPosicoes,
+    loginMotoboy, autenticarMotoboy, perfilMotoboy, aPagar, marcarMotoboyPago, fotoMotoboyGravada, almoco, encerrarTurno, registrarPosicoes,
     criarDemanda, criarDemandaExterna, definirLocais, cancelarDemanda, fechamento, reatribuir, confirmarParada,
     despacharPendentes, estadoMotoboy, estadoAdmin, trilha, relatorio, rotina,
     importarWhatsapp, listarConversas, mensagensDaConversa, excluirConversa,
