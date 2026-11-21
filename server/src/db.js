@@ -352,7 +352,7 @@ const COLUNAS_NOVAS = {
     pago_em: 'INTEGER', fila_em: 'INTEGER', comprovante_em: 'INTEGER', ia_ok: 'INTEGER', ia_obs: 'TEXT', email: "TEXT NOT NULL DEFAULT ''", sem_aceite_avisado: 'INTEGER NOT NULL DEFAULT 0', hora_tipo: "TEXT NOT NULL DEFAULT ''", hora_limite: 'INTEGER',
   },
   motoboys: { tipo: "TEXT NOT NULL DEFAULT 'diaria'", pin_claro: 'TEXT', documento: "TEXT NOT NULL DEFAULT ''", placa: "TEXT NOT NULL DEFAULT ''", diaria_valor: 'REAL', repasse_base: 'REAL', repasse_km: 'REAL', ve_valores: 'INTEGER NOT NULL DEFAULT 0', reserva_bloqueio_ate: 'INTEGER',
-    pix_chave: "TEXT NOT NULL DEFAULT ''", pix_titular: "TEXT NOT NULL DEFAULT ''", pix_banco: "TEXT NOT NULL DEFAULT ''", pag_ciente_em: 'INTEGER' },
+    pix_chave: "TEXT NOT NULL DEFAULT ''", pix_titular: "TEXT NOT NULL DEFAULT ''", pix_banco: "TEXT NOT NULL DEFAULT ''", pag_ciente_em: 'INTEGER', foto_em: 'INTEGER', mensal: 'INTEGER NOT NULL DEFAULT 0' },
   convites: { coleta: "TEXT NOT NULL DEFAULT ''", centavos: 'INTEGER' },
   candidatos: { pix_chave: "TEXT NOT NULL DEFAULT ''", pix_titular: "TEXT NOT NULL DEFAULT ''", pix_banco: "TEXT NOT NULL DEFAULT ''", pag_ciente_em: 'INTEGER' },
   turnos: { tipo: "TEXT NOT NULL DEFAULT 'diaria'" },

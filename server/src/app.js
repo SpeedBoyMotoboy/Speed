@@ -21,7 +21,6 @@ const CORPO_MAX = 512 * 1024;
 const CSP = [
   "default-src 'self'", "script-src 'self'", "style-src 'self'",
   "img-src 'self' data: https://tile.openstreetmap.org", "connect-src 'self'",
-  "frame-src https://maps.google.com https://www.google.com", // mapa da parada no app do motoboy
   "frame-ancestors 'none'", "base-uri 'none'", "form-action 'self'", "object-src 'none'",
 ].join('; ');
 
@@ -159,6 +158,7 @@ export function criarApp({ servico, atendimento, geocodificar, vigia = null, con
   // -------------------------------------------------------------- motoboy
   rota('GET', '/api/motoboy/estado', 'motoboy', ({ turno }) => servico.estadoMotoboy(turno));
   rota('POST', '/api/motoboy/recebimento', 'motoboy', ({ turno, corpo }) => servico.salvarRecebimento(turno, corpo));
+  rota('GET', '/api/motoboy/perfil', 'motoboy', ({ turno }) => servico.perfilMotoboy(turno));
   rota('POST', '/api/motoboy/posicoes', 'motoboy', ({ turno, corpo }) => servico.registrarPosicoes(turno, corpo));
   rota('POST', '/api/motoboy/parada', 'motoboy', ({ turno, corpo }) => {
     servico.confirmarParada(turno, corpo);
@@ -197,6 +197,20 @@ export function criarApp({ servico, atendimento, geocodificar, vigia = null, con
     servico.fachadaGravada(id);
     return { ok: true };
   }, 3 * 1024 * 1024);
+  // Foto de perfil do motoboy (ele mesmo troca no app)
+  const PASTA_MOTOBOYS = path.join(process.env.DADOS_DIR || './dados', 'motoboys');
+  rota('POST', '/api/motoboy/foto', 'motoboy', ({ turno, corpo }) => {
+    const dados = lerJpeg(corpo?.foto);
+    fs.mkdirSync(PASTA_MOTOBOYS, { recursive: true });
+    fs.writeFileSync(path.join(PASTA_MOTOBOYS, `${Number(turno.motoboy_id)}.jpg`), dados);
+    servico.fotoMotoboyGravada(turno);
+    return { ok: true };
+  }, 3 * 1024 * 1024);
+  rota('GET', '/api/motoboy/foto', 'motoboy', ({ turno }) => {
+    const arq = path.join(PASTA_MOTOBOYS, `${Number(turno.motoboy_id)}.jpg`);
+    if (!fs.existsSync(arq)) throw new Erro(404, 'sem_foto', 'Sem foto.');
+    return { foto: `data:image/jpeg;base64,${fs.readFileSync(arq).toString('base64')}` };
+  });
   // Comprovante do Pix enviado pela página do pedido: foto (jpeg/png) ou PDF, até 3 MB.
   rota('POST', '/api/publico/pedidos/comprovante', 'publico', ({ corpo, ip }) => {
     const m = /^data:(image\/jpeg|image\/png|application\/pdf);base64,([A-Za-z0-9+/=]+)$/.exec(String(corpo?.arquivo || ''));

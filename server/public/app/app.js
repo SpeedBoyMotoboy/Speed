@@ -416,12 +416,12 @@ function telaRecebimento(podeVoltar = false) {
 }
 
 function desenharTurno() {
-  const { turno, rota, motoboy, ofertas, ganhos } = estado;
+  const { turno, rota, motoboy, ofertas } = estado;
   document.body.classList.remove('tem-barra');
   const [atual, ...proximas] = rota;
   const partes = [];
   // Sem chave Pix ou sem o "estou ciente" do pagamento às quartas: nada mais abre antes disso.
-  if (!motoboy.recebimento?.ciente_em) { telaRecebimento(false); return; }
+  if (!motoboy.mensal && !motoboy.recebimento?.ciente_em) { telaRecebimento(false); return; }
   // No app: sem tirar a economia de bateria o Android mata o rastreio. Só libera a tela depois de liberar.
   if (nativo && infoNativo().bateriaLivre === false) {
     trocar(raiz,
@@ -473,20 +473,9 @@ function desenharTurno() {
 
   partes.push(...quadro());
 
-  const carregando = rota.some((p) => p.tipo === 'entrega' && !rota.some((c) => c.tipo === 'coleta' && c.demanda_id === p.demanda_id));
-  if (!turno.almoco_usado && motoboy.tipo !== 'avulso') {
-    partes.push(h('div', { class: 'botoes' },
-      h('button', { disabled: carregando, onclick: () => acaoAlmoco('iniciar') },
-        carregando ? 'Almoço: entregue o que já coletou primeiro' : 'Iniciar almoço')));
-  }
-
-  if (ganhos) {
-    partes.push(h('div', { class: 'titulo-secao' }, `Ganhos deste turno: ${reais(ganhos.total)}`),
-      ganhos.entregas.length
-        ? h('div', { class: 'cartao' }, ganhos.entregas.map((g) => h('div', { class: 'proxima' },
-          h('span', { class: 'etiqueta entrega' }, reais(g.repasse || 0)),
-          h('div', null, h('div', null, `#${g.id} · ${g.entrega_endereco}`), h('div', { class: 'detalhe' }, `${g.servico ? `${g.servico} · ` : ''}entregue ${hora(g.entregue_em)}`)))))
-        : h('p', { class: 'nota' }, 'Cada entrega concluída aparece aqui com o seu valor.'));
+  // Almoço (só fixo): fora da tela de entrega ativa. Também fica no perfil.
+  if (!atual && !turno.almoco_ate && !turno.almoco_usado && motoboy.tipo !== 'avulso') {
+    partes.push(h('div', { class: 'botoes' }, h('button', { onclick: () => acaoAlmoco('iniciar') }, 'Iniciar almoço')));
   }
   if (motoboy.tipo === 'avulso') {
     const erroFim = h('div', { class: 'erro', role: 'alert' });
@@ -500,17 +489,100 @@ function desenharTurno() {
       }, estado.pode_encerrar ? 'Encerrar por hoje' : 'Para encerrar, termine as entregas aceitas')), erroFim);
   }
 
-  trocar(raiz, 
+  trocar(raiz,
     h('div', { class: 'topo' },
       botaoTema(desenharTurno),
-      h('div', { class: 'nome' }, motoboy.nome),
-      h('div', { class: 'info' }, motoboy.tipo === 'avulso'
-        ? `Online · ${rota.length} parada(s)`
-        : `Turno até ${hora(turno.fim_previsto)} · ${rota.length} parada(s)`)),
+      h('button', { type: 'button', class: 'perfil-topo', 'aria-label': 'Abrir meu perfil', onclick: () => telaPerfil() },
+        avatar(motoboy),
+        h('div', null,
+          h('div', { class: 'nome' }, motoboy.nome),
+          h('div', { class: 'info' }, motoboy.tipo === 'avulso'
+            ? `Online · ${rota.length} parada(s)`
+            : `Turno até ${hora(turno.fim_previsto)} · ${rota.length} parada(s)`)))),
     faixaSinal(),
-    h('div', { class: 'conteudo' }, partes,
-      h('div', { class: 'botoes' }, h('button', { class: 'leve', onclick: () => telaRecebimento(true) }, '💰 Recebimento (Pix)')),
-      h('p', { class: 'nota' }, 'Pagamento toda quarta-feira, em horário comercial.')));
+    h('div', { class: 'conteudo' }, partes));
+}
+
+// ── Perfil do motoboy: foto, dados, corridas, Pix (avulso/diária) e almoço (fixo) ──
+let fotoCache = { em: null, url: null };
+const iniciais = (nome) => String(nome || '?').trim().split(/\s+/).filter(Boolean).slice(0, 2).map((s) => s[0].toUpperCase()).join('');
+function avatar(m, grande = false) {
+  const el = h('span', { class: `avatar${grande ? ' grande' : ''}` }, iniciais(m.nome));
+  if (m.foto_em) {
+    const pinta = (url) => { el.textContent = ''; el.append(h('img', { src: url, alt: '' })); };
+    if (fotoCache.em === m.foto_em && fotoCache.url) pinta(fotoCache.url);
+    else api('GET', '/api/motoboy/foto').then((r) => { fotoCache = { em: m.foto_em, url: r.foto }; pinta(r.foto); }).catch(() => {});
+  }
+  return el;
+}
+async function telaPerfil() {
+  formAberto = true;
+  const voltar = () => { formAberto = false; desenharTurno(); };
+  const topo = h('div', { class: 'topo' }, h('div', { class: 'nome' }, 'Meu perfil'), h('div', { class: 'info' }, estado?.motoboy?.nome || ''));
+  const corpo = h('div', { class: 'conteudo' }, h('p', { class: 'nota' }, 'Carregando…'));
+  trocar(raiz, topo, corpo);
+  let p;
+  try { p = await api('GET', '/api/motoboy/perfil'); } catch (e) {
+    if (e.status === 401) { encerrado(); return; }
+    trocar(corpo, h('div', { class: 'erro' }, e.message), h('div', { class: 'botoes' }, h('button', { onclick: voltar }, 'Voltar')));
+    return;
+  }
+  const m = { ...p.motoboy, mensal: estado?.motoboy?.mensal };
+  const avulso = m.tipo === 'avulso';
+  const erro = h('div', { class: 'erro', role: 'alert' });
+  const arquivo = h('input', { type: 'file', accept: 'image/*', class: 'oculto',
+    onchange: async () => {
+      const f = arquivo.files?.[0];
+      if (!f) return;
+      erro.textContent = '';
+      try {
+        const foto = await reduzirFoto(f);
+        await api('POST', '/api/motoboy/foto', { foto });
+        fotoCache = { em: null, url: null };
+        if (estado?.motoboy) estado.motoboy.foto_em = Date.now();
+        await buscarEstado();
+        telaPerfil();
+      } catch (e) { erro.textContent = e.message; }
+    } });
+  const linha = (rot, val) => h('div', { class: 'info-linha' }, h('span', { class: 'info-rot' }, rot), h('span', { class: 'info-val' }, val));
+  const turno = estado?.turno || {};
+  const r = p.recebimento;
+  trocar(corpo,
+    h('div', { class: 'cartao perfil' },
+      h('div', { class: 'perfil-cabeca' },
+        avatar({ ...m, foto_em: m.foto_em }, true),
+        h('div', null, h('div', { class: 'perfil-nome' }, m.nome),
+          h('button', { type: 'button', class: 'leve trocar-foto', onclick: () => arquivo.click() }, m.foto_em ? 'Trocar foto' : 'Colocar foto'))),
+      arquivo, erro,
+      h('div', { class: 'info' },
+        linha('Telefone', m.telefone),
+        linha('Veículo', m.veiculo || '-'),
+        linha('Tipo', m.mensal ? 'Mensal' : avulso ? 'Avulso' : 'Diária'))),
+    h('div', { class: 'cartao' },
+      h('div', { class: 'titulo-secao' }, 'Suas corridas'),
+      h('div', { class: 'resumo-perfil' },
+        h('div', null, h('b', null, String(p.resumo.hoje)), h('span', null, 'hoje')),
+        h('div', null, h('b', null, String(p.resumo.dias30)), h('span', null, 'em 30 dias')),
+        avulso && h('div', null, h('b', null, reais(p.resumo.valor_hoje)), h('span', null, 'hoje')),
+        avulso && h('div', null, h('b', null, reais(p.resumo.valor_30)), h('span', null, 'em 30 dias'))),
+      p.corridas.length
+        ? p.corridas.map((c) => h('div', { class: 'proxima' },
+          h('span', { class: 'etiqueta entrega' }, avulso ? reais(c.repasse || 0) : `#${c.id}`),
+          h('div', null, h('div', null, c.endereco), h('div', { class: 'detalhe' }, `${c.cliente}${c.servico ? ` · ${c.servico}` : ''} · ${diaHora(c.entregue_em)}`))))
+        : h('p', { class: 'nota' }, 'Suas entregas concluídas aparecem aqui.')),
+    m.mensal
+      ? h('div', { class: 'cartao' }, h('div', { class: 'titulo-secao' }, 'Pagamento'), h('p', { class: 'nota' }, 'Pagamento mensal, todo dia 10.'))
+      : h('div', { class: 'cartao' },
+        h('div', { class: 'titulo-secao' }, 'Recebimento (Pix)'),
+        h('div', { class: 'info' },
+          linha('Chave Pix', r.pix_chave || 'Não informada'),
+          linha('Titular', r.pix_titular || '-'),
+          linha('Banco', r.pix_banco || '-')),
+        h('p', { class: 'nota' }, 'Pagamento toda quarta-feira, em horário comercial.'),
+        h('div', { class: 'botoes' }, h('button', { class: 'leve', onclick: () => telaRecebimento(true) }, 'Alterar Pix'))),
+    !avulso && !turno.almoco_usado && !turno.almoco_ate && h('div', { class: 'botoes' },
+      h('button', { onclick: () => { formAberto = false; acaoAlmoco('iniciar'); } }, 'Iniciar almoço')),
+    h('div', { class: 'botoes' }, h('button', { class: 'primario grande', onclick: voltar }, 'Voltar para a rota')));
 }
 
 // ── Quadro de entregas: ofertas agrupadas por loja/coleta e entregas agendadas ──
@@ -725,18 +797,19 @@ function cartaoParada(p) {
   const ALERTA = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>';
   // Fora dos botões iniciais (formulários abertos) a área volta para dentro do cartão.
   const soltarBarra = () => { area.classList.remove('barra-fixa'); document.body.classList.remove('tem-barra'); };
+  // "Deu problema" pequeno no topo do cartão, longe do Entreguei.
+  const prob = h('button', { type: 'button', class: 'problema', onclick: () => { prob.hidden = true; soltarBarra(); problema(1); } });
+  prob.innerHTML = ALERTA;
+  prob.append(' Deu problema');
   function botoesIniciais() {
     formAberto = false;
-    const prob = h('button', { class: 'problema', onclick: () => { soltarBarra(); problema(1); } });
-    prob.innerHTML = ALERTA;
-    prob.append(' Deu problema');
+    prob.hidden = false;
     area.classList.add('barra-fixa');
     document.body.classList.add('tem-barra');
     trocar(area, ...[
       !coleta && p.aguarda_pix && h('div', { class: 'faixa aviso' }, '💰 Cliente ainda não pagou o Pix. Só finalize depois que a central confirmar.'),
       h('button', { class: `grande ${p.tipo}`, onclick: () => { soltarBarra(); return coleta ? enviar({}) : pedirRecebedor(); } },
-        coleta ? 'Coletei' : 'Entreguei'),
-      prob].filter(Boolean));
+        coleta ? 'Coletei' : 'Entreguei')].filter(Boolean));
   }
   // "Deu problema": a Speedy guia o motoboy — quem recebe, depois a loja, por fim a central.
   function problema(passo) {
@@ -849,13 +922,9 @@ function cartaoParada(p) {
   }
 
   botoesIniciais();
-  // Mapa da parada no topo (Google Maps) e duas abas: cliente/endereço e detalhes.
+  // Botão do Maps no topo e duas abas: cliente/endereço e detalhes.
   const d = lerParada(p);
-  const mapa = p.lat != null
-    ? h('div', { class: 'mapa-parada' },
-      h('iframe', { src: `https://maps.google.com/maps?q=${p.lat},${p.lon}&z=16&output=embed`, title: coleta ? 'Mapa da coleta' : 'Mapa da entrega', loading: 'lazy', referrerpolicy: 'no-referrer-when-downgrade' }),
-      h('button', { type: 'button', class: 'abrir-maps', onclick: navegar }, 'Abrir no Maps'))
-    : h('button', { onclick: navegar }, 'Abrir rota no mapa');
+  const mapa = h('button', { type: 'button', class: 'abrir-maps', onclick: navegar }, 'Abrir no Maps');
   const conteudo = h('div', null);
   const botaoAba = (qual, texto) => h('button', { type: 'button', role: 'tab', class: abaParada === qual ? 'ativa' : '', 'aria-selected': abaParada === qual ? 'true' : 'false',
     onclick: () => { abaParada = qual; desenharAba(); } }, texto);
@@ -866,8 +935,8 @@ function cartaoParada(p) {
   }
   desenharAba();
   return h('div', { class: `cartao atual ${p.tipo}` },
+    h('div', { class: 'linha-topo' }, h('span', { class: `etiqueta ${p.tipo}` }, coleta ? 'AGORA: COLETA' : 'AGORA: ENTREGA'), prob),
     mapa,
-    h('span', { class: `etiqueta ${p.tipo}` }, coleta ? 'AGORA: COLETA' : 'AGORA: ENTREGA'),
     abas, conteudo,
     area, erro);
 }
