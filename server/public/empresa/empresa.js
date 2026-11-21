@@ -178,7 +178,6 @@ function cartaoEnvio(b, i, total) {
 
 // ── Entrega paga pelo cliente: a loja diz as mercadorias e manda um link; o cliente completa e paga ──
 let clientePaga = false; // começa sempre desmarcado
-let convites = [];
 const TAM_VOL = [['p', 'P', 'cabe na mão'], ['m', 'M', 'caixa de sapato'], ['g', 'G', 'até 40 cm'], ['gg', 'GG', 'mais de 40 cm']];
 
 function contadorVolumes(b) {
@@ -201,22 +200,114 @@ function contadorVolumes(b) {
   return [h('label', null, 'Quantas mercadorias?'), ...linhas, resumo];
 }
 
-function cartaoConvite(b, i, total) {
-  const n = (x) => `c${i}-${x}`;
-  const quem = h('input', { id: n('quem'), maxlength: 80, list: 'lista-dest', placeholder: 'Se souber', value: b.recebe || '' });
-  const end = campoEndereco(n('end'), b.endereco);
-  const fone = h('input', { id: n('fone'), maxlength: 30, inputmode: 'tel', placeholder: 'Se souber', value: b.fone || '' });
-  const oque = h('input', { id: n('oque'), maxlength: 300, placeholder: 'Ex.: 1 edredom e 2 almofadas (opcional)', value: b.oque || '' });
-  b.ler = () => Object.assign(b, { recebe: quem.value.trim(), endereco: end.el.value.trim(), fone: fone.value.trim(), oque: oque.value.trim() });
-  return h('div', { class: 'cartao' },
-    h('div', { class: 'cab-parada' }, h('b', null, total > 1 ? `Cliente ${i + 1}` : 'Cliente'),
-      total > 1 && h('button', { type: 'button', class: 'pequeno', onclick: () => { convites.forEach((x) => x.ler()); convites.splice(i, 1); telaLoja(); } }, 'Remover')),
-    ...contadorVolumes(b),
-    h('label', { for: n('oque') }, 'O que vai'), oque,
-    h('div', { class: 'nota' }, 'Se souber os dados do cliente, já preencha. Se não, deixe em branco: ele mesmo preenche no link.'),
-    h('label', { for: n('quem') }, 'Nome do cliente'), quem,
-    h('label', { for: n('end') }, 'Endereço de entrega'), end.nos,
-    h('label', { for: n('fone') }, 'WhatsApp do cliente'), fone);
+// Assistente em 3 passos: 1) retirada e volumes, 2) quem preenche (cartões), 3) dados ou link pronto.
+let assist = { passo: 1, quem: '', b: {} };
+const ICONE_ENVIAR = '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg>';
+const ICONE_LAPIS = '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>';
+function icone(svg) { const s = h('span', { class: 'icone-cartao' }); s.innerHTML = svg; return s; }
+
+function barraPassos() {
+  const nomes = ['Volumes', 'Quem preenche', 'Link'];
+  return h('div', { class: 'passos-loja' },
+    h('div', { class: 'barras' }, [1, 2, 3].map((n) => h('span', { class: n <= assist.passo ? 'feita' : '' }))),
+    h('div', { class: 'nota' }, `Passo ${assist.passo} de 3 · ${nomes[assist.passo - 1]}`));
+}
+
+function passoVolumes(erro) {
+  const b = assist.b;
+  b.coleta = b.coleta ?? (empresa.coleta?.endereco || '');
+  const campoColeta = h('input', { id: 'coleta', maxlength: 200, value: b.coleta, hidden: !b.editandoColeta, 'aria-label': 'Endereço de retirada' });
+  const textoColeta = h('b', { hidden: Boolean(b.editandoColeta) }, b.coleta || '—');
+  const editar = h('button', { type: 'button', class: 'pequeno' }, b.editandoColeta ? 'Pronto' : 'Editar');
+  editar.onclick = () => { b.coleta = campoColeta.value.trim() || b.coleta; b.editandoColeta = !b.editandoColeta; telaConvite(); };
+  const oque = h('input', { id: 'oque', maxlength: 300, placeholder: 'Ex.: 1 edredom e 2 almofadas (opcional)', value: b.oque || '' });
+  const seguir = h('button', { type: 'button', class: 'primario' }, 'Continuar');
+  seguir.onclick = () => {
+    b.coleta = campoColeta.value.trim() || b.coleta;
+    b.oque = oque.value.trim();
+    if (!Object.values(b.volumes || {}).some((x) => x > 0)) { erro.textContent = 'Toque no + do tamanho das mercadorias.'; return; }
+    assist.passo = 2;
+    telaConvite();
+  };
+  return [
+    h('div', { class: 'cartao' },
+      h('div', { class: 'linha-end' }, h('div', { class: 'cresce' }, h('div', { class: 'nota' }, 'Retirada'), textoColeta, campoColeta), editar)),
+    h('div', { class: 'cartao' }, ...contadorVolumes(b), h('label', { for: 'oque' }, 'O que vai'), oque),
+    erro, seguir,
+  ];
+}
+
+function passoQuem() {
+  const cartao = (quem, svg, titulo, texto) => h('button', {
+    type: 'button', class: `cartao-escolha${assist.quem === quem ? ' sel' : ''}`, 'aria-pressed': assist.quem === quem ? 'true' : 'false',
+    onclick: () => { assist.quem = quem; assist.passo = 3; telaConvite(); },
+  }, icone(svg), h('b', null, titulo), h('span', { class: 'nota' }, texto));
+  return [
+    h('h2', null, 'Quem preenche os dados do cliente?'),
+    h('div', { class: 'grade-escolha' },
+      cartao('cliente', ICONE_ENVIAR, 'Cliente preenche', 'Você manda o link e ele completa endereço, nota e pagamento.'),
+      cartao('loja', ICONE_LAPIS, `${empresa.nome} preenche`, 'Você já tem nome, endereço e WhatsApp do cliente.')),
+    h('button', { type: 'button', onclick: () => { assist.passo = 1; telaConvite(); } }, 'Voltar'),
+  ];
+}
+
+async function gerarConvite(erro, botao, quem) {
+  const b = assist.b;
+  if (quem.value.trim().length < 2) { erro.textContent = 'Informe seu nome (quem está pedindo).'; quem.focus(); return; }
+  gravarJson(CHAVE_NOME, quem.value.trim());
+  botao.disabled = true;
+  botao.textContent = 'Gerando…';
+  const daLoja = assist.quem === 'loja';
+  try {
+    const r = await api('POST', '/api/publico/empresa/convites', {
+      k: chave, autoriza: quem.value.trim(), volumes: b.volumes, oque: b.oque, coleta: b.coleta,
+      recebe: daLoja ? b.recebe : '', fone: daLoja ? b.fone : '', endereco: daLoja ? b.endereco : '',
+    });
+    const feito = { ...r, link: r.link.startsWith('http') ? r.link : `${location.origin}${r.link}`, recebe: daLoja ? b.recebe : '', fone: daLoja ? b.fone : '' };
+    assist = { passo: 1, quem: '', b: {} };
+    telaLinks([feito]);
+  } catch (e) {
+    erro.textContent = e.message;
+    botao.disabled = false;
+    botao.textContent = 'Gerar link para o cliente';
+  }
+}
+
+function passoFinal(erro) {
+  const b = assist.b;
+  const quem = h('input', { id: 'quem', maxlength: 80, placeholder: 'Seu nome', value: lerJson(CHAVE_NOME, '') });
+  const gerar = h('button', { type: 'button', class: 'primario' }, 'Gerar link para o cliente');
+  const partes = [];
+  if (assist.quem === 'loja') {
+    const nome = h('input', { id: 'c-quem', maxlength: 80, list: 'lista-dest', placeholder: 'Nome de quem recebe', value: b.recebe || '' });
+    const end = campoEndereco('c-end', b.endereco);
+    const fone = h('input', { id: 'c-fone', maxlength: 30, inputmode: 'tel', placeholder: '(27) 99999-0000', value: b.fone || '' });
+    nome.addEventListener('change', () => {
+      const sv = destinos()[nome.value.trim().toLowerCase()];
+      if (sv) { if (!end.el.value.trim()) end.el.value = sv.endereco || ''; if (!fone.value.trim()) fone.value = sv.fone || ''; }
+    });
+    gerar.onclick = () => {
+      Object.assign(b, { recebe: nome.value.trim(), endereco: end.el.value.trim(), fone: fone.value.trim() });
+      if (b.recebe) { const sv = destinos(); sv[b.recebe.toLowerCase()] = { endereco: b.endereco, fone: b.fone }; gravarJson(CHAVE_DEST, sv); }
+      gerarConvite(erro, gerar, quem);
+    };
+    partes.push(h('div', { class: 'cartao' },
+      h('b', null, 'Dados do cliente'),
+      h('div', { class: 'nota' }, 'O cliente ainda confere tudo no link, escolhe na rota ou urgente e paga.'),
+      h('label', { for: 'c-quem' }, 'Nome'), nome,
+      h('label', { for: 'c-end' }, 'Endereço de entrega'), end.nos,
+      h('label', { for: 'c-fone' }, 'WhatsApp'), fone),
+      h('datalist', { id: 'lista-dest' }, Object.keys(destinos()).map((f) => h('option', { value: f }))));
+  } else {
+    gerar.onclick = () => gerarConvite(erro, gerar, quem);
+    partes.push(h('div', { class: 'cartao' },
+      h('b', null, 'O cliente preenche'),
+      h('div', { class: 'nota' }, 'Ao gerar, você recebe o link para mandar. Ele completa endereço e nota fiscal, escolhe na rota ou urgente e paga por Pix.')));
+  }
+  return [...partes,
+    h('div', { class: 'cartao' }, h('label', { for: 'quem' }, 'Quem está pedindo'), quem),
+    erro, gerar,
+    h('button', { type: 'button', onclick: () => { assist.passo = 2; telaConvite(); } }, 'Voltar')];
 }
 
 function telaLinks(feitos) {
@@ -238,7 +329,7 @@ function telaLinks(feitos) {
 function interruptorClientePaga() {
   const caixa = h('input', { type: 'checkbox', id: 'cliente-paga', checked: clientePaga });
   caixa.onchange = () => {
-    if (clientePaga) convites.forEach((b) => b.ler?.()); else envios.forEach((b) => b.ler?.());
+    if (!clientePaga) envios.forEach((b) => b.ler?.());
     clientePaga = caixa.checked;
     telaLoja();
   };
@@ -246,52 +337,12 @@ function interruptorClientePaga() {
 }
 
 function telaConvite(mensagem = '') {
-  if (!convites.length) convites.push({});
-  const quem = h('input', { id: 'quem', maxlength: 80, placeholder: 'Seu nome', value: lerJson(CHAVE_NOME, '') });
   const erro = h('div', { class: 'erro', role: 'alert' }, mensagem);
-  const gerar = h('button', { type: 'submit', class: 'primario' }, convites.length > 1 ? 'Gerar links para os clientes' : 'Gerar link para o cliente');
-  const lista = h('datalist', { id: 'lista-dest' }, Object.keys(destinos()).map((f) => h('option', { value: f })));
-  const form = h('form', {
-    onsubmit: async (ev) => {
-      ev.preventDefault();
-      erro.textContent = '';
-      convites.forEach((b) => b.ler());
-      const vazio = convites.findIndex((b) => !Object.values(b.volumes || {}).some((x) => x > 0));
-      if (vazio >= 0) { erro.textContent = `Toque no + do tamanho das mercadorias (cliente ${vazio + 1}).`; return; }
-      if (quem.value.trim().length < 2) { erro.textContent = 'Informe seu nome.'; quem.focus(); return; }
-      gravarJson(CHAVE_NOME, quem.value.trim());
-      gerar.disabled = true;
-      gerar.textContent = 'Gerando…';
-      const feitos = [];
-      try {
-        for (const b of convites) {
-          const r = await api('POST', '/api/publico/empresa/convites', {
-            k: chave, autoriza: quem.value.trim(), volumes: b.volumes, oque: b.oque, recebe: b.recebe, fone: b.fone, endereco: b.endereco,
-          });
-          feitos.push({ ...r, link: r.link.startsWith('http') ? r.link : `${location.origin}${r.link}`, recebe: b.recebe, fone: b.fone });
-        }
-        convites = [];
-        telaLinks(feitos);
-      } catch (e) {
-        erro.textContent = feitos.length ? `${feitos.length} link(s) gerado(s). Os outros deram erro: ${e.message}` : e.message;
-        gerar.disabled = false;
-        gerar.textContent = 'Gerar link para o cliente';
-      }
-    },
-  },
-  h('h1', null, 'Nova entrega'),
-  h('div', { class: 'cartao' },
-    interruptorClientePaga(),
-    h('div', { class: 'nota' }, 'O motoboy busca em:'), h('b', null, empresa.coleta?.endereco || '—'),
-    h('div', { class: 'nota' }, 'O cliente recebe um link, completa os dados, escolhe na rota ou urgente e paga por Pix. Não entra no fechamento da loja.')),
-  convites.map((b, i, l) => cartaoConvite(b, i, l.length)),
-  h('div', { class: 'linha-mais', role: 'button', tabindex: 0, onclick: () => { convites.forEach((b) => b.ler()); convites.push({}); telaLoja(); } },
-    h('span', { class: 'mais' }, '+'), 'Outro cliente'),
-  h('div', { class: 'cartao' },
-    h('label', { for: 'quem' }, 'Quem está pedindo'), quem,
-    erro, gerar),
-  lista);
-  moldura(form);
+  const corpo = assist.passo === 1 ? passoVolumes(erro) : assist.passo === 2 ? passoQuem() : passoFinal(erro);
+  moldura(
+    h('h1', null, 'Nova entrega'),
+    h('div', { class: 'cartao' }, interruptorClientePaga(), barraPassos()),
+    ...corpo);
 }
 
 function telaLoja(mensagem = '') {

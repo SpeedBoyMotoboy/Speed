@@ -415,7 +415,15 @@ export function criarAtendimento({
     const cli = q('SELECT * FROM clientes WHERE id = ? AND faturado = 1').get(cv.cliente_id);
     const cf = cli ? coletaFixa(cli) : null;
     if (!cli || !cf) throw new Erro(404, 'link_invalido', 'Este link não está mais disponível. Fale com a loja, por favor.');
+    if (!cv.demanda_id && agora() - cv.criado_em > 48 * 60 * MIN) throw new Erro(410, 'expirado', `Este link venceu (vale 48 horas). Peça um novo à ${cli.nome}, por favor.`);
     return { cv, cli, cf, volumes: JSON.parse(cv.volumes || '{}') };
+  }
+  // Retirada: a da ficha da loja, ou a que a loja escreveu só para esta entrega (sem mudar a ficha).
+  async function coletaDoConvite(cli, cf, cv) {
+    if (!cv.coleta) return pontoDaLoja(cli, cf);
+    const p = { endereco: cv.coleta, lat: null, lon: null, contato: txt(cf.contato, 120) };
+    await acharNoMapa(p);
+    return p;
   }
   function criarConvite(dados, ip) {
     limitar(`convite:${ip}`, 60, 60 * MIN);
@@ -427,8 +435,12 @@ export function criarAtendimento({
     const autoriza = txt(dados?.autoriza, 80);
     if (autoriza.length < 2) throw new Erro(422, 'nome_invalido', 'Informe seu nome (quem está pedindo).');
     const codigo = crypto.randomBytes(9).toString('base64url');
-    q(`INSERT INTO convites (codigo, cliente_id, volumes, oque, recebe, fone, endereco, autoriza, criado_em) VALUES (?,?,?,?,?,?,?,?,?)`)
-      .run(codigo, cli.id, JSON.stringify(volumes), txt(dados?.oque, 300), txt(dados?.recebe, 80), txt(dados?.fone, 30), txt(dados?.endereco, 200), autoriza, agora());
+    const cf = coletaFixa(cli);
+    let coleta = txt(dados?.coleta, 200);
+    if (coleta && coleta === txt(cf.endereco, 200)) coleta = '';
+    if (coleta && coleta.length < 6) throw new Erro(422, 'endereco_invalido', 'Escreva o endereço de retirada com rua, número e bairro.');
+    q(`INSERT INTO convites (codigo, cliente_id, volumes, oque, recebe, fone, endereco, autoriza, criado_em, coleta) VALUES (?,?,?,?,?,?,?,?,?,?)`)
+      .run(codigo, cli.id, JSON.stringify(volumes), txt(dados?.oque, 300), txt(dados?.recebe, 80), txt(dados?.fone, 30), txt(dados?.endereco, 200), autoriza, agora(), coleta);
     return { codigo, link: `${base()}/convite/?c=${codigo}`, volumes: servico.textoVolumes(volumes) };
   }
   function convitePublico(c) {
@@ -439,7 +451,7 @@ export function criarAtendimento({
     }
     const k = cfgBruta();
     return {
-      loja: cli.nome, coleta: txt(cf.endereco, 200), volumes, volumes_texto: servico.textoVolumes(volumes), oque: cv.oque,
+      loja: cli.nome, loja_whatsapp: cli.telefone || '', coleta: cv.coleta || txt(cf.endereco, 200), volumes, volumes_texto: servico.textoVolumes(volumes), oque: cv.oque,
       recebe: cv.recebe, fone: cv.fone, endereco: cv.endereco,
       urgente: { pct: Number(k.urgente_pct || 0), min: Number(k.urgente_min || 0), prazo_min: Number(k.urgente_prazo_min || 0) },
     };
@@ -448,7 +460,7 @@ export function criarAtendimento({
     limitar(`cotar:${ip}`, 30, 15 * MIN);
     const { cv, cli, cf, volumes } = lerConvite(dados?.c);
     if (cv.demanda_id) throw new Erro(409, 'ja_feito', 'Este pedido já foi feito.');
-    const coleta = await pontoDaLoja(cli, cf);
+    const coleta = await coletaDoConvite(cli, cf, cv);
     const entrega = lerPontoPublico(dados?.entrega);
     if (entrega.endereco.length < 6) throw new Erro(422, 'endereco_invalido', 'Escreva o endereço com rua, número e bairro, por favor.');
     await acharNoMapa(entrega);
@@ -480,7 +492,7 @@ export function criarAtendimento({
     await acharNoMapa(entrega);
     if (entrega.lat == null) throw new Erro(422, 'endereco_nao_achado', 'Não encontramos esse endereço no mapa. Confira a rua, o número e o bairro, por favor.');
     entrega.contato = `${recebe} · ${fone}`;
-    const coleta = await pontoDaLoja(cli, cf);
+    const coleta = await coletaDoConvite(cli, cf, cv);
     const km = await distancia(coleta, entrega);
     const grande = volumes.g > 0 || volumes.gg > 0;
     const descricao = [

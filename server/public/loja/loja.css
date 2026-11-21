@@ -39,3 +39,13 @@ a.botao.minha b { display: block; }
 .contador button.pequeno { width: 44px; height: 40px; font-size: 1.3em; padding: 0; }
 @media (prefers-color-scheme: dark) { .marcar.destaque { background: #3a1d0a; border-color: #7c3a10; } .contador { border-color: rgba(255,255,255,.08); } }
 .contador .cresce { flex: 1; }
+
+/* Assistente: barra de passos e cartões de escolha */
+.passos-loja .barras { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin: 8px 0 4px; }
+.passos-loja .barras span { height: 6px; border-radius: 3px; background: #e4e2d8; }
+.passos-loja .barras span.feita { background: #D4A017; }
+.grade-escolha { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.cartao-escolha { min-height: 132px; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; text-align: left; padding: 14px; border: 2px solid #e1e3d8; background: #fff; border-radius: 14px; color: #1A1A1A; }
+.cartao-escolha .icone-cartao { color: #333F22; }
+.cartao-escolha.sel, .cartao-escolha:hover { border-color: #333F22; background: #eef1e6; }
+@media (prefers-color-scheme: dark) { .passos-loja .barras span { background: #3a3a3a; } .cartao-escolha { background: #1f1f1f; border-color: #3a3a3a; color: inherit; } .cartao-escolha.sel, .cartao-escolha:hover { background: #26301a; border-color: #8aa05a; } .cartao-escolha .icone-cartao { color: #c9d9a0; } }

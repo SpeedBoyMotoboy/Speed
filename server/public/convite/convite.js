@@ -108,7 +108,8 @@ function tela(cv) {
     h('div', { class: 'cartao' },
       h('p', null, `Olá! A ${cv.loja} preparou o seu pedido e a SpeedBoy faz a entrega. O valor da entrega fica por sua conta e você vê antes de confirmar.`),
       h('div', { class: 'linha-end' }, h('div', { class: 'ponto coleta' }, 'C'), h('div', null, h('div', { class: 'nota' }, 'Retirada na loja'), cv.coleta)),
-      h('div', { class: 'linha-end' }, h('div', { class: 'ponto entrega' }, '📦'), h('div', null, h('div', { class: 'nota' }, 'Mercadorias'), [cv.volumes_texto, cv.oque].filter(Boolean).join(' · ')))),
+      h('div', { class: 'linha-end' }, h('div', { class: 'ponto entrega' }, '📦'), h('div', null, h('div', { class: 'nota' }, 'Mercadorias'), [cv.volumes_texto, cv.oque].filter(Boolean).join(' · '))),
+      cv.loja_whatsapp && h('a', { class: 'botao', target: '_blank', rel: 'noopener noreferrer', href: `https://wa.me/55${String(cv.loja_whatsapp).replace(/\D/g, '').replace(/^55/, '')}?text=${encodeURIComponent(`Olá! Tenho uma dúvida sobre a entrega do meu pedido na ${cv.loja}.`)}` }, `Falar com a ${cv.loja}`)),
     form, valores);
 }
 

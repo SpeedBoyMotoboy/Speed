@@ -1245,3 +1245,19 @@ test('convite: loja diz as mercadorias, cliente final completa, vê rota/urgente
   assert.ok(s.pedidoPublico(r2.codigo).pix, 'depois de confirmar, o Pix aparece');
   assert.equal(demandas().find((x) => x.id === d2.id).retida, 1, 'continua retido até pagar');
 });
+
+test('convite: retirada só desta entrega, link vence em 48 h e mostra o WhatsApp da loja', async () => {
+  const { s, a, relogio } = montar();
+  s.salvarConfig({ pix_tipo: 'telefone', pix_chave: '27999165959', pix_nome: 'SpeedBoy', pix_cidade: 'Serra', preco_base: '25', preco_km_incluso: '10', preco_km: '2' }, 'teste');
+  s.salvarCliente({ nome: 'Enxoval Bom', telefone: '11955551234', faturado: true, loja_endereco: 'Rua da Coleta, 10, Centro' }, 'teste');
+  const cli = s.listarClientes().find((c) => c.nome === 'Enxoval Bom');
+  const cv = a.criarConvite({ k: cli.chave, autoriza: 'Marina', volumes: { m: 1 }, coleta: 'Rua da Entrega, 20, Centro' }, 'ip');
+  const pub = a.convitePublico(cv.codigo);
+  assert.equal(pub.coleta, 'Rua da Entrega, 20, Centro');
+  assert.equal(pub.loja_whatsapp, '11955551234');
+  const cot = await a.cotarConvite({ c: cv.codigo, entrega: { endereco: 'Rua da Coleta, 10, Centro' } }, 'ip');
+  assert.equal(cot.km > 0, true, 'calcula a partir da retirada desta entrega');
+  assert.equal(s.listarClientes().find((c) => c.nome === 'Enxoval Bom').coleta_fixa.includes('Rua da Coleta'), true, 'a ficha da loja não muda');
+  relogio.t += 49 * 3600e3;
+  assert.throws(() => a.convitePublico(cv.codigo), { codigo: 'expirado' });
+});
