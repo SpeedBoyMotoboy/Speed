@@ -40,10 +40,10 @@ function tela(cv) {
 
   function escolher(cot) {
     let urgente = false;
-    const pedir = h('button', { type: 'button', class: 'primario' }, 'Confirmar e ir para o Pix');
+    const pedir = h('button', { type: 'button', class: 'primario' }, `Confirmar e pagar ${reais(cot.valor_rota)}`);
     const opcao = (sim, titulo, valor, detalhe) => {
       const r = h('input', { type: 'radio', name: 'modo', checked: !sim });
-      r.onchange = () => { urgente = sim; };
+      r.onchange = () => { urgente = sim; pedir.textContent = `Confirmar e pagar ${reais(sim ? cot.valor_urgente : cot.valor_rota)}`; };
       return h('label', { class: 'cartao marcar' }, r, h('span', { class: 'cresce' }, h('b', null, titulo), h('div', { class: 'nota' }, detalhe)), h('b', null, reais(valor)));
     };
     const aviso = h('div', { class: 'erro', role: 'alert' });
@@ -61,7 +61,7 @@ function tela(cv) {
       } catch (e) {
         aviso.textContent = e.message || 'Não foi possível enviar agora. Tente de novo, por favor.';
         pedir.disabled = false;
-        pedir.textContent = 'Confirmar e ir para o Pix';
+        pedir.textContent = 'Confirmar e pagar';
       }
     };
     trocar(valores,
@@ -69,7 +69,7 @@ function tela(cv) {
       opcao(false, 'Na rota', cot.valor_rota, 'O motoboy leva junto com as entregas da região.'),
       opcao(true, '⚡ Urgente', cot.valor_urgente, cv.urgente.prazo_min ? `Motoboy só para você, em até ${cv.urgente.prazo_min} min depois do pagamento.` : 'Motoboy só para você.'),
       cot.acima_teto && h('p', { class: 'nota' }, 'Como são vários volumes grandes, a SpeedBoy confirma o valor e o Pix aparece na próxima tela.'),
-      h('div', { class: 'aviso-quarta' }, h('b', null, 'O pagamento é feito por Pix, na próxima tela.'), h('div', null, 'O valor pode ter alguns centavos a mais: eles identificam o seu pagamento. Assim que cair, o motoboy busca na loja e leva até você.')),
+      h('div', { class: 'aviso-quarta' }, h('b', null, 'O pagamento é feito por Pix, na próxima tela.'), h('div', null, 'Os centavos identificam o seu pagamento. Assim que o Pix cair, o motoboy busca na loja e leva até você.')),
       aviso, pedir);
     valores.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }

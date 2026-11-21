@@ -235,7 +235,7 @@ function telaPix(r) {
   const manual = Boolean(r.pix.manual);
   pedido = null;
   moldura(
-    h('h1', null, `Pague ${reais(r.valor)} para liberar o motoboy`),
+    h('h1', null, `Pague ${reais(r.pix?.valor ?? r.valor)} para liberar o motoboy`),
     h('div', { class: 'cartao' },
       h('p', null, `Pedido #${r.id}. Abra o app do seu banco, escolha Pix e leia o QR code ou cole o código.`),
       qr,

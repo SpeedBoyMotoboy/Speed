@@ -188,8 +188,9 @@ export function criarAtendimento({
       // Pix direto na conta da empresa: o código já leva o valor e o número do pedido.
       const codigo = brCode({ chave: c.pix_chave, nome: c.pix_nome || c.empresa_nome, cidade: c.pix_cidade, valor: d.valor, txid: `PEDIDO${d.id}` });
       servico.registrarPix(d.id, { pagId: '', pix: codigo, qr: '', expira });
-      avisarAdmin(`💰 Pedido #${d.id} de ${d.cliente}: esperando Pix de ${reais(d.valor)}. Quando o dinheiro cair na conta, responda *pago ${d.id}* aqui (ou confirme no painel). Para cancelar: *cancelar ${d.id}*.`);
-      return { codigo, qr: '', expira, manual: true };
+      const atual = q('SELECT pag_pix, pag_qr, valor_pix FROM demandas WHERE id = ?').get(d.id);
+      avisarAdmin(`💰 Pedido #${d.id} de ${d.cliente}: esperando Pix de ${reais(atual.valor_pix ?? d.valor)}. Quando o dinheiro cair na conta, responda *pago ${d.id}* aqui (ou confirme no painel). Para cancelar: *cancelar ${d.id}*.`);
+      return { codigo: atual.pag_pix || codigo, qr: atual.pag_qr || '', expira, manual: true, valor: atual.valor_pix ?? d.valor };
     }
     const pix = await pagamentos.criarPix(c.mp_token, {
       valor: d.valor, descricao: `${c.empresa_nome} - entrega #${d.id}`, email: d.email, referencia: d.codigo,
@@ -456,6 +457,24 @@ export function criarAtendimento({
       urgente: { pct: Number(k.urgente_pct || 0), min: Number(k.urgente_min || 0), prazo_min: Number(k.urgente_prazo_min || 0) },
     };
   }
+  // Centavos de identificação reservados já no orçamento: o cliente vê o mesmo valor no orçamento e no Pix.
+  function centavosDoConvite(cv) {
+    if (cv.centavos) return cv.centavos;
+    const usados = new Set([
+      ...q(`SELECT valor_pix FROM demandas WHERE pagamento = 'pendente' AND (pag_id IS NULL OR pag_id = '')
+          AND status NOT IN ('entregue','cancelada') AND valor_pix IS NOT NULL`).all().map((x) => Math.round((x.valor_pix % 1) * 100)),
+      ...q('SELECT centavos FROM convites WHERE demanda_id IS NULL AND centavos IS NOT NULL AND criado_em > ? AND id <> ?')
+        .all(agora() - 48 * 60 * MIN, cv.id).map((x) => x.centavos),
+    ]);
+    const livres = [];
+    for (let c = 1; c <= 99; c++) if (!usados.has(c)) livres.push(c);
+    if (!livres.length) return 0;
+    const c = livres[crypto.randomInt(livres.length)];
+    q('UPDATE convites SET centavos = ? WHERE id = ?').run(c, cv.id);
+    cv.centavos = c;
+    return c;
+  }
+  const comCentavos = (v, c) => (v == null ? null : Math.round((Math.floor(v + 1e-9) + c / 100) * 100) / 100);
   async function cotarConvite(dados, ip) {
     limitar(`cotar:${ip}`, 30, 15 * MIN);
     const { cv, cli, cf, volumes } = lerConvite(dados?.c);
@@ -468,7 +487,8 @@ export function criarAtendimento({
     const km = await distancia(coleta, entrega);
     const rota = servico.cotar(coleta, entrega, { km, volumes });
     const urg = servico.cotar(coleta, entrega, { km, volumes, urgente: true });
-    return { entrega, km: rota.km, valor_rota: rota.valor, valor_urgente: urg.valor, acima_teto: Boolean(rota.acima_teto), longa: Boolean(rota.longa) };
+    const c = rota.acima_teto ? 0 : centavosDoConvite(cv);
+    return { entrega, km: rota.km, valor_rota: comCentavos(rota.valor, c), valor_urgente: comCentavos(urg.valor, c), acima_teto: Boolean(rota.acima_teto), longa: Boolean(rota.longa) };
   }
   async function pedidoConvite(dados, ip) {
     limitar(`pedir:${ip}`, 8, 60 * MIN);
@@ -512,6 +532,8 @@ export function criarAtendimento({
     q('UPDATE clientes SET pedidos = pedidos + 1 WHERE id = ?').run(cli.id);
     const novo = q('SELECT * FROM demandas WHERE id = ?').get(d.id);
     if (novo.valor != null && !novo.acima_teto) {
+      const cent = centavosDoConvite(cv);
+      if (cent) { q('UPDATE demandas SET valor_pix = ? WHERE id = ?').run(comCentavos(novo.valor, cent), d.id); novo.valor_pix = comCentavos(novo.valor, cent); }
       const c = cfgBruta();
       const codigo = brCode({ chave: c.pix_chave, nome: c.pix_nome || c.empresa_nome, cidade: c.pix_cidade, valor: novo.valor, txid: `PEDIDO${d.id}` });
       servico.registrarPix(d.id, { pagId: '', pix: codigo, qr: '', expira: agora() + 24 * 60 * MIN });
@@ -523,7 +545,7 @@ export function criarAtendimento({
       novo.acima_teto ? `⚠️ Muitos volumes grandes (passou do teto). Confirme o valor no painel (Fechar pedido): o Pix vai para o cliente depois.`
         : 'Retida até o Pix cair e o comprovante conferir. Libera sozinha.',
     ].join('\n'));
-    return { codigo: d.codigo, valor: novo.valor, acima_teto: Boolean(novo.acima_teto) };
+    return { codigo: d.codigo, valor: novo.valor_pix ?? novo.valor, acima_teto: Boolean(novo.acima_teto) };
   }
 
   // ------------------------------------- Pix conferido sozinho (aviso do banco + comprovante)

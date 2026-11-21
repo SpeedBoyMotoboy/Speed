@@ -771,7 +771,7 @@ test('Pix na chave da empresa: cliente manda o comprovante e o responsável libe
   for (const texto of ['oi', '1', 'Rua da Coleta, 10, Centro', '1', 'Rua da Entrega, 20, Centro', '1', '1', 'Envelope']) await cliente(texto);
   const fim = await cliente('1');
   assert.match(fim, /Pedido #1 reservado[\s\S]*R\$\s12,00[\s\S]*000201[\s\S]*envie o comprovante aqui/);
-  assert.ok(enviadas.some((m) => m.destino === '5511988880000' && /esperando Pix de R\$\s12,00[\s\S]*pago 1/.test(m.texto)));
+  assert.ok(enviadas.some((m) => m.destino === '5511988880000' && /esperando Pix de R\$\s12,\d\d[\s\S]*pago 1/.test(m.texto)), 'aviso com o valor e os centavos');
   const publico = s.pedidoPublico(demandas()[0].codigo);
   assert.deepEqual([publico.pix.manual, publico.pix.whatsapp, publico.pix.qr.startsWith('data:image/')], [true, '27999165959', true]);
   assert.match(publico.pix.codigo, /0014br\.gov\.bcb\.pix011446178859000196[\s\S]*540512\.\d\d[\s\S]*0507PEDIDO1/);
@@ -1216,8 +1216,10 @@ test('convite: loja diz as mercadorias, cliente final completa, vê rota/urgente
 
   // Preço público (a loja tem preço fixo próprio, mas quem paga é o cliente): base 25, 2 G = +20%.
   const cot = await a.cotarConvite({ c: cv.codigo, entrega: { endereco: 'Rua da Entrega, 20, Centro' } }, 'ip');
-  assert.equal(cot.valor_rota, 30);
-  assert.equal(cot.valor_urgente, 40); // urgente +20% (mín. R$ 10) sobre a base + 20% do tamanho
+  assert.equal(Math.floor(cot.valor_rota), 30);
+  assert.equal(Math.floor(cot.valor_urgente), 40); // urgente +20% (mín. R$ 10) sobre a base + 20% do tamanho
+  const cent = Math.round((cot.valor_rota % 1) * 100);
+  assert.ok(cent >= 1 && cent <= 99 && Math.round((cot.valor_urgente % 1) * 100) === cent, 'mesmos centavos já no orçamento');
   assert.equal(cot.acima_teto, false);
 
   await assert.rejects(a.pedidoConvite({ c: cv.codigo, entrega: { endereco: 'Rua da Entrega, 20, Centro' }, recebe: 'Paula', fone: '11966660002', nf_doc: '123', nf_nome: 'Paula Reis' }, 'ip'), { codigo: 'doc_invalido' });
@@ -1225,6 +1227,8 @@ test('convite: loja diz as mercadorias, cliente final completa, vê rota/urgente
     nf_doc: '529.982.247-25', nf_nome: 'Paula Reis', instrucoes: 'Deixar na portaria' }, 'ip');
   const d = demandas().find((x) => x.codigo === r.codigo);
   assert.equal(d.valor, 30);
+  assert.equal(d.valor_pix, cot.valor_rota, 'o Pix sai com o mesmo valor mostrado no orçamento');
+  assert.equal(r.valor, cot.valor_rota);
   assert.equal(d.retida, 1);
   assert.equal(d.paga_final, 1);
   assert.equal(d.requisito, 'bau');
