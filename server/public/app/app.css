@@ -170,3 +170,15 @@ body.tem-barra { padding-bottom: 120px; }
 .resumo-perfil .a-receber { grid-column: 1 / -1; background: #fff4d6; border: 2px solid var(--destaque); }
 .resumo-perfil .a-receber b { font-size: 26px; }
 :root[data-tema="escuro"] .resumo-perfil .a-receber { background: #3a300f; }
+/* Botões Rota e Iniciar, abaixo da previsão */
+.botoes-rota { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 4px 0 14px; }
+.botao-icone { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 56px; border-radius: 14px; font-size: 18px; font-weight: 800; text-transform: uppercase; letter-spacing: .5px; }
+.botao-icone.rota { background: var(--cartao); color: var(--acao); border: 2px solid var(--acao); }
+.botao-icone.iniciar { background: var(--acao); color: #fff; border: 2px solid var(--acao); }
+.parada-rota { display: flex; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--borda); }
+.parada-rota:last-child { border-bottom: 0; }
+.parada-rota .num { width: 30px; height: 30px; flex: none; border-radius: 50%; background: var(--sutil); display: inline-flex; align-items: center; justify-content: center; font-weight: 800; }
+.parada-rota.agora .num { background: var(--marca); color: #fff; }
+.parada-rota .cresce { flex: 1; min-width: 0; }
+.end-rota { font-weight: 700; margin-top: 4px; overflow-wrap: anywhere; }
+.botao-link { display: flex; align-items: center; justify-content: center; min-height: 52px; border-radius: 12px; background: var(--acao); color: #fff; font-weight: 800; text-decoration: none; margin-top: 12px; }
