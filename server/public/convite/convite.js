@@ -40,10 +40,10 @@ function tela(cv) {
 
   function escolher(cot) {
     let urgente = false;
-    const pedir = h('button', { type: 'button', class: 'primario' }, `Confirmar e pagar ${reais(cot.valor_rota)}`);
+    const pedir = h('button', { type: 'button', class: 'primario' }, 'Confirmar e ir para o Pix');
     const opcao = (sim, titulo, valor, detalhe) => {
       const r = h('input', { type: 'radio', name: 'modo', checked: !sim });
-      r.onchange = () => { urgente = sim; pedir.textContent = `Confirmar e pagar ${reais(sim ? cot.valor_urgente : cot.valor_rota)}`; };
+      r.onchange = () => { urgente = sim; };
       return h('label', { class: 'cartao marcar' }, r, h('span', { class: 'cresce' }, h('b', null, titulo), h('div', { class: 'nota' }, detalhe)), h('b', null, reais(valor)));
     };
     const aviso = h('div', { class: 'erro', role: 'alert' });
@@ -61,7 +61,7 @@ function tela(cv) {
       } catch (e) {
         aviso.textContent = e.message || 'Não foi possível enviar agora. Tente de novo, por favor.';
         pedir.disabled = false;
-        pedir.textContent = 'Confirmar e pagar';
+        pedir.textContent = 'Confirmar e ir para o Pix';
       }
     };
     trocar(valores,
