@@ -129,7 +129,7 @@ function desenhar(p) {
       ].join('')
         : p.acima_teto && !p.pix ? 'Estamos confirmando o valor da entrega. O Pix aparece aqui em instantes.'
         : p.pix?.comprovante ? 'Comprovante recebido. Estamos conferindo o pagamento para liberar o motoboy.'
-          : p.pix?.manual ? `Pague ${reais(p.valor)} por Pix e envie o comprovante para liberar o motoboy.`
+          : p.pix?.manual ? `Pague ${reais(p.pix.valor ?? p.valor)} por Pix. Os centavos identificam o seu pagamento: assim que cair, o motoboy é chamado.`
             : p.pix ? `Pague ${reais(p.valor)} por Pix até ${hora(p.pix.expira)} para liberar o motoboy.`
           : p.retida ? 'Assim que o pedido for confirmado, chamamos o motoboy.' : 'Estamos chamando o motoboy mais próximo.';
 
@@ -146,7 +146,7 @@ function desenhar(p) {
         copiar,
         p.pix.manual && h('div', { class: 'aviso-quarta' },
           h('b', null, 'A entrega só sai depois do pagamento conferido.'),
-          h('div', null, 'Pague o Pix e envie o comprovante aqui. Assim que conferir, o motoboy é chamado.')),
+          h('div', null, 'Use o código Pix acima (já vem com o valor certo). Se quiser, envie o comprovante aqui.')),
         p.pix.manual && envioComprovante(p),
         p.pix.manual && !p.pix.comprovante && botaoComprovante(p.pix.whatsapp, p.id, p.valor)],
       temMapa && !p.pix && mapaEl),

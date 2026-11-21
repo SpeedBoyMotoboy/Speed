@@ -1112,11 +1112,29 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     return { codigo, qr, valor: d.valor, manual: true };
   }
   // Pix manual em aberto: se o valor mudou (desconto, correção), o código e o QR acompanham.
+  // Pix na chave da empresa: cada pedido em aberto ganha centavos só dele (R$ 25,07), para o aviso do banco
+  // dizer de qual pedido é o dinheiro, mesmo com vários pedidos do mesmo preço.
+  function centavosUnicos(d) {
+    if (d.valor == null) return null;
+    const reais = Math.floor(d.valor + 1e-9);
+    const usados = new Set(q(`SELECT valor_pix FROM demandas WHERE id <> ? AND pagamento = 'pendente' AND (pag_id IS NULL OR pag_id = '')
+        AND status NOT IN ('entregue','cancelada') AND valor_pix IS NOT NULL`).all(d.id)
+      .filter((x) => Math.floor(x.valor_pix + 1e-9) === reais).map((x) => Math.round((x.valor_pix - reais) * 100)));
+    const livres = [];
+    for (let c = 1; c <= 99; c++) if (!usados.has(c)) livres.push(c);
+    if (!livres.length) return null; // 99 pedidos do mesmo preço esperando: fica sem centavos (o dono confere)
+    const c = livres[crypto.randomInt(livres.length)];
+    const v = Math.round((reais + c / 100) * 100) / 100;
+    q('UPDATE demandas SET valor_pix = ? WHERE id = ?').run(v, d.id);
+    d.valor_pix = v;
+    return v;
+  }
   function pixAtual(d) {
     if (d.pagamento !== 'pendente' || d.status === 'cancelada' || !d.pag_pix) return false;
     if (!d.pag_id) {
       const c = cfgBruta();
-      const codigo = brCode({ chave: c.pix_chave, nome: c.pix_nome || c.empresa_nome, cidade: c.pix_cidade, valor: d.valor, txid: `PEDIDO${d.id}` });
+      if (d.valor_pix == null || Math.floor(d.valor_pix + 1e-9) !== Math.floor(d.valor + 1e-9)) centavosUnicos(d);
+      const codigo = brCode({ chave: c.pix_chave, nome: c.pix_nome || c.empresa_nome, cidade: c.pix_cidade, valor: d.valor_pix ?? d.valor, txid: `PEDIDO${d.id}` });
       if (codigo !== d.pag_pix || !d.pag_qr) {
         const qr = qrDataUrl(codigo);
         q('UPDATE demandas SET pag_pix = ?, pag_qr = ? WHERE id = ?').run(codigo, qr, d.id);
@@ -1129,6 +1147,8 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
   function registrarPix(id, { pagId, pix, qr, expira }) {
     q("UPDATE demandas SET pagamento = 'pendente', pag_id = ?, pag_pix = ?, pag_qr = ?, pag_expira = ? WHERE id = ?")
       .run(String(pagId), pix, qr, expira, id);
+    // Pix na chave da empresa: já gera com os centavos do pedido (o código e o QR saem com o valor certo).
+    if (!pagId) { const d = q('SELECT * FROM demandas WHERE id = ?').get(id); if (d) pixAtual(d); }
   }
   // Pagamento confirmado pelo banco: solta o pedido para os motoboys.
   function marcarPago(id, ator = 'pagamento') {
@@ -1779,7 +1799,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       pagamento: d.pagamento,
       paga_final: Boolean(d.paga_final), acima_teto: Boolean(d.acima_teto), volumes: d.volumes ? textoVolumes(JSON.parse(d.volumes)) : '', falta_nota: Boolean(d.paga_final) && !d.nf_doc && !['entregue', 'cancelada'].includes(d.status),
       pix: pixAtual(d) ? {
-        codigo: d.pag_pix, qr: d.pag_qr, expira: d.pag_expira,
+        codigo: d.pag_pix, qr: d.pag_qr, expira: d.pag_expira, valor: d.pag_id ? d.valor : (d.valor_pix ?? d.valor),
         // Pix na chave da empresa: o cliente manda o comprovante e a equipe confirma.
         manual: !d.pag_id, whatsapp: cfgBruta().empresa_whatsapp, comprovante: d.comprovante_em != null,
       } : null,

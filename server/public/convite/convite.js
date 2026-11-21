@@ -69,7 +69,7 @@ function tela(cv) {
       opcao(false, 'Na rota', cot.valor_rota, 'O motoboy leva junto com as entregas da região.'),
       opcao(true, '⚡ Urgente', cot.valor_urgente, cv.urgente.prazo_min ? `Motoboy só para você, em até ${cv.urgente.prazo_min} min depois do pagamento.` : 'Motoboy só para você.'),
       cot.acima_teto && h('p', { class: 'nota' }, 'Como são vários volumes grandes, a SpeedBoy confirma o valor e o Pix aparece na próxima tela.'),
-      h('div', { class: 'aviso-quarta' }, h('b', null, 'O pagamento é feito por Pix, na próxima tela.'), h('div', null, 'Assim que o pagamento for confirmado, o motoboy busca na loja e leva até você.')),
+      h('div', { class: 'aviso-quarta' }, h('b', null, 'O pagamento é feito por Pix, na próxima tela.'), h('div', null, 'O valor pode ter alguns centavos a mais: eles identificam o seu pagamento. Assim que cair, o motoboy busca na loja e leva até você.')),
       aviso, pedir);
     valores.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
