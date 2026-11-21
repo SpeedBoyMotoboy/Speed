@@ -1288,6 +1288,7 @@ function cartoesAnalise(r, clientePadrao = '') {
         p.servico && chip(p.servico), p.requisito !== 'qualquer' && chip(ROTULO_REQUISITO[p.requisito])),
       h('div', { class: 'sub' }, `C: ${p.coleta_endereco || '—'}${p.coleta_contato ? ` (${p.coleta_contato})` : ''}`),
       h('div', { class: 'sub' }, `E: ${p.entrega_endereco || '—'}${p.entrega_contato ? ` (${p.entrega_contato})` : ''}`),
+      p.solicitante && h('div', { class: 'sub' }, `Quem pediu: ${p.solicitante}`),
       p.descricao && h('div', { class: 'sub' }, p.descricao),
       p.telefone && h('div', { class: 'sub' }, `Telefone: ${p.telefone}`),
       p.observacao && h('div', { class: 'sub falta' }, p.observacao),
