@@ -1111,12 +1111,11 @@ test('robô: pedidos em andamento de um telefone, com o link de acompanhamento',
   relogio.t += 60_000;
 });
 
-test('link do cliente da loja: exige quem recebe e nota fiscal; instruções e fachada chegam ao motoboy', async () => {
+test('link do cliente da loja: nota fiscal opcional mas conferida; instruções e fachada chegam ao motoboy', async () => {
   const { s, a, demandas, enviadas } = montar();
   s.salvarCliente({ nome: 'Enxoval Bom', telefone: '11955551234', faturado: true, loja_endereco: 'Rua da Coleta, 10, Centro', loja_contato: 'Marina' }, 'teste');
   const l = s.listarClientes().find((c) => c.nome === 'Enxoval Bom').chave_cliente;
   const base = { loja: l, nome: 'Paula Reis', telefone: '(11) 96666-0002', descricao: 'Lençol', entrega: { endereco: 'Rua da Entrega, 20, Centro' } };
-  await assert.rejects(a.pedidoSite(base, 'ip'), { codigo: 'nf_invalida' });
   await assert.rejects(a.pedidoSite({ ...base, nf_doc: '111.111.111-11', nf_nome: 'Paula Reis' }, 'ip'), { codigo: 'nf_invalida' });
   await assert.rejects(a.pedidoSite({ ...base, nf_doc: '529.982.247-25', nf_nome: 'P' }, 'ip'), { codigo: 'nf_nome' });
   const r = await a.pedidoSite({ ...base, nf_doc: '529.982.247-25', nf_nome: 'Paula Reis Lima', recebe_nome: 'Tia Rosa', recebe_fone: '(11) 95555-4444',
@@ -1260,4 +1259,18 @@ test('convite: retirada só desta entrega, link vence em 48 h e mostra o WhatsAp
   assert.equal(s.listarClientes().find((c) => c.nome === 'Enxoval Bom').coleta_fixa.includes('Rua da Coleta'), true, 'a ficha da loja não muda');
   relogio.t += 49 * 3600e3;
   assert.throws(() => a.convitePublico(cv.codigo), { codigo: 'expirado' });
+});
+
+test('convite: nota fiscal é opcional (em branco segue; preenchida errada pede para conferir)', async () => {
+  const { s, a, demandas } = montar();
+  s.salvarConfig({ pix_tipo: 'telefone', pix_chave: '27999165959', pix_nome: 'SpeedBoy', pix_cidade: 'Serra', preco_base: '25', preco_km_incluso: '10', preco_km: '2' }, 'teste');
+  s.salvarCliente({ nome: 'Enxoval Bom', telefone: '11955551234', faturado: true, loja_endereco: 'Rua da Coleta, 10, Centro' }, 'teste');
+  const cli = s.listarClientes().find((c) => c.nome === 'Enxoval Bom');
+  const cv = a.criarConvite({ k: cli.chave, autoriza: 'Marina', volumes: { m: 1 } }, 'ip');
+  const base = { c: cv.codigo, entrega: { endereco: 'Rua da Entrega, 20, Centro' }, recebe: 'Paula', fone: '11966660002' };
+  await assert.rejects(a.pedidoConvite({ ...base, nf_doc: '123.456' }, 'ip'), { codigo: 'doc_invalido' });
+  const r = await a.pedidoConvite(base, 'ip');
+  const d = demandas().find((x) => x.codigo === r.codigo);
+  assert.equal(d.nf_doc, '');
+  assert.ok(s.pedidoPublico(r.codigo).pix, 'segue para o Pix sem nota');
 });

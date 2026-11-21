@@ -98,7 +98,7 @@ function formNota() {
       } catch (e) { aviso.textContent = e.message; salvar.disabled = false; }
     },
   },
-  h('b', null, 'Dados para a nota fiscal do frete'),
+  h('b', null, 'Nota fiscal do frete (opcional)'),
   h('label', { for: 'nf_doc' }, 'CPF ou CNPJ'), doc,
   h('label', { for: 'nf_nome' }, 'Nome'), nome,
   aviso, salvar);

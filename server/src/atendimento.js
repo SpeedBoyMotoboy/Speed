@@ -481,10 +481,12 @@ export function criarAtendimento({
     if (recebe.length < 2) throw new Erro(422, 'recebedor_invalido', 'Diga o nome de quem vai receber, por favor.');
     const fone = normalizarTelefone(dados?.fone);
     if (!fone) throw new Erro(422, 'telefone_invalido', 'Informe um WhatsApp com DDD para o motoboy falar com quem recebe.');
-    const doc = docFiscal(dados?.nf_doc);
+    // Nota fiscal opcional por enquanto: em branco segue; preenchida com erro pede para conferir ou apagar.
+    const docBruto = String(dados?.nf_doc || '').replace(/\D/g, '');
+    const doc = docBruto ? docFiscal(docBruto) : '';
     const nfNome = txt(dados?.nf_nome, 80);
-    if (!doc) throw new Erro(422, 'doc_invalido', 'Confira o CPF ou CNPJ para a nota fiscal, por favor.');
-    if (nfNome.length < 3) throw new Erro(422, 'nome_invalido', 'Informe o nome completo para a nota fiscal, por favor.');
+    if (docBruto && !doc) throw new Erro(422, 'doc_invalido', 'Confira o CPF ou CNPJ, ou deixe em branco, por favor.');
+    if (doc && nfNome.length < 3) throw new Erro(422, 'nome_invalido', 'Informe o nome para a nota fiscal, ou apague o CPF/CNPJ, por favor.');
     const urgente = dados?.urgente === true;
     const como = txt(dados?.instrucoes, 300);
     const entrega = lerPontoPublico(dados?.entrega);
@@ -505,7 +507,7 @@ export function criarAtendimento({
       urgente, tarifa_urgente: urgente, km, coleta, entrega, tabela_publica: true,
     }, 'empresa', { retida: true, pagamento: '' });
     q('UPDATE demandas SET paga_final = 1 WHERE id = ?').run(d.id);
-    servico.gravarNota(d.id, doc, nfNome);
+    if (doc) servico.gravarNota(d.id, doc, nfNome);
     q('UPDATE convites SET demanda_id = ? WHERE id = ?').run(d.id, cv.id);
     q('UPDATE clientes SET pedidos = pedidos + 1 WHERE id = ?').run(cli.id);
     const novo = q('SELECT * FROM demandas WHERE id = ?').get(d.id);
@@ -517,7 +519,7 @@ export function criarAtendimento({
     avisarAdmin([
       `🏬💰 Cliente da ${cli.nome} pediu a entrega #${d.id}${urgente ? ' ⚡URGENTE' : ''} — frete pago por ele${novo.valor != null ? ` (${reais(novo.valor)})` : ''}.`,
       `📦 ${servico.textoVolumes(volumes)} · 🏁 ${novo.entrega_endereco} (${entrega.contato})`,
-      `🧾 Nota: ${nfNome} · ${doc.length === 11 ? 'CPF' : 'CNPJ'} ${docFmt(doc)}`,
+      doc ? `🧾 Nota: ${nfNome} · ${doc.length === 11 ? 'CPF' : 'CNPJ'} ${docFmt(doc)}` : '🧾 Sem dados de nota (opcional).',
       novo.acima_teto ? `⚠️ Muitos volumes grandes (passou do teto). Confirme o valor no painel (Fechar pedido): o Pix vai para o cliente depois.`
         : 'Retida até o Pix cair e o comprovante conferir. Libera sozinha.',
     ].join('\n'));
@@ -1084,11 +1086,13 @@ export function criarAtendimento({
       const recebeFone = normalizarTelefone(dados?.recebe_fone) || telefone;
       if (!recebeFone) throw new Erro(422, 'telefone_invalido', 'Informe o telefone de quem vai receber.');
       entrega.contato = `${recebeNome} ${recebeFone}`.trim();
-      const doc = docFiscal(dados?.nf_doc);
+      // Nota fiscal opcional por enquanto: em branco segue; preenchida com erro pede para conferir ou apagar.
+      const docBruto = String(dados?.nf_doc || '').replace(/\D/g, '');
+      const doc = docBruto ? docFiscal(docBruto) : '';
       const nfNome = txt(dados?.nf_nome, 120);
-      if (!doc) throw new Erro(422, 'nf_invalida', 'CPF ou CNPJ inválido. Confira os números: a nota fiscal do frete sai nele.');
-      if (nfNome.length < 3) throw new Erro(422, 'nf_nome', 'Informe o nome completo ou a razão social para a nota fiscal.');
-      nf = { doc, nome: nfNome };
+      if (docBruto && !doc) throw new Erro(422, 'nf_invalida', 'CPF ou CNPJ inválido. Confira os números ou deixe em branco.');
+      if (doc && nfNome.length < 3) throw new Erro(422, 'nf_nome', 'Informe o nome para a nota fiscal, ou apague o CPF/CNPJ.');
+      nf = doc ? { doc, nome: nfNome } : null;
       const como = txt(dados?.instrucoes, 300);
       dados = { ...dados, descricao: [`🏬 Cliente da ${loja.cli.nome}`, txt(loja.cf.obs, 200), txt(dados?.descricao, 300), como && `📍 Na entrega: ${como}`].filter(Boolean).join(' · ') };
     } else if (!coleta.contato) coleta.contato = `${nome} ${telefone}`.trim();
@@ -1173,8 +1177,10 @@ export function criarAtendimento({
     }
     if (loja) {
       q('UPDATE clientes SET pedidos = pedidos + 1 WHERE id = ?').run(loja.cli.id);
-      servico.gravarNota(d.id, nf.doc, nf.nome);
-      avisarAdmin(`🧾 Nota do frete #${d.id} (cliente da ${loja.cli.nome}): ${nf.nome} · ${nf.doc.length === 11 ? 'CPF' : 'CNPJ'} ${docFmt(nf.doc)}`);
+      if (nf) {
+        servico.gravarNota(d.id, nf.doc, nf.nome);
+        avisarAdmin(`🧾 Nota do frete #${d.id} (cliente da ${loja.cli.nome}): ${nf.nome} · ${nf.doc.length === 11 ? 'CPF' : 'CNPJ'} ${docFmt(nf.doc)}`);
+      }
     }
     return { id: d.id, codigo: d.codigo, status: d.status, valor: d.valor, confirmacao: modo, pix };
   }

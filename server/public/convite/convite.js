@@ -33,8 +33,8 @@ function tela(cv) {
     if (recebe.value.trim().length < 2) return 'Diga o nome de quem vai receber, por favor.';
     if (fone.value.replace(/\D/g, '').length < 10) return 'Informe um WhatsApp com DDD, por favor.';
     const d = doc.value.replace(/\D/g, '');
-    if (d.length !== 11 && d.length !== 14) return 'Confira o CPF ou CNPJ para a nota fiscal, por favor.';
-    if (nfNome.value.trim().length < 3) return 'Informe o nome completo para a nota fiscal, por favor.';
+    if (d && d.length !== 11 && d.length !== 14) return 'Confira o CPF ou CNPJ, ou deixe em branco, por favor.';
+    if (d && nfNome.value.trim().length < 3) return 'Informe o nome para a nota fiscal, por favor.';
     return '';
   }
 
@@ -98,7 +98,8 @@ function tela(cv) {
     h('label', { for: 'fone' }, 'WhatsApp de quem recebe'), fone,
     h('label', { for: 'como' }, 'Alguma orientação para o motoboy? (opcional)'), como),
   h('div', { class: 'cartao' },
-    h('b', null, 'Dados para a nota fiscal da entrega'),
+    h('b', null, 'Nota fiscal da entrega (opcional)'),
+    h('div', { class: 'nota' }, 'Se quiser a nota, preencha. Se não, pode deixar em branco.'),
     h('label', { for: 'doc' }, 'CPF ou CNPJ'), doc,
     h('label', { for: 'nfnome' }, 'Nome'), nfNome),
   erro, ver);
