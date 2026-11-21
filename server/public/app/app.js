@@ -459,6 +459,7 @@ function desenharTurno() {
   if (atual) {
     partes.push(cartaoParada(atual));
     if (estado.previsao_fim) partes.push(h('p', { class: 'previsao' }, `Previsão de terminar a rota: ${hora(estado.previsao_fim)} (5 min por parada)`));
+    partes.push(botoesRota(atual, rota));
     if (proximas.length) {
       partes.push(h('div', { class: 'titulo-secao' }, `Depois (${proximas.length})`),
         h('div', { class: 'cartao' }, proximas.map((p) => h('div', { class: 'proxima' },
@@ -501,6 +502,66 @@ function desenharTurno() {
             : `Turno até ${hora(turno.fim_previsto)} · ${rota.length} parada(s)`)))),
     faixaSinal(),
     h('div', { class: 'conteudo' }, partes));
+}
+
+// ── Botões "Rota" (tela com todas as paradas) e "Iniciar" (navega até a parada atual) ──
+const ICONE_ROTA = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="19" r="2"/><circle cx="18" cy="5" r="2"/><path d="M8 19h8.5a3.5 3.5 0 0 0 0-7h-9a3.5 3.5 0 0 1 0-7H16"/></svg>';
+const ICONE_NAVEGAR = '<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2 4.5 20.3a.6.6 0 0 0 .8.8L12 18l6.7 3.1a.6.6 0 0 0 .8-.8z"/></svg>';
+function navegarAte(p) {
+  if (nativo) nativo.navegar(p.lat, p.lon);
+  else window.open(`https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lon}`, '_blank', 'noopener');
+}
+function botaoIcone(icone, texto, classe, onclick) {
+  const b = h('button', { type: 'button', class: `botao-icone ${classe}`, onclick });
+  b.innerHTML = icone;
+  b.append(h('span', null, texto));
+  return b;
+}
+function botoesRota(atual, rota) {
+  return h('div', { class: 'botoes-rota' },
+    botaoIcone(ICONE_ROTA, 'Rota', 'rota', () => telaRota(rota)),
+    botaoIcone(ICONE_NAVEGAR, 'Iniciar', 'iniciar', () => navegarAte(atual)));
+}
+// Distância em linha reta × 1,3 (ruas não são retas): só para ter noção do que falta.
+function kmEntre(a, b) {
+  if (a?.lat == null || b?.lat == null) return 0;
+  const r = Math.PI / 180;
+  const x = Math.sin(((b.lat - a.lat) * r) / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin(((b.lon - a.lon) * r) / 2) ** 2;
+  return 2 * 6371 * Math.asin(Math.sqrt(x)) * 1.3;
+}
+const km = (v) => `${v < 10 ? v.toFixed(1).replace('.', ',') : Math.round(v)} km`;
+function telaRota(rota) {
+  formAberto = true;
+  const voltar = () => { formAberto = false; desenharTurno(); };
+  let anterior = ultimaPosicao;
+  let total = 0;
+  const itens = rota.map((p, i) => {
+    const trecho = kmEntre(anterior, p);
+    total += trecho;
+    anterior = p;
+    return h('div', { class: `parada-rota${i === 0 ? ' agora' : ''}` },
+      h('span', { class: 'num' }, String(i + 1)),
+      h('div', { class: 'cresce' },
+        h('span', { class: `etiqueta ${p.tipo}` }, `${i === 0 ? 'AGORA: ' : ''}${p.tipo === 'coleta' ? 'COLETA' : 'ENTREGA'}`),
+        h('div', { class: 'end-rota' }, p.endereco),
+        h('div', { class: 'detalhe' }, [p.cliente, trecho > 0 && `+${km(trecho)}`].filter(Boolean).join(' · '))));
+  });
+  const coletas = rota.filter((p) => p.tipo === 'coleta').length;
+  const pontos = rota.filter((p) => p.lat != null);
+  const ultimo = pontos[pontos.length - 1];
+  const paradas = pontos.slice(0, -1).slice(0, 9).map((p) => `${p.lat},${p.lon}`).join('|');
+  const link = ultimo && `https://www.google.com/maps/dir/?api=1&destination=${ultimo.lat},${ultimo.lon}${paradas ? `&waypoints=${encodeURIComponent(paradas)}` : ''}&travelmode=driving`;
+  trocar(raiz,
+    h('div', { class: 'topo' }, h('div', { class: 'nome' }, 'Sua rota'),
+      h('div', { class: 'info' }, `${rota.length} parada(s) · ${coletas} coleta(s) · ${rota.length - coletas} entrega(s)`)),
+    h('div', { class: 'conteudo' },
+      h('div', { class: 'resumo-perfil' },
+        h('div', null, h('b', null, String(rota.length)), h('span', null, 'paradas faltando')),
+        h('div', null, h('b', null, total > 0 ? `~${km(total)}` : '-'), h('span', null, 'até o fim')),
+        estado?.previsao_fim && h('div', { class: 'a-receber' }, h('b', null, hora(estado.previsao_fim)), h('span', null, 'previsão de terminar'))),
+      h('div', { class: 'cartao' }, itens),
+      link && h('a', { class: 'botao-link primario', href: link, target: '_blank', rel: 'noopener' }, 'Abrir rota inteira no Maps'),
+      h('div', { class: 'botoes' }, h('button', { class: 'leve', onclick: voltar }, 'Voltar'))));
 }
 
 // ── Perfil do motoboy: foto, dados, corridas, Pix (avulso/diária) e almoço (fixo) ──
@@ -790,10 +851,6 @@ function cartaoParada(p) {
   const area = h('div', { class: 'botoes' });
   const erro = h('div', { class: 'erro', role: 'alert' });
 
-  const navegar = () => {
-    if (nativo) nativo.navegar(p.lat, p.lon);
-    else window.open(`https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lon}`, '_blank', 'noopener');
-  };
 
   const ALERTA = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>';
   // Fora dos botões iniciais (formulários abertos) a área volta para dentro do cartão.
@@ -925,7 +982,6 @@ function cartaoParada(p) {
   botoesIniciais();
   // Botão do Maps no topo e duas abas: cliente/endereço e detalhes.
   const d = lerParada(p);
-  const mapa = h('button', { type: 'button', class: 'abrir-maps', onclick: navegar }, 'Abrir no Maps');
   const conteudo = h('div', null);
   const botaoAba = (qual, texto) => h('button', { type: 'button', role: 'tab', class: abaParada === qual ? 'ativa' : '', 'aria-selected': abaParada === qual ? 'true' : 'false',
     onclick: () => { abaParada = qual; desenharAba(); } }, texto);
@@ -937,7 +993,6 @@ function cartaoParada(p) {
   desenharAba();
   return h('div', { class: `cartao atual ${p.tipo}` },
     h('div', { class: 'linha-topo' }, h('span', { class: `etiqueta ${p.tipo}` }, coleta ? 'AGORA: COLETA' : 'AGORA: ENTREGA'), prob),
-    mapa,
     abas, conteudo,
     area, erro);
 }
