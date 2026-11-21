@@ -136,8 +136,8 @@ function telaConfirmar() {
   outraPessoa.addEventListener('change', () => { blocoOutra.hidden = !outraPessoa.checked; recebeNome.required = outraPessoa.checked; recebeFone.required = outraPessoa.checked; });
   const instrucoes = h('textarea', { id: 'instrucoes', rows: 3, maxlength: 300, placeholder: 'Ex.: deixar na portaria com o Sr. João. Apto 302, bloco B. Casa de portão azul.' });
   const fachada = h('input', { id: 'fachada', type: 'file', accept: 'image/*' });
-  const nfDoc = h('input', { id: 'nf_doc', inputmode: 'numeric', maxlength: 18, required: Boolean(loja), placeholder: 'Só os números', value: guardado.nf_doc || '' });
-  const nfNome = h('input', { id: 'nf_nome', maxlength: 120, required: Boolean(loja), placeholder: 'Nome completo ou razão social', value: guardado.nf_nome || '' });
+  const nfDoc = h('input', { id: 'nf_doc', inputmode: 'numeric', maxlength: 18, placeholder: 'Só os números (opcional)', value: guardado.nf_doc || '' });
+  const nfNome = h('input', { id: 'nf_nome', maxlength: 120, placeholder: 'Nome completo ou razão social (opcional)', value: guardado.nf_nome || '' });
   const erro = h('div', { class: 'erro', role: 'alert' });
   const enviar = h('button', { class: 'primario', type: 'submit' }, info.pagamento ? 'Pagar com Pix' : 'Confirmar pedido');
 

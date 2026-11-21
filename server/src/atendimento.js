@@ -405,6 +405,127 @@ export function criarAtendimento({
     avisarAdmin(linhas.filter(Boolean).join('\n'));
   }
 
+  // -------------------------- Convite: a loja manda um link e o cliente final preenche e paga o frete
+  // A loja diz as mercadorias (e, se souber, o endereço). O cliente completa, escolhe rota ou urgente, vê o valor
+  // e paga por Pix. O pedido nasce retido e só sai depois do pagamento conferido.
+  function lerConvite(c) {
+    const codigo = txt(c, 40);
+    const cv = codigo.length >= 10 ? q('SELECT * FROM convites WHERE codigo = ?').get(codigo) : null;
+    if (!cv) throw new Erro(404, 'link_invalido', 'Este link não está mais disponível. Fale com a loja, por favor.');
+    const cli = q('SELECT * FROM clientes WHERE id = ? AND faturado = 1').get(cv.cliente_id);
+    const cf = cli ? coletaFixa(cli) : null;
+    if (!cli || !cf) throw new Erro(404, 'link_invalido', 'Este link não está mais disponível. Fale com a loja, por favor.');
+    if (!cv.demanda_id && agora() - cv.criado_em > 48 * 60 * MIN) throw new Erro(410, 'expirado', `Este link venceu (vale 48 horas). Peça um novo à ${cli.nome}, por favor.`);
+    return { cv, cli, cf, volumes: JSON.parse(cv.volumes || '{}') };
+  }
+  // Retirada: a da ficha da loja, ou a que a loja escreveu só para esta entrega (sem mudar a ficha).
+  async function coletaDoConvite(cli, cf, cv) {
+    if (!cv.coleta) return pontoDaLoja(cli, cf);
+    const p = { endereco: cv.coleta, lat: null, lon: null, contato: txt(cf.contato, 120) };
+    await acharNoMapa(p);
+    return p;
+  }
+  function criarConvite(dados, ip) {
+    limitar(`convite:${ip}`, 60, 60 * MIN);
+    const cli = empresaDaChave(dados?.k);
+    if (!coletaFixa(cli)) throw new Erro(422, 'sem_coleta', 'Esta opção é para lojas com endereço de retirada cadastrado. Fale com a SpeedBoy.');
+    if (!cfgBruta().pix_chave) throw new Erro(422, 'sem_pix', 'O pagamento pelo cliente ainda não está disponível. Fale com a SpeedBoy.');
+    const volumes = servico.lerVolumes(dados?.volumes);
+    if (!volumes) throw new Erro(422, 'sem_volumes', 'Diga quantas mercadorias vão (toque no + do tamanho).');
+    const autoriza = txt(dados?.autoriza, 80);
+    if (autoriza.length < 2) throw new Erro(422, 'nome_invalido', 'Informe seu nome (quem está pedindo).');
+    const codigo = crypto.randomBytes(9).toString('base64url');
+    const cf = coletaFixa(cli);
+    let coleta = txt(dados?.coleta, 200);
+    if (coleta && coleta === txt(cf.endereco, 200)) coleta = '';
+    if (coleta && coleta.length < 6) throw new Erro(422, 'endereco_invalido', 'Escreva o endereço de retirada com rua, número e bairro.');
+    q(`INSERT INTO convites (codigo, cliente_id, volumes, oque, recebe, fone, endereco, autoriza, criado_em, coleta) VALUES (?,?,?,?,?,?,?,?,?,?)`)
+      .run(codigo, cli.id, JSON.stringify(volumes), txt(dados?.oque, 300), txt(dados?.recebe, 80), txt(dados?.fone, 30), txt(dados?.endereco, 200), autoriza, agora(), coleta);
+    return { codigo, link: `${base()}/convite/?c=${codigo}`, volumes: servico.textoVolumes(volumes) };
+  }
+  function convitePublico(c) {
+    const { cv, cli, cf, volumes } = lerConvite(c);
+    if (cv.demanda_id) {
+      const d = q('SELECT codigo FROM demandas WHERE id = ?').get(cv.demanda_id);
+      return { feito: true, pedido: d?.codigo || null };
+    }
+    const k = cfgBruta();
+    return {
+      loja: cli.nome, loja_whatsapp: cli.telefone || '', coleta: cv.coleta || txt(cf.endereco, 200), volumes, volumes_texto: servico.textoVolumes(volumes), oque: cv.oque,
+      recebe: cv.recebe, fone: cv.fone, endereco: cv.endereco,
+      urgente: { pct: Number(k.urgente_pct || 0), min: Number(k.urgente_min || 0), prazo_min: Number(k.urgente_prazo_min || 0) },
+    };
+  }
+  async function cotarConvite(dados, ip) {
+    limitar(`cotar:${ip}`, 30, 15 * MIN);
+    const { cv, cli, cf, volumes } = lerConvite(dados?.c);
+    if (cv.demanda_id) throw new Erro(409, 'ja_feito', 'Este pedido já foi feito.');
+    const coleta = await coletaDoConvite(cli, cf, cv);
+    const entrega = lerPontoPublico(dados?.entrega);
+    if (entrega.endereco.length < 6) throw new Erro(422, 'endereco_invalido', 'Escreva o endereço com rua, número e bairro, por favor.');
+    await acharNoMapa(entrega);
+    if (entrega.lat == null) throw new Erro(422, 'endereco_nao_achado', 'Não encontramos esse endereço no mapa. Confira a rua, o número e o bairro, por favor.');
+    const km = await distancia(coleta, entrega);
+    const rota = servico.cotar(coleta, entrega, { km, volumes });
+    const urg = servico.cotar(coleta, entrega, { km, volumes, urgente: true });
+    return { entrega, km: rota.km, valor_rota: rota.valor, valor_urgente: urg.valor, acima_teto: Boolean(rota.acima_teto), longa: Boolean(rota.longa) };
+  }
+  async function pedidoConvite(dados, ip) {
+    limitar(`pedir:${ip}`, 8, 60 * MIN);
+    const { cv, cli, cf, volumes } = lerConvite(dados?.c);
+    if (cv.demanda_id) {
+      const d = q('SELECT codigo FROM demandas WHERE id = ?').get(cv.demanda_id);
+      return { codigo: d?.codigo, repetido: true };
+    }
+    const recebe = txt(dados?.recebe, 80);
+    if (recebe.length < 2) throw new Erro(422, 'recebedor_invalido', 'Diga o nome de quem vai receber, por favor.');
+    const fone = normalizarTelefone(dados?.fone);
+    if (!fone) throw new Erro(422, 'telefone_invalido', 'Informe um WhatsApp com DDD para o motoboy falar com quem recebe.');
+    // Nota fiscal opcional por enquanto: em branco segue; preenchida com erro pede para conferir ou apagar.
+    const docBruto = String(dados?.nf_doc || '').replace(/\D/g, '');
+    const doc = docBruto ? docFiscal(docBruto) : '';
+    const nfNome = txt(dados?.nf_nome, 80);
+    if (docBruto && !doc) throw new Erro(422, 'doc_invalido', 'Confira o CPF ou CNPJ, ou deixe em branco, por favor.');
+    if (doc && nfNome.length < 3) throw new Erro(422, 'nome_invalido', 'Informe o nome para a nota fiscal, ou apague o CPF/CNPJ, por favor.');
+    const urgente = dados?.urgente === true;
+    const como = txt(dados?.instrucoes, 300);
+    const entrega = lerPontoPublico(dados?.entrega);
+    if (entrega.endereco.length < 6) throw new Erro(422, 'endereco_invalido', 'Escreva o endereço com rua, número e bairro, por favor.');
+    await acharNoMapa(entrega);
+    if (entrega.lat == null) throw new Erro(422, 'endereco_nao_achado', 'Não encontramos esse endereço no mapa. Confira a rua, o número e o bairro, por favor.');
+    entrega.contato = `${recebe} · ${fone}`;
+    const coleta = await coletaDoConvite(cli, cf, cv);
+    const km = await distancia(coleta, entrega);
+    const grande = volumes.g > 0 || volumes.gg > 0;
+    const descricao = [
+      `🏬 Cliente da ${cli.nome}`, cf.obs && txt(cf.obs, 200), `📦 Volumes: ${servico.textoVolumes(volumes)}`, cv.oque && `📦 ${cv.oque}`,
+      cv.autoriza && `✅ Pedido por ${cv.autoriza} (${cli.nome}).`, como && `📍 Na entrega: ${como}`,
+      '💳 Frete pago pelo cliente final por Pix (antes da coleta): não cobrar na entrega.',
+    ].filter(Boolean).join(' · ');
+    const d = servico.criarPedido({
+      cliente: cli.nome, telefone: cli.telefone, descricao, requisito: grande ? 'bau' : 'qualquer', volumes,
+      urgente, tarifa_urgente: urgente, km, coleta, entrega, tabela_publica: true,
+    }, 'empresa', { retida: true, pagamento: '' });
+    q('UPDATE demandas SET paga_final = 1 WHERE id = ?').run(d.id);
+    if (doc) servico.gravarNota(d.id, doc, nfNome);
+    q('UPDATE convites SET demanda_id = ? WHERE id = ?').run(d.id, cv.id);
+    q('UPDATE clientes SET pedidos = pedidos + 1 WHERE id = ?').run(cli.id);
+    const novo = q('SELECT * FROM demandas WHERE id = ?').get(d.id);
+    if (novo.valor != null && !novo.acima_teto) {
+      const c = cfgBruta();
+      const codigo = brCode({ chave: c.pix_chave, nome: c.pix_nome || c.empresa_nome, cidade: c.pix_cidade, valor: novo.valor, txid: `PEDIDO${d.id}` });
+      servico.registrarPix(d.id, { pagId: '', pix: codigo, qr: '', expira: agora() + 24 * 60 * MIN });
+    }
+    avisarAdmin([
+      `🏬💰 Cliente da ${cli.nome} pediu a entrega #${d.id}${urgente ? ' ⚡URGENTE' : ''} — frete pago por ele${novo.valor != null ? ` (${reais(novo.valor)})` : ''}.`,
+      `📦 ${servico.textoVolumes(volumes)} · 🏁 ${novo.entrega_endereco} (${entrega.contato})`,
+      doc ? `🧾 Nota: ${nfNome} · ${doc.length === 11 ? 'CPF' : 'CNPJ'} ${docFmt(doc)}` : '🧾 Sem dados de nota (opcional).',
+      novo.acima_teto ? `⚠️ Muitos volumes grandes (passou do teto). Confirme o valor no painel (Fechar pedido): o Pix vai para o cliente depois.`
+        : 'Retida até o Pix cair e o comprovante conferir. Libera sozinha.',
+    ].join('\n'));
+    return { codigo: d.codigo, valor: novo.valor, acima_teto: Boolean(novo.acima_teto) };
+  }
+
   // ------------------------------------- Pix conferido sozinho (aviso do banco + comprovante)
   // Regra: o pedido só é liberado quando as DUAS coisas existem: o comprovante enviado para aquele pedido
   // e um Pix do mesmo valor que caiu na conta (aviso do banco lido no celular do dono). Cada Pix vale para um pedido só.
@@ -835,6 +956,7 @@ export function criarAtendimento({
     const d = servico.criarPedido({
       cliente: cli.nome, telefone: cli.telefone, descricao, requisito: grande ? 'bau' : 'qualquer', tamanho: dados?.tamanho,
       urgente: false, km, email: cli.email, coleta, entrega, hora_tipo: dados?.hora_tipo, hora: dados?.hora, agendada_para: dados?.agendada_para,
+      tabela_publica: clientePaga,
     }, 'empresa', { retida: clientePaga ? true : !cli.libera_direto, pagamento: clientePaga ? '' : 'faturado' });
     q('UPDATE clientes SET pedidos = pedidos + 1 WHERE id = ?').run(cli.id);
     if (clientePaga) {
@@ -964,11 +1086,13 @@ export function criarAtendimento({
       const recebeFone = normalizarTelefone(dados?.recebe_fone) || telefone;
       if (!recebeFone) throw new Erro(422, 'telefone_invalido', 'Informe o telefone de quem vai receber.');
       entrega.contato = `${recebeNome} ${recebeFone}`.trim();
-      const doc = docFiscal(dados?.nf_doc);
+      // Nota fiscal opcional por enquanto: em branco segue; preenchida com erro pede para conferir ou apagar.
+      const docBruto = String(dados?.nf_doc || '').replace(/\D/g, '');
+      const doc = docBruto ? docFiscal(docBruto) : '';
       const nfNome = txt(dados?.nf_nome, 120);
-      if (!doc) throw new Erro(422, 'nf_invalida', 'CPF ou CNPJ inválido. Confira os números: a nota fiscal do frete sai nele.');
-      if (nfNome.length < 3) throw new Erro(422, 'nf_nome', 'Informe o nome completo ou a razão social para a nota fiscal.');
-      nf = { doc, nome: nfNome };
+      if (docBruto && !doc) throw new Erro(422, 'nf_invalida', 'CPF ou CNPJ inválido. Confira os números ou deixe em branco.');
+      if (doc && nfNome.length < 3) throw new Erro(422, 'nf_nome', 'Informe o nome para a nota fiscal, ou apague o CPF/CNPJ.');
+      nf = doc ? { doc, nome: nfNome } : null;
       const como = txt(dados?.instrucoes, 300);
       dados = { ...dados, descricao: [`🏬 Cliente da ${loja.cli.nome}`, txt(loja.cf.obs, 200), txt(dados?.descricao, 300), como && `📍 Na entrega: ${como}`].filter(Boolean).join(' · ') };
     } else if (!coleta.contato) coleta.contato = `${nome} ${telefone}`.trim();
@@ -1053,8 +1177,10 @@ export function criarAtendimento({
     }
     if (loja) {
       q('UPDATE clientes SET pedidos = pedidos + 1 WHERE id = ?').run(loja.cli.id);
-      servico.gravarNota(d.id, nf.doc, nf.nome);
-      avisarAdmin(`🧾 Nota do frete #${d.id} (cliente da ${loja.cli.nome}): ${nf.nome} · ${nf.doc.length === 11 ? 'CPF' : 'CNPJ'} ${docFmt(nf.doc)}`);
+      if (nf) {
+        servico.gravarNota(d.id, nf.doc, nf.nome);
+        avisarAdmin(`🧾 Nota do frete #${d.id} (cliente da ${loja.cli.nome}): ${nf.nome} · ${nf.doc.length === 11 ? 'CPF' : 'CNPJ'} ${docFmt(nf.doc)}`);
+      }
     }
     return { id: d.id, codigo: d.codigo, status: d.status, valor: d.valor, confirmacao: modo, pix };
   }
@@ -1129,7 +1255,7 @@ export function criarAtendimento({
   return {
     avisarDono: (texto) => { try { avisarAdmin(texto); } catch { /* aviso é cortesia */ } },
     definirOrigem, receber, segredoConfere, webhookAutorizado, despacharSaida, rotina,
-    limitarPublico, infoPublica, sugerirPublico, cotarPublico, pedidoSite, pedidoVivo, empresaPublica, lojaPublica, pedidoEmpresa, entregasEmpresa, webhookPagamento, expirarPagamentos, receberPix, comprovantePublico, notaPublica,
+    limitarPublico, infoPublica, sugerirPublico, cotarPublico, pedidoSite, pedidoVivo, empresaPublica, lojaPublica, pedidoEmpresa, entregasEmpresa, webhookPagamento, expirarPagamentos, receberPix, comprovantePublico, notaPublica, criarConvite, convitePublico, cotarConvite, pedidoConvite,
     resumo, responder, modoConversa, testar, testarIA, analisarArquivos, analisarConversa, listarAnalises,
   };
 }

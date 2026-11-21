@@ -165,8 +165,7 @@ function cartaoEnvio(b, i, total) {
   const tam = h('select', { id: n('tam') }, TAMANHOS.map(([v, t]) => h('option', { value: v }, t)));
   tam.value = b.tamanho || 'pequeno';
   const hor = campoHorario(b, n);
-  const paga = h('input', { type: 'checkbox', id: n('paga'), checked: Boolean(b.cliente_paga) });
-  b.ler = () => Object.assign(b, { recebe: quem.value.trim(), endereco: end.el.value.trim(), fone: fone.value.trim(), oque: oque.value.trim(), tamanho: tam.value, cliente_paga: paga.checked }, hor.ler());
+  b.ler = () => Object.assign(b, { recebe: quem.value.trim(), endereco: end.el.value.trim(), fone: fone.value.trim(), oque: oque.value.trim(), tamanho: tam.value }, hor.ler());
   return h('div', { class: 'cartao' },
     h('div', { class: 'cab-parada' }, h('b', null, total > 1 ? `Entrega ${i + 1}` : 'Entrega'),
       total > 1 && h('button', { type: 'button', class: 'pequeno', onclick: () => { envios.forEach((x) => x.ler()); envios.splice(i, 1); telaLoja(); } }, 'Remover')),
@@ -174,12 +173,180 @@ function cartaoEnvio(b, i, total) {
     h('label', { for: n('end') }, 'Endereço de entrega (com número e apartamento)'), end.nos,
     h('label', { for: n('fone') }, 'Telefone de quem recebe'), fone,
     h('label', { for: n('oque') }, 'O que vai'), oque,
-    h('label', { for: n('tam') }, 'Tamanho'), tam, hor.nos,
-    h('label', { class: 'marcar' }, paga, ' O cliente final paga o frete (Pix antes da entrega)'),
-    h('div', { class: 'nota' }, 'Marcado: você recebe um link para mandar ao cliente. Ele paga por Pix e o motoboy só sai depois do pagamento conferido. Desmarcado: entra no fechamento da loja.'));
+    h('label', { for: n('tam') }, 'Tamanho'), tam, hor.nos);
+}
+
+// ── Entrega paga pelo cliente: a loja diz as mercadorias e manda um link; o cliente completa e paga ──
+let clientePaga = false; // começa sempre desmarcado
+const TAM_VOL = [['p', 'P', 'cabe na mão'], ['m', 'M', 'caixa de sapato'], ['g', 'G', 'até 40 cm'], ['gg', 'GG', 'mais de 40 cm']];
+
+function contadorVolumes(b) {
+  b.volumes = b.volumes || { p: 0, m: 0, g: 0, gg: 0 };
+  const resumo = h('div', { class: 'nota' });
+  const atualizar = () => {
+    const total = TAM_VOL.reduce((s, [k]) => s + b.volumes[k], 0);
+    const maior = [...TAM_VOL].reverse().find(([k]) => b.volumes[k] > 0);
+    resumo.textContent = total ? `Total: ${total} volume(s) · maior: ${maior[1]}` : 'Toque no + do tamanho de cada mercadoria.';
+  };
+  const linhas = TAM_VOL.map(([k, t, dica]) => {
+    const n = h('b', { class: 'qtd' }, String(b.volumes[k]));
+    const mudar = (d) => { b.volumes[k] = Math.max(0, Math.min(99, b.volumes[k] + d)); n.textContent = String(b.volumes[k]); atualizar(); };
+    return h('div', { class: 'contador' },
+      h('span', { class: 'cresce' }, h('b', null, t), ' ', h('span', { class: 'nota' }, `(${dica})`)),
+      h('button', { type: 'button', class: 'pequeno', 'aria-label': `menos ${t}`, onclick: () => mudar(-1) }, '–'), n,
+      h('button', { type: 'button', class: 'pequeno', 'aria-label': `mais ${t}`, onclick: () => mudar(1) }, '+'));
+  });
+  atualizar();
+  return [h('label', null, 'Quantas mercadorias?'), ...linhas, resumo];
+}
+
+// Assistente em 3 passos: 1) retirada e volumes, 2) quem preenche (cartões), 3) dados ou link pronto.
+let assist = { passo: 1, quem: '', b: {} };
+const ICONE_ENVIAR = '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg>';
+const ICONE_LAPIS = '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>';
+function icone(svg) { const s = h('span', { class: 'icone-cartao' }); s.innerHTML = svg; return s; }
+
+function barraPassos() {
+  const nomes = ['Volumes', 'Quem preenche', 'Link'];
+  return h('div', { class: 'passos-loja' },
+    h('div', { class: 'barras' }, [1, 2, 3].map((n) => h('span', { class: n <= assist.passo ? 'feita' : '' }))),
+    h('div', { class: 'nota' }, `Passo ${assist.passo} de 3 · ${nomes[assist.passo - 1]}`));
+}
+
+function passoVolumes(erro) {
+  const b = assist.b;
+  b.coleta = b.coleta ?? (empresa.coleta?.endereco || '');
+  const campoColeta = h('input', { id: 'coleta', maxlength: 200, value: b.coleta, hidden: !b.editandoColeta, 'aria-label': 'Endereço de retirada' });
+  const textoColeta = h('b', { hidden: Boolean(b.editandoColeta) }, b.coleta || '—');
+  const editar = h('button', { type: 'button', class: 'pequeno' }, b.editandoColeta ? 'Pronto' : 'Editar');
+  editar.onclick = () => { b.coleta = campoColeta.value.trim() || b.coleta; b.editandoColeta = !b.editandoColeta; telaConvite(); };
+  const oque = h('input', { id: 'oque', maxlength: 300, placeholder: 'Ex.: 1 edredom e 2 almofadas (opcional)', value: b.oque || '' });
+  const seguir = h('button', { type: 'button', class: 'primario' }, 'Continuar');
+  seguir.onclick = () => {
+    b.coleta = campoColeta.value.trim() || b.coleta;
+    b.oque = oque.value.trim();
+    if (!Object.values(b.volumes || {}).some((x) => x > 0)) { erro.textContent = 'Toque no + do tamanho das mercadorias.'; return; }
+    assist.passo = 2;
+    telaConvite();
+  };
+  return [
+    h('div', { class: 'cartao' },
+      h('div', { class: 'linha-end' }, h('div', { class: 'cresce' }, h('div', { class: 'nota' }, 'Retirada'), textoColeta, campoColeta), editar)),
+    h('div', { class: 'cartao' }, ...contadorVolumes(b), h('label', { for: 'oque' }, 'O que vai'), oque),
+    erro, seguir,
+  ];
+}
+
+function passoQuem() {
+  const cartao = (quem, svg, titulo, texto) => h('button', {
+    type: 'button', class: `cartao-escolha${assist.quem === quem ? ' sel' : ''}`, 'aria-pressed': assist.quem === quem ? 'true' : 'false',
+    onclick: () => { assist.quem = quem; assist.passo = 3; telaConvite(); },
+  }, icone(svg), h('b', null, titulo), h('span', { class: 'nota' }, texto));
+  return [
+    h('h2', null, 'Quem preenche os dados do cliente?'),
+    h('div', { class: 'grade-escolha' },
+      cartao('cliente', ICONE_ENVIAR, 'Cliente preenche', 'Você manda o link e ele completa endereço, nota e pagamento.'),
+      cartao('loja', ICONE_LAPIS, `${empresa.nome} preenche`, 'Você já tem nome, endereço e WhatsApp do cliente.')),
+    h('button', { type: 'button', onclick: () => { assist.passo = 1; telaConvite(); } }, 'Voltar'),
+  ];
+}
+
+async function gerarConvite(erro, botao, quem) {
+  const b = assist.b;
+  if (quem.value.trim().length < 2) { erro.textContent = 'Informe seu nome (quem está pedindo).'; quem.focus(); return; }
+  gravarJson(CHAVE_NOME, quem.value.trim());
+  botao.disabled = true;
+  botao.textContent = 'Gerando…';
+  const daLoja = assist.quem === 'loja';
+  try {
+    const r = await api('POST', '/api/publico/empresa/convites', {
+      k: chave, autoriza: quem.value.trim(), volumes: b.volumes, oque: b.oque, coleta: b.coleta,
+      recebe: daLoja ? b.recebe : '', fone: daLoja ? b.fone : '', endereco: daLoja ? b.endereco : '',
+    });
+    const feito = { ...r, link: r.link.startsWith('http') ? r.link : `${location.origin}${r.link}`, recebe: daLoja ? b.recebe : '', fone: daLoja ? b.fone : '' };
+    assist = { passo: 1, quem: '', b: {} };
+    telaLinks([feito]);
+  } catch (e) {
+    erro.textContent = e.message;
+    botao.disabled = false;
+    botao.textContent = 'Gerar link para o cliente';
+  }
+}
+
+function passoFinal(erro) {
+  const b = assist.b;
+  const quem = h('input', { id: 'quem', maxlength: 80, placeholder: 'Seu nome', value: lerJson(CHAVE_NOME, '') });
+  const gerar = h('button', { type: 'button', class: 'primario' }, 'Gerar link para o cliente');
+  const partes = [];
+  if (assist.quem === 'loja') {
+    const nome = h('input', { id: 'c-quem', maxlength: 80, list: 'lista-dest', placeholder: 'Nome de quem recebe', value: b.recebe || '' });
+    const end = campoEndereco('c-end', b.endereco);
+    const fone = h('input', { id: 'c-fone', maxlength: 30, inputmode: 'tel', placeholder: '(27) 99999-0000', value: b.fone || '' });
+    nome.addEventListener('change', () => {
+      const sv = destinos()[nome.value.trim().toLowerCase()];
+      if (sv) { if (!end.el.value.trim()) end.el.value = sv.endereco || ''; if (!fone.value.trim()) fone.value = sv.fone || ''; }
+    });
+    gerar.onclick = () => {
+      Object.assign(b, { recebe: nome.value.trim(), endereco: end.el.value.trim(), fone: fone.value.trim() });
+      if (b.recebe) { const sv = destinos(); sv[b.recebe.toLowerCase()] = { endereco: b.endereco, fone: b.fone }; gravarJson(CHAVE_DEST, sv); }
+      gerarConvite(erro, gerar, quem);
+    };
+    partes.push(h('div', { class: 'cartao' },
+      h('b', null, 'Dados do cliente'),
+      h('div', { class: 'nota' }, 'O cliente ainda confere tudo no link, escolhe na rota ou urgente e paga.'),
+      h('label', { for: 'c-quem' }, 'Nome'), nome,
+      h('label', { for: 'c-end' }, 'Endereço de entrega'), end.nos,
+      h('label', { for: 'c-fone' }, 'WhatsApp'), fone),
+      h('datalist', { id: 'lista-dest' }, Object.keys(destinos()).map((f) => h('option', { value: f }))));
+  } else {
+    gerar.onclick = () => gerarConvite(erro, gerar, quem);
+    partes.push(h('div', { class: 'cartao' },
+      h('b', null, 'O cliente preenche'),
+      h('div', { class: 'nota' }, 'Ao gerar, você recebe o link para mandar. Ele completa endereço e nota fiscal, escolhe na rota ou urgente e paga por Pix.')));
+  }
+  return [...partes,
+    h('div', { class: 'cartao' }, h('label', { for: 'quem' }, 'Quem está pedindo'), quem),
+    erro, gerar,
+    h('button', { type: 'button', onclick: () => { assist.passo = 2; telaConvite(); } }, 'Voltar')];
+}
+
+function telaLinks(feitos) {
+  moldura(
+    h('h1', null, feitos.length > 1 ? `${feitos.length} links prontos` : 'Link pronto'),
+    h('p', { class: 'nota' }, 'Mande para o cliente. Ele completa os dados, escolhe na rota ou urgente, vê o valor e paga por Pix. O motoboy só busca depois do pagamento confirmado.'),
+    feitos.map((f, i) => {
+      const texto = `Olá! Seu pedido está pronto. Para combinar a entrega com a SpeedBoy, é só abrir este link, conferir o endereço e escolher como prefere receber: ${f.link}`;
+      const copiar = h('button', { type: 'button', class: 'primario', onclick: async () => { try { await navigator.clipboard.writeText(f.link); copiar.textContent = 'Link copiado ✓'; } catch { /* copia manual */ } } }, 'Copiar link');
+      const zap = f.fone ? `https://wa.me/55${f.fone.replace(/\D/g, '').replace(/^55/, '')}?text=${encodeURIComponent(texto)}` : `https://wa.me/?text=${encodeURIComponent(texto)}`;
+      return h('div', { class: 'aviso-quarta' },
+        h('b', null, `${feitos.length > 1 ? `Cliente ${i + 1}` : 'Cliente'}${f.recebe ? ` · ${f.recebe}` : ''} · ${f.volumes}`),
+        h('input', { readonly: true, value: f.link, onfocus: (ev) => ev.target.select() }),
+        h('div', { class: 'botoes' }, copiar, h('a', { class: 'botao', target: '_blank', rel: 'noopener noreferrer', href: zap }, 'Mandar pelo WhatsApp')));
+    }),
+    h('button', { type: 'button', class: 'primario', onclick: () => { clientePaga = false; telaLoja(); } }, 'Fazer outra entrega'));
+}
+
+function interruptorClientePaga() {
+  const caixa = h('input', { type: 'checkbox', id: 'cliente-paga', checked: clientePaga });
+  caixa.onchange = () => {
+    if (!clientePaga) envios.forEach((b) => b.ler?.());
+    clientePaga = caixa.checked;
+    telaLoja();
+  };
+  return h('label', { class: 'marcar destaque' }, caixa, h('b', null, ' Entrega paga pelo cliente'));
+}
+
+function telaConvite(mensagem = '') {
+  const erro = h('div', { class: 'erro', role: 'alert' }, mensagem);
+  const corpo = assist.passo === 1 ? passoVolumes(erro) : assist.passo === 2 ? passoQuem() : passoFinal(erro);
+  moldura(
+    h('h1', null, 'Nova entrega'),
+    h('div', { class: 'cartao' }, interruptorClientePaga(), barraPassos()),
+    ...corpo);
 }
 
 function telaLoja(mensagem = '') {
+  if (clientePaga) return telaConvite(mensagem);
   if (!envios.length) envios.push({});
   const quem = h('input', { id: 'quem', maxlength: 80, placeholder: 'Seu nome', value: lerJson(CHAVE_NOME, '') });
   const erro = h('div', { class: 'erro', role: 'alert' }, mensagem);
@@ -206,7 +373,7 @@ function telaLoja(mensagem = '') {
         for (const b of envios) {
           feitos.push(await api('POST', '/api/publico/empresa/pedidos', {
             k: chave, recebe: b.recebe, fone: b.fone, oque: b.oque, tamanho: b.tamanho, autoriza: quem.value.trim(), ...corpoHorario(b),
-            entrega: { endereco: b.endereco }, cliente_paga: b.cliente_paga === true,
+            entrega: { endereco: b.endereco },
           }));
         }
         envios = [];
@@ -220,6 +387,7 @@ function telaLoja(mensagem = '') {
   },
   h('h1', null, 'Nova entrega'),
   h('div', { class: 'cartao' },
+    interruptorClientePaga(),
     h('div', { class: 'nota' }, 'O motoboy busca em:'), h('b', null, empresa.coleta?.endereco || '—'),
     h('div', { class: 'nota' }, `Cada entrega recebe um número e entra no fechamento ${empresa.fechamento === 'semanal' ? 'semanal' : 'do mês'} da ${empresa.nome}. Quem recebe não paga nada.`),
     h('button', { type: 'button', class: 'pequeno', onclick: () => telaEntregas() }, 'Ver minhas entregas e total')),

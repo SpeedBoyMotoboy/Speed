@@ -43,7 +43,7 @@ const CFG_NUM = {
   diaria_valor: [0, 100000], almoco_valor: [0, 100000], almoco_min: [10, 180],
   mapa_lat: [-90, 90], mapa_lon: [-180, 180],
   preco_base: [0, 100000], preco_km_incluso: [0, 1000], preco_km: [0, 1000], preco_minimo: [0, 100000], preco_zona_sul: [0, 100000], urgente_pct: [0, 500], urgente_min: [0, 10000], urgente_repasse_pct: [0, 100],
-  tam_g_pct: [0, 500], tam_gg_pct: [0, 500], tam_repasse_pct: [0, 100],
+  tam_g_pct: [0, 500], tam_gg_pct: [0, 500], tam_teto_pct: [0, 500], tam_repasse_pct: [0, 100],
   longa_km1: [0, 10000], longa_preco1: [0, 1000], longa_km2: [0, 10000], longa_preco2: [0, 1000], longa_repasse_pct: [0, 100],
   convocacao_auto_max: [0, 50], convocacao_auto_espera_min: [0, 120],
   urgente_prazo_min: [5, 600], robo_pausa_horas: [1, 168], repasse_pct: [0, 100], repasse_minimo: [0, 10000], repasse_base: [0, 10000], repasse_km: [0, 1000], oferta_raio_km: [0.5, 100],
@@ -201,6 +201,14 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     return v;
   }
   // Tamanho da mercadoria que cobra a mais: 'g' (até 40 cm) ou 'gg' (mais de 40 cm). Pequeno e médio = ''.
+  // Volumes por tamanho ({ p, m, g, gg }): P e M não pagam; cada G e cada GG soma o seu %; teto em tam_teto_pct.
+  const lerVolumes = (v) => {
+    if (!v || typeof v !== 'object') return null;
+    const n = (x) => Math.max(0, Math.min(99, Math.floor(Number(x) || 0)));
+    const r = { p: n(v.p), m: n(v.m), g: n(v.g), gg: n(v.gg) };
+    return r.p + r.m + r.g + r.gg > 0 ? r : null;
+  };
+  const textoVolumes = (v) => (v ? [['p', 'P'], ['m', 'M'], ['g', 'G'], ['gg', 'GG']].filter(([k]) => v[k]).map(([k, t]) => `${v[k]} ${t}`).join(' + ') : '');
   const lerTamanho = (t) => ({ g: 'g', grande: 'g', gg: 'gg', maior: 'gg', gigante: 'gg' }[String(t ?? '').trim().toLowerCase()] || '');
   // Valores em reais inteiros, sempre para baixo (cliente e motoboy): 319,20 → 319; 223,44 → 223.
   const reaisInteiros = (v) => Math.floor(Math.round(Number(v) * 100) / 100 + 1e-9);
@@ -253,7 +261,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     const depois = custoRota(mb, kmDepois);
     return Math.max(0, reaisInteiros(depois) - reaisInteiros(antes)); // a rota inteira fecha em reais inteiros
   }
-  function cotar(coleta, entrega, { km: kmRota = null, servicoId = null, telefone = '', urgente = false, tamanho = '' } = {}) {
+  function cotar(coleta, entrega, { km: kmRota = null, servicoId = null, telefone = '', urgente = false, tamanho = '', volumes = null } = {}) {
     const servico = servicoId ? q('SELECT * FROM servicos WHERE id = ? AND ativo = 1').get(Number(servicoId)) || null : null;
     const nada = { km: null, valor: null, repasse: null, servico };
     if (coleta?.lat == null || entrega?.lat == null) return nada;
@@ -282,8 +290,17 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     const extraUrg = urgente ? Math.round(Math.max(Number(c.urgente_min || 0), (valor * Number(c.urgente_pct || 0)) / 100) * 100) / 100 : 0;
     // Tamanho G/GG: % a mais sobre o mesmo valor base (soma com a urgente, não acumula). Parte do extra vai ao motoboy.
     // Corrida longa não cobra tamanho (o tamanho continua gravado para o motoboy saber que precisa de baú).
-    const tam = lerTamanho(tamanho);
-    const extraTam = tam && !porKmLonga ? Math.round(((valor * Number((tam === 'gg' ? c.tam_gg_pct : c.tam_g_pct) || 0)) / 100) * 100) / 100 : 0;
+    const vol = lerVolumes(volumes);
+    const tam = vol ? (vol.gg ? 'gg' : vol.g ? 'g' : '') : lerTamanho(tamanho);
+    let pctTam = tam ? Number((tam === 'gg' ? c.tam_gg_pct : c.tam_g_pct) || 0) : 0;
+    let acimaTeto = false;
+    if (vol) {
+      const bruto = vol.g * Number(c.tam_g_pct || 0) + vol.gg * Number(c.tam_gg_pct || 0);
+      const teto = Number(c.tam_teto_pct ?? 60);
+      acimaTeto = teto > 0 && bruto > teto;
+      pctTam = teto > 0 ? Math.min(bruto, teto) : bruto;
+    }
+    const extraTam = pctTam && !porKmLonga ? Math.round(((valor * pctTam) / 100) * 100) / 100 : 0;
     const bonus = Math.round(((extraUrg * Number(c.urgente_repasse_pct || 0)) / 100 + (extraTam * Number(c.tam_repasse_pct || 0)) / 100) * 100) / 100;
     valor += extraUrg + extraTam;
     if (zonaSul) valor += Number(c.preco_zona_sul || 0);
@@ -299,7 +316,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       ? repBase + Math.max(0, km - Number(c.preco_km_incluso)) * Number(c.repasse_km) + (adicional * pct) / 100
       : (valor * pct) / 100;
     const repasse = reaisInteiros(Math.max(Number(c.repasse_minimo), bruto) + bonus);
-    return { km, valor, repasse, servico, zona_sul: zonaSul, urgente_extra: extraUrg, bonus, tamanho: tam, tamanho_extra: extraTam, longa: Boolean(porKmLonga) };
+    return { km, valor, repasse, servico, zona_sul: zonaSul, urgente_extra: extraUrg, bonus, tamanho: tam, tamanho_extra: extraTam, longa: Boolean(porKmLonga), volumes: vol, acima_teto: acimaTeto };
   }
 
   // ------------------------------------------- tipos de serviço e clientes fixos
@@ -950,7 +967,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       horaTipo: janela.tipo, horaLimite: janela.ms,
       telefone: normalizarTelefone(d?.cliente_telefone ?? d?.telefone),
       agendadaPara: lerAgendada(d?.agendada_para),
-      urgente: d?.urgente ? 1 : 0, tarifaUrgente: d?.tarifa_urgente === true, tamanho: lerTamanho(d?.tamanho), servicoId: d?.servico_id ? Number(d.servico_id) : null,
+      urgente: d?.urgente ? 1 : 0, tarifaUrgente: d?.tarifa_urgente === true, tamanho: lerTamanho(d?.tamanho), volumes: lerVolumes(d?.volumes), tabelaPublica: d?.tabela_publica === true, servicoId: d?.servico_id ? Number(d.servico_id) : null,
       km: Number.isFinite(Number(d?.km)) && Number(d?.km) > 0 ? Number(d.km) : null, email: txt(d?.email, 120),
       coleta: lerPonto(d?.coleta, 'coleta'), entrega: lerPonto(d?.entrega, 'entrega'),
     };
@@ -958,7 +975,8 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
   // `retida`: fica parada (sem despacho) até o admin aprovar ou o cliente confirmar.
   function inserirDemanda(v, origem, ator, { retida = false, pagamento = '', ia = null } = {}) {
     const completo = v.coleta.lat != null && v.entrega.lat != null;
-    const { km, valor, repasse, servico, bonus } = cotar(v.coleta, v.entrega, { km: v.km, servicoId: v.servicoId, telefone: v.telefone, urgente: v.tarifaUrgente, tamanho: v.tamanho });
+    const { km, valor, repasse, servico, bonus, tamanho: tamCotado, acima_teto: acimaTeto } = cotar(v.coleta, v.entrega, { km: v.km, servicoId: v.servicoId, telefone: v.tabelaPublica ? '' : v.telefone, urgente: v.tarifaUrgente, tamanho: v.tamanho, volumes: v.volumes });
+    if (v.volumes) v.tamanho = tamCotado;
     const r = q(`INSERT INTO demandas (cliente, descricao, requisito, origem,
         coleta_endereco, coleta_lat, coleta_lon, coleta_contato,
         entrega_endereco, entrega_lat, entrega_lon, entrega_contato, status, criada_em,
@@ -974,6 +992,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     const id = Number(r.lastInsertRowid);
     if (bonus) q('UPDATE demandas SET bonus_urgente = ? WHERE id = ?').run(bonus, id);
     if (v.tamanho || v.tarifaUrgente) q('UPDATE demandas SET tamanho = ?, tarifa_urgente = ? WHERE id = ?').run(v.tamanho, v.tarifaUrgente ? 1 : 0, id);
+    if (v.volumes) q('UPDATE demandas SET volumes = ?, acima_teto = ? WHERE id = ?').run(JSON.stringify(v.volumes), acimaTeto ? 1 : 0, id);
     if (v.agendadaPara) q('UPDATE demandas SET agendada_para = ? WHERE id = ?').run(v.agendadaPara, id);
     if (v.horaTipo) q('UPDATE demandas SET hora_tipo = ?, hora_limite = ? WHERE id = ?').run(v.horaTipo, v.horaLimite, id);
     auditar(ator, 'demanda_criada', `#${id} ${v.cliente}`);
@@ -1072,6 +1091,11 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       const repasse = igual ? d.repasse : reaisInteiros(Math.max(Number(c.repasse_minimo), (valor * pct) / 100));
       q('UPDATE demandas SET valor = ?, repasse = ?, repasse_padrao = NULL, repasse_manual = ? WHERE id = ?').run(Math.round(valor * 100) / 100, repasse, igual ? d.repasse_manual : 0, id);
       auditar(ator, 'demanda_valor', `#${id} ${valor}`);
+    }
+    // Frete pago pelo cliente final (valor acima do teto, confirmado agora): gera o Pix e continua retido até pagar.
+    if (d.paga_final && d.pagamento !== 'pago') {
+      q("UPDATE demandas SET pagamento = 'pendente', pag_id = '', pag_pix = 'novo', pag_qr = '', pag_expira = ?, acima_teto = 0 WHERE id = ?").run(agora() + 24 * 60 * MIN, id);
+      return { liberada: false, motivo: 'aguardando_pix', status: d.status };
     }
     const r = liberarDemanda(id, ator);
     return { liberada: r === true, status: q('SELECT status FROM demandas WHERE id = ?').get(id).status };
@@ -1753,7 +1777,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
       id: d.id, status: d.status, retida: Boolean(d.retida), descricao: d.descricao, valor: d.valor, km: d.km,
       servico: d.servico, urgente: Boolean(d.urgente), prazo_min: Number(cfgBruta().urgente_prazo_min),
       pagamento: d.pagamento,
-      paga_final: Boolean(d.paga_final), falta_nota: Boolean(d.paga_final) && !d.nf_doc && !['entregue', 'cancelada'].includes(d.status),
+      paga_final: Boolean(d.paga_final), acima_teto: Boolean(d.acima_teto), volumes: d.volumes ? textoVolumes(JSON.parse(d.volumes)) : '', falta_nota: Boolean(d.paga_final) && !d.nf_doc && !['entregue', 'cancelada'].includes(d.status),
       pix: pixAtual(d) ? {
         codigo: d.pag_pix, qr: d.pag_qr, expira: d.pag_expira,
         // Pix na chave da empresa: o cliente manda o comprovante e a equipe confirma.
@@ -1990,7 +2014,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
   }
 
   return {
-    cfg, lerConfig, salvarConfig, gerarChaveApi, chaveApiValida,
+    cfg, lerConfig, lerVolumes, textoVolumes, salvarConfig, gerarChaveApi, chaveApiValida,
     garantirAdmin, loginAdmin, autenticarAdmin, sairAdmin, trocarSenhaAdmin,
     criarMotoboy, atualizarMotoboy, candidatar, decidirCandidato, salvarRecebimento, convocar, cancelarConvocacao,
     loginMotoboy, autenticarMotoboy, almoco, encerrarTurno, registrarPosicoes,
