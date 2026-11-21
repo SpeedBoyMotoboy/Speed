@@ -18,12 +18,14 @@ function tela(cv) {
   topo(cv.loja);
   const end = h('input', { id: 'end', maxlength: 200, autocomplete: 'street-address', placeholder: 'Rua, número, bairro e cidade', value: cv.endereco || lembrado.endereco || '' });
   const compl = h('input', { id: 'compl', maxlength: 80, placeholder: 'Apartamento, bloco, casa (se tiver)', value: lembrado.compl || '' });
+  const quemLembrado = () => (['eu', 'outra', 'portaria'].includes(lembrado.quem) ? lembrado.quem : lembrado.outro ? 'outra' : 'eu');
   const meuNome = h('input', { id: 'meunome', maxlength: 80, autocomplete: 'name', placeholder: 'Como podemos te chamar?', value: lembrado.meuNome || '' });
   const meuFone = h('input', { id: 'meufone', maxlength: 20, inputmode: 'tel', autocomplete: 'tel', placeholder: '(27) 99999-0000', value: cv.fone || lembrado.meuFone || '' });
-  const recebe = h('input', { id: 'recebe', maxlength: 80, placeholder: 'Nome de quem vai receber', value: lembrado.outro ? lembrado.recebe || '' : cv.recebe || '' });
-  const fone = h('input', { id: 'fone', maxlength: 20, inputmode: 'tel', placeholder: '(27) 99999-0000', value: lembrado.outro ? lembrado.fone || '' : '' });
+  const recebe = h('input', { id: 'recebe', maxlength: 80, placeholder: 'Nome de quem vai receber', value: quemLembrado() === 'outra' ? lembrado.recebe || '' : cv.recebe || '' });
+  const fone = h('input', { id: 'fone', maxlength: 20, inputmode: 'tel', placeholder: '(27) 99999-0000', value: quemLembrado() === 'outra' ? lembrado.fone || '' : '' });
   const referencia = h('textarea', { id: 'ref', maxlength: 200, rows: 3, placeholder: 'Ex.: casa amarela de portão preto, ao lado da padaria · Condomínio Jardins, bloco B · Empresa X, recepção', value: lembrado.referencia || '' });
-  let outro = Boolean(lembrado.outro);
+  // Quem recebe: 'eu' (quem pede), 'outra' (nome + WhatsApp) ou 'portaria' (portaria, administração ou recepção, sem telefone).
+  let quem = quemLembrado();
   const como = h('textarea', { id: 'como', maxlength: 300, rows: 2, placeholder: 'Ex.: deixar na portaria, tocar o interfone 102' });
   const doc = h('input', { id: 'doc', maxlength: 18, inputmode: 'numeric', placeholder: 'CPF ou CNPJ', value: lembrado.doc || '' });
   const nfNome = h('input', { id: 'nfnome', maxlength: 80, placeholder: 'Nome completo ou razão social', value: lembrado.nfNome || '' });
@@ -31,14 +33,17 @@ function tela(cv) {
   const valores = h('div', { 'aria-live': 'polite' });
 
   const endereco = () => [end.value.trim(), compl.value.trim()].filter(Boolean).join(' – ');
-  const quemRecebe = () => (outro ? { nome: recebe.value, fone: fone.value } : { nome: meuNome.value, fone: meuFone.value });
+  // Portaria sem telefone: o motoboy vê o contato de quem pediu.
+  const quemRecebe = () => (quem === 'outra' ? { nome: recebe.value, fone: fone.value }
+    : quem === 'portaria' ? { nome: `Portaria / recepção (se precisar, falar com ${meuNome.value.trim()}, quem pediu)`, fone: meuFone.value }
+      : { nome: meuNome.value, fone: meuFone.value });
   const telOk = (v) => v.replace(/\D/g, '').length >= 10;
   function conferir(passo) {
     if (passo === 1) {
       if (meuNome.value.trim().length < 2) return 'Diga o seu nome, por favor.';
       if (!telOk(meuFone.value)) return 'Informe o seu WhatsApp com DDD, por favor.';
-      if (outro && recebe.value.trim().length < 2) return 'Diga o nome de quem vai receber, por favor.';
-      if (outro && !telOk(fone.value)) return 'Informe o WhatsApp de quem vai receber, com DDD, por favor.';
+      if (quem === 'outra' && recebe.value.trim().length < 2) return 'Diga o nome de quem vai receber, por favor.';
+      if (quem === 'outra' && !telOk(fone.value)) return 'Informe o WhatsApp de quem vai receber, com DDD, por favor.';
     }
     if (passo === 2) {
       if (end.value.trim().length < 6) return 'Escreva o endereço com rua, número e bairro, por favor.';
@@ -71,7 +76,7 @@ function tela(cv) {
           referencia: referencia.value, instrucoes: como.value, nf_doc: doc.value, nf_nome: nfNome.value,
           entrega: { endereco: endereco(), lat: cot.entrega.lat, lon: cot.entrega.lon },
         });
-        try { localStorage.setItem(CHAVE, JSON.stringify({ meuNome: meuNome.value, meuFone: meuFone.value, outro, recebe: recebe.value, fone: fone.value, endereco: end.value, compl: compl.value, referencia: referencia.value, doc: doc.value, nfNome: nfNome.value })); } catch { /* sem memória */ }
+        try { localStorage.setItem(CHAVE, JSON.stringify({ meuNome: meuNome.value, meuFone: meuFone.value, quem, recebe: recebe.value, fone: fone.value, endereco: end.value, compl: compl.value, referencia: referencia.value, doc: doc.value, nfNome: nfNome.value })); } catch { /* sem memória */ }
         location.href = `/acompanhar/?c=${encodeURIComponent(r.codigo)}`;
       } catch (e) {
         aviso.textContent = e.message || 'Não foi possível enviar agora. Tente de novo, por favor.';
@@ -102,8 +107,8 @@ function tela(cv) {
   };
   const voltar = () => { passo -= 1; erro.textContent = ''; trocar(valores); desenhar(); };
   function opcaoRecebe(valor, titulo, detalhe) {
-    const r = h('input', { type: 'radio', name: 'quem', checked: outro === valor });
-    r.onchange = () => { outro = valor; desenhar(); };
+    const r = h('input', { type: 'radio', name: 'quem', checked: quem === valor });
+    r.onchange = () => { quem = valor; desenhar(); };
     return h('label', { class: 'cartao marcar' }, r, h('span', { class: 'cresce' }, h('b', null, titulo), h('div', { class: 'nota' }, detalhe)));
   }
   function desenhar() {
@@ -115,9 +120,10 @@ function tela(cv) {
         h('label', { for: 'meunome' }, 'Seu nome'), meuNome,
         h('label', { for: 'meufone' }, 'Seu WhatsApp'), meuFone,
         h('b', { class: 'subtitulo' }, 'Quem vai receber a entrega?'),
-        opcaoRecebe(false, 'Eu mesmo(a)', 'O motoboy fala com você.'),
-        opcaoRecebe(true, 'Outra pessoa', 'Ex.: alguém da família, porteiro, colega de trabalho.'),
-        outro && h('div', null,
+        opcaoRecebe('eu', 'Eu mesmo(a)', 'O motoboy fala com você.'),
+        opcaoRecebe('outra', 'Outra pessoa', 'Ex.: alguém da família ou colega de trabalho.'),
+        opcaoRecebe('portaria', 'Portaria, administração ou recepção', 'Não precisa de telefone. Se precisar, o motoboy fala com você.'),
+        quem === 'outra' && h('div', null,
           h('label', { for: 'recebe' }, 'Nome de quem vai receber'), recebe,
           h('label', { for: 'fone' }, 'WhatsApp de quem vai receber'), fone)),
       erro, h('button', { type: 'button', class: 'primario', onclick: () => continuar(1) }, 'Continuar'));
