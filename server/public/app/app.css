@@ -133,24 +133,37 @@ a.botao-link.claro { background: var(--cartao); color: var(--texto); border: 2px
 .aviso-quarta .marcar { color: inherit; font-weight: 600; margin-top: 10px; }
 :root[data-tema="escuro"] .aviso-quarta { background: #3a1d0a; color: #fdba74; } :root[data-tema="escuro"] .aviso-quarta b { color: #fb923c; }
 
-/* Parada atual: mapa no topo, abas, recado da entrega e barra fixa do Entreguei */
-.mapa-parada { position: relative; margin: -16px -16px 12px; height: 200px; border-radius: 12px 12px 0 0; overflow: hidden; background: var(--sutil); }
-.mapa-parada iframe { width: 100%; height: 100%; border: 0; display: block; }
-.abrir-maps { position: absolute; right: 10px; bottom: 10px; width: auto; min-height: 44px; padding: 0 16px; border-radius: 22px; background: var(--acao); color: #fff; border: 0; font-weight: 800; box-shadow: 0 2px 6px rgba(0,0,0,.25); }
-.abas { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; background: var(--sutil); border-radius: 12px; padding: 4px; margin: 10px 0 12px; }
+/* Parada atual: botão do Maps, abas, recado da entrega e barra fixa do Entreguei */
+.linha-topo { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.linha-topo .etiqueta { margin: 0; }
+.abrir-maps { width: 100%; min-height: 50px; border-radius: 12px; background: var(--acao); color: #fff; border: 0; font-weight: 800; font-size: 17px; }
+.abas { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; background: var(--sutil); border-radius: 12px; padding: 4px; margin: 12px 0; }
 .abas button { min-height: 44px; border: 0; background: transparent; color: var(--suave); padding: 8px; font-size: 15px; }
 .abas button.ativa { background: var(--cartao); color: var(--marca); font-weight: 800; box-shadow: 0 1px 2px rgba(0,0,0,.15); }
-.end-grande { font-size: 24px; font-weight: 800; line-height: 1.2; overflow-wrap: anywhere; margin: 4px 0 10px; }
+.end-grande { font-size: 22px; font-weight: 800; line-height: 1.2; overflow-wrap: anywhere; margin: 4px 0 10px; }
 .na-entrega { background: #fff1e6; border-left: 6px solid #ea580c; border-radius: 10px; padding: 10px 12px; color: #9a3412; margin: 8px 0; font-size: 15.5px; }
 .quem { background: var(--sutil); border-radius: 14px; padding: 12px; margin-top: 10px; }
-.quem .nome { font-size: 21px; font-weight: 800; margin-top: 2px; overflow-wrap: anywhere; }
+.quem .nome { font-size: 20px; font-weight: 800; margin-top: 2px; overflow-wrap: anywhere; }
 .acoes-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
 .info-botao.whats { background: #25D366; border-color: #25D366; color: #073b1c; }
-.barra-fixa { position: fixed; left: 0; right: 0; bottom: 0; z-index: 50; margin: 0; padding: 14px 14px calc(16px + env(safe-area-inset-bottom)); background: var(--cartao); border-top: 1px solid var(--borda); box-shadow: 0 -4px 14px rgba(0,0,0,.12); display: flex; flex-direction: column; gap: 0; max-width: 640px; margin-inline: auto; }
+.barra-fixa { position: fixed; left: 0; right: 0; bottom: 0; z-index: 50; margin: 0 auto; padding: 12px 14px calc(14px + env(safe-area-inset-bottom)); background: var(--cartao); border-top: 1px solid var(--borda); box-shadow: 0 -4px 14px rgba(0,0,0,.12); display: flex; flex-direction: column; max-width: 640px; }
 .barra-fixa button.grande { min-height: 66px; font-size: 22px; font-weight: 800; border-radius: 16px; }
 .barra-fixa .faixa { margin-bottom: 10px; }
-button.problema { display: flex; align-items: center; justify-content: center; gap: 8px; color: #b42318; border: 2px solid #c2410c; background: #fff4ed; font-weight: 800; min-height: 46px; }
-.barra-fixa button.problema { margin-top: 22px; }
-body.tem-barra { padding-bottom: 200px; }
+button.problema { width: auto; display: inline-flex; align-items: center; gap: 6px; color: #b42318; border: 1.5px solid #c2410c; background: #fff4ed; font-weight: 700; font-size: 14px; min-height: 38px; padding: 0 12px; border-radius: 10px; }
+button.problema svg { width: 16px; height: 16px; }
+body.tem-barra { padding-bottom: 120px; }
 :root[data-tema="escuro"] .na-entrega { background: #3a1d0a; color: #fdba74; }
 :root[data-tema="escuro"] button.problema { background: #3f1717; color: #fca5a5; border-color: #f87171; }
+/* Perfil do motoboy */
+.perfil-topo { all: unset; display: flex; align-items: center; gap: 10px; cursor: pointer; padding-right: 120px; }
+.perfil-topo:focus-visible { outline: 2px solid var(--destaque); outline-offset: 2px; border-radius: 8px; }
+.avatar { width: 44px; height: 44px; flex: none; border-radius: 50%; background: var(--destaque); color: #1A1A1A; display: inline-flex; align-items: center; justify-content: center; font-weight: 800; font-size: 16px; overflow: hidden; border: 2px solid #fff; }
+.avatar.grande { width: 84px; height: 84px; font-size: 28px; border-color: var(--destaque); }
+.avatar img { width: 100%; height: 100%; object-fit: cover; }
+.perfil-cabeca { display: flex; align-items: center; gap: 14px; margin-bottom: 12px; }
+.perfil-nome { font-size: 21px; font-weight: 800; overflow-wrap: anywhere; }
+.trocar-foto { width: auto; min-height: 40px; padding: 0 14px; margin-top: 6px; }
+.resumo-perfil { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 8px 0 12px; }
+.resumo-perfil div { background: var(--sutil); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; }
+.resumo-perfil b { font-size: 20px; }
+.resumo-perfil span { font-size: 13px; color: var(--suave); }

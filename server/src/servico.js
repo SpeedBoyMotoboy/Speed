@@ -599,6 +599,26 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     auditar(`motoboy:${turno.motoboy_id}`, 'recebimento_salvo', r.banco);
     return { ok: true };
   }
+  // Perfil do motoboy: dados, Pix, corridas dos últimos 30 dias. Valor só para avulso (diária não vê valores).
+  function fotoMotoboyGravada(turno) { q('UPDATE motoboys SET foto_em = ? WHERE id = ?').run(agora(), turno.motoboy_id); }
+  function perfilMotoboy(turno) {
+    const m = q('SELECT nome, telefone, veiculo, foto_em, pix_chave, pix_titular, pix_banco, pag_ciente_em FROM motoboys WHERE id = ?').get(turno.motoboy_id);
+    const avulso = turno.tipo === 'avulso';
+    const desde = agora() - 30 * 24 * 60 * MIN;
+    const lista = q(`SELECT d.id, d.cliente, d.servico, d.entrega_endereco, d.entregue_em, d.repasse FROM demandas d JOIN turnos t ON t.id = d.turno_id
+        WHERE t.motoboy_id = ? AND d.status = 'entregue' AND d.entregue_em >= ? ORDER BY d.entregue_em DESC LIMIT 200`).all(turno.motoboy_id, desde);
+    const corridas = lista.map((d) => ({ id: d.id, cliente: d.cliente, servico: d.servico, endereco: d.entrega_endereco, entregue_em: d.entregue_em,
+      ...(avulso ? { repasse: d.repasse || 0 } : {}) }));
+    const soma = (arr) => Math.round(arr.reduce((s, d) => s + (d.repasse || 0), 0) * 100) / 100;
+    const hoje = new Date(agora()); hoje.setHours(0, 0, 0, 0);
+    const deHoje = lista.filter((d) => d.entregue_em >= hoje.getTime());
+    return {
+      motoboy: { nome: m.nome, telefone: m.telefone, veiculo: m.veiculo, tipo: turno.tipo, foto_em: m.foto_em ?? null },
+      recebimento: { pix_chave: m.pix_chave, pix_titular: m.pix_titular, pix_banco: m.pix_banco, ciente_em: m.pag_ciente_em ?? null },
+      resumo: { hoje: deHoje.length, dias30: lista.length, ...(avulso ? { valor_hoje: soma(deHoje), valor_30: soma(lista) } : {}) },
+      corridas,
+    };
+  }
   function candidatar(d, ip) {
     exigirNaoBloqueado(`cad:${ip}`, 6);
     registrarFalha(`cad:${ip}`);
@@ -1617,7 +1637,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
 
   // ------------------------------------------------------- telas (leitura)
   function estadoMotoboy(turno) {
-    const m = q('SELECT nome, veiculo, repasse_base, repasse_km, ve_valores, pix_chave, pix_titular, pix_banco, pag_ciente_em FROM motoboys WHERE id = ?').get(turno.motoboy_id);
+    const m = q('SELECT nome, veiculo, repasse_base, repasse_km, ve_valores, pix_chave, pix_titular, pix_banco, pag_ciente_em, foto_em, mensal FROM motoboys WHERE id = ?').get(turno.motoboy_id);
     const c = cfg();
     const avulso = turno.tipo === 'avulso';
     // Conta do dono (ve_valores): vê em cada entrega o que o cliente paga e o repasse do avulso.
@@ -1643,7 +1663,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
         WHERE turno_id = ? AND status = 'entregue' ORDER BY entregue_em DESC`).all(turno.id) : [];
     return {
       agora: agora(),
-      motoboy: { nome: m.nome, veiculo: m.veiculo, tipo: turno.tipo,
+      motoboy: { nome: m.nome, veiculo: m.veiculo, tipo: turno.tipo, foto_em: m.foto_em ?? null, mensal: Boolean(m.mensal),
         recebimento: { pix_chave: m.pix_chave, pix_titular: m.pix_titular, pix_banco: m.pix_banco, ciente_em: m.pag_ciente_em ?? null } },
       ofertas,
       agendadas: agendadasPara(turno, paga),
@@ -2037,7 +2057,7 @@ export function criarServico({ db, agora = () => Date.now(), geocodificar = null
     cfg, lerConfig, lerVolumes, textoVolumes, salvarConfig, gerarChaveApi, chaveApiValida,
     garantirAdmin, loginAdmin, autenticarAdmin, sairAdmin, trocarSenhaAdmin,
     criarMotoboy, atualizarMotoboy, candidatar, decidirCandidato, salvarRecebimento, convocar, cancelarConvocacao,
-    loginMotoboy, autenticarMotoboy, almoco, encerrarTurno, registrarPosicoes,
+    loginMotoboy, autenticarMotoboy, perfilMotoboy, fotoMotoboyGravada, almoco, encerrarTurno, registrarPosicoes,
     criarDemanda, criarDemandaExterna, definirLocais, cancelarDemanda, fechamento, reatribuir, confirmarParada,
     despacharPendentes, estadoMotoboy, estadoAdmin, trilha, relatorio, rotina,
     importarWhatsapp, listarConversas, mensagensDaConversa, excluirConversa,
