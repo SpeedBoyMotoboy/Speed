@@ -105,7 +105,7 @@ function telaBuscas(mensagem = '') {
       if (ruim >= 0) { erro.textContent = `Preencha o endereço do fornecedor e o que buscar (busca ${ruim + 1}).`; return; }
       const semHora = buscas.findIndex(faltaHora);
       if (semHora >= 0) { erro.textContent = `Informe o horário (busca ${semHora + 1}).`; return; }
-      if (quem.value.trim().length < 2) { erro.textContent = 'Informe seu nome.'; quem.focus(); return; }
+      if (quem.value.trim().length < 2) { erro.textContent = 'Informe o nome do vendedor.'; quem.focus(); return; }
       gravarJson(CHAVE_NOME, quem.value.trim());
       const salvos = fornecedores();
       buscas.forEach((b) => { if (b.fornecedor) salvos[b.fornecedor.toLowerCase()] = b.endereco; });
@@ -253,7 +253,7 @@ function passoQuem() {
 
 async function gerarConvite(erro, botao, quem) {
   const b = assist.b;
-  if (quem.value.trim().length < 2) { erro.textContent = 'Informe seu nome (quem está pedindo).'; quem.focus(); return; }
+  if (quem.value.trim().length < 2) { erro.textContent = 'Informe o nome do vendedor.'; quem.focus(); return; }
   gravarJson(CHAVE_NOME, quem.value.trim());
   botao.disabled = true;
   botao.textContent = 'Gerando…';
@@ -305,7 +305,7 @@ function passoFinal(erro) {
       h('div', { class: 'nota' }, 'Ao gerar, você recebe o link para mandar. Ele completa endereço e nota fiscal, escolhe na rota ou urgente e paga por Pix.')));
   }
   return [...partes,
-    h('div', { class: 'cartao' }, h('label', { for: 'quem' }, 'Quem está pedindo'), quem),
+    h('div', { class: 'cartao' }, h('label', { for: 'quem' }, 'Vendedor'), quem),
     erro, gerar,
     h('button', { type: 'button', onclick: () => { assist.passo = 2; telaConvite(); } }, 'Voltar')];
 }
@@ -361,7 +361,7 @@ function telaLoja(mensagem = '') {
       if (ruim >= 0) { erro.textContent = `Preencha quem recebe e o endereço com número (entrega ${ruim + 1}).`; return; }
       const semHora = envios.findIndex(faltaHora);
       if (semHora >= 0) { erro.textContent = `Informe o horário (entrega ${semHora + 1}).`; return; }
-      if (quem.value.trim().length < 2) { erro.textContent = 'Informe seu nome.'; quem.focus(); return; }
+      if (quem.value.trim().length < 2) { erro.textContent = 'Informe o nome do vendedor.'; quem.focus(); return; }
       gravarJson(CHAVE_NOME, quem.value.trim());
       const salvos = destinos();
       envios.forEach((b) => { salvos[b.recebe.toLowerCase()] = { endereco: b.endereco, fone: b.fone }; });
@@ -395,7 +395,7 @@ function telaLoja(mensagem = '') {
   h('div', { class: 'linha-mais', role: 'button', tabindex: 0, onclick: () => { envios.forEach((b) => b.ler()); envios.push({}); telaLoja(); } },
     h('span', { class: 'mais' }, '+'), 'Outra entrega'),
   h('div', { class: 'cartao' },
-    h('label', { for: 'quem' }, 'Quem está pedindo'), quem,
+    h('label', { for: 'quem' }, 'Vendedor'), quem,
     erro, enviar),
   lista);
   moldura(form);
