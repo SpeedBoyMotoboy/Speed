@@ -497,10 +497,17 @@ export function criarAtendimento({
       const d = q('SELECT codigo FROM demandas WHERE id = ?').get(cv.demanda_id);
       return { codigo: d?.codigo, repetido: true };
     }
+    // Quem pede (nosso cliente): fica com a SpeedBoy. Quem recebe: vai para o motoboy.
+    const pedeNome = txt(dados?.pede_nome, 80);
+    const pedeFone = dados?.pede_fone ? normalizarTelefone(dados.pede_fone) : '';
+    if (dados?.pede_nome !== undefined && pedeNome.length < 2) throw new Erro(422, 'nome_invalido', 'Diga o seu nome, por favor.');
+    if (dados?.pede_fone !== undefined && !pedeFone) throw new Erro(422, 'telefone_invalido', 'Confira o seu WhatsApp com DDD, por favor.');
     const recebe = txt(dados?.recebe, 80);
     if (recebe.length < 2) throw new Erro(422, 'recebedor_invalido', 'Diga o nome de quem vai receber, por favor.');
     const fone = normalizarTelefone(dados?.fone);
     if (!fone) throw new Erro(422, 'telefone_invalido', 'Informe um WhatsApp com DDD para o motoboy falar com quem recebe.');
+    const referencia = txt(dados?.referencia, 200);
+    if (dados?.referencia !== undefined && referencia.length < 6) throw new Erro(422, 'referencia_invalida', 'Conte como reconhecer o local (fachada, ponto de referência, condomínio ou empresa), por favor.');
     // Nota fiscal opcional por enquanto: em branco segue; preenchida com erro pede para conferir ou apagar.
     const docBruto = String(dados?.nf_doc || '').replace(/\D/g, '');
     const doc = docBruto ? docFiscal(docBruto) : '';
@@ -519,14 +526,14 @@ export function criarAtendimento({
     const grande = volumes.g > 0 || volumes.gg > 0;
     const descricao = [
       `🏬 Cliente da ${cli.nome}`, cf.obs && txt(cf.obs, 200), `📦 Volumes: ${servico.textoVolumes(volumes)}`, cv.oque && `📦 ${cv.oque}`,
-      cv.autoriza && `✅ Pedido por ${cv.autoriza} (${cli.nome}).`, como && `📍 Na entrega: ${como}`,
+      cv.autoriza && `✅ Pedido por ${cv.autoriza} (${cli.nome}).`, referencia && `📍 Local: ${referencia}`, como && `📍 Na entrega: ${como}`,
       '💳 Frete pago pelo cliente final por Pix (antes da coleta): não cobrar na entrega.',
     ].filter(Boolean).join(' · ');
     const d = servico.criarPedido({
       cliente: cli.nome, telefone: cli.telefone, descricao, requisito: grande ? 'bau' : 'qualquer', volumes,
       urgente, tarifa_urgente: urgente, km, coleta, entrega, tabela_publica: true,
     }, 'empresa', { retida: true, pagamento: '' });
-    q('UPDATE demandas SET paga_final = 1 WHERE id = ?').run(d.id);
+    q('UPDATE demandas SET paga_final = 1, solicitante = ? WHERE id = ?').run(pedeNome ? [pedeNome, pedeFone].filter(Boolean).join(' · ') : '', d.id);
     if (doc) servico.gravarNota(d.id, doc, nfNome);
     q('UPDATE convites SET demanda_id = ? WHERE id = ?').run(d.id, cv.id);
     q('UPDATE clientes SET pedidos = pedidos + 1 WHERE id = ?').run(cli.id);
@@ -540,11 +547,12 @@ export function criarAtendimento({
     }
     avisarAdmin([
       `🏬💰 Cliente da ${cli.nome} pediu a entrega #${d.id}${urgente ? ' ⚡URGENTE' : ''} — frete pago por ele${novo.valor != null ? ` (${reais(novo.valor)})` : ''}.`,
+      pedeNome && `🙋 Quem pediu: ${pedeNome}${pedeFone ? ` · ${pedeFone}` : ''}`,
       `📦 ${servico.textoVolumes(volumes)} · 🏁 ${novo.entrega_endereco} (${entrega.contato})`,
       doc ? `🧾 Nota: ${nfNome} · ${doc.length === 11 ? 'CPF' : 'CNPJ'} ${docFmt(doc)}` : '🧾 Sem dados de nota (opcional).',
       novo.acima_teto ? `⚠️ Muitos volumes grandes (passou do teto). Confirme o valor no painel (Fechar pedido): o Pix vai para o cliente depois.`
         : 'Retida até o Pix cair e o comprovante conferir. Libera sozinha.',
-    ].join('\n'));
+    ].filter(Boolean).join('\n'));
     return { codigo: d.codigo, valor: novo.valor_pix ?? novo.valor, acima_teto: Boolean(novo.acima_teto) };
   }
 

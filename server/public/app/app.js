@@ -769,7 +769,11 @@ function cartaoAgendada(a) {
 function lerParada(p) {
   const partes = String(p.descricao || '').split(/\s+·\s+|\n+/).map((s) => s.trim()).filter(Boolean);
   const prazo = partes.filter((s) => /^(⏰|prazo\b)/i.test(s));
-  const recado = partes.filter((s) => /^📍/.test(s)).map((s) => s.replace(/^📍\s*(na entrega:|na coleta:)?\s*/i, ''));
+  // "📍 Local: …" = como reconhecer o lugar; "📍 Na entrega: …" = recado para o motoboy.
+  const recado = partes.filter((s) => /^📍/.test(s)).map((s) => {
+    const local = /^📍\s*local:/i.test(s);
+    return { local, texto: s.replace(/^📍\s*(na entrega:|na coleta:|local:)?\s*/i, '') };
+  });
   const obs = partes.filter((s) => !prazo.includes(s) && !/^📍/.test(s));
   const achou = String(p.contato || '').match(/(?:\+?55\s*)?\(?\d{2}\)?\s*9?\d{4}[-\s]?\d{4}/);
   const fone = achou ? achou[0].replace(/\D/g, '') : '';
@@ -782,7 +786,7 @@ function abaCliente(p, d) {
     p.agendada_para && h('div', { class: 'prazo' }, `Agendada: ${diaHora(p.agendada_para)}`),
     ...d.prazo.map((s) => h('div', { class: 'prazo' }, s)),
     h('div', { class: 'end-grande' }, p.endereco),
-    d.recado.map((s) => h('div', { class: 'na-entrega' }, h('b', null, coleta ? 'Na coleta: ' : 'Na entrega: '), s)),
+    d.recado.map((r) => h('div', { class: 'na-entrega' }, h('b', null, r.local ? 'Como reconhecer: ' : coleta ? 'Na coleta: ' : 'Na entrega: '), r.texto)),
     (d.nome || d.f55) && h('div', { class: 'quem' },
       h('div', { class: 'info-rot' }, coleta ? 'Falar com' : 'Quem recebe'),
       d.nome && h('div', { class: 'nome' }, d.nome),

@@ -1224,7 +1224,7 @@ test('convite: loja diz as mercadorias, cliente final completa, vê rota/urgente
 
   await assert.rejects(a.pedidoConvite({ c: cv.codigo, entrega: { endereco: 'Rua da Entrega, 20, Centro' }, recebe: 'Paula', fone: '11966660002', nf_doc: '123', nf_nome: 'Paula Reis' }, 'ip'), { codigo: 'doc_invalido' });
   const r = await a.pedidoConvite({ c: cv.codigo, entrega: { endereco: 'Rua da Entrega, 20, Centro' }, recebe: 'Paula', fone: '11966660002',
-    nf_doc: '529.982.247-25', nf_nome: 'Paula Reis', instrucoes: 'Deixar na portaria' }, 'ip');
+    nf_doc: '529.982.247-25', nf_nome: 'Paula Reis', instrucoes: 'Deixar na portaria', pede_nome: 'Marta', pede_fone: '11966660003', referencia: 'Casa amarela, portão preto' }, 'ip');
   const d = demandas().find((x) => x.codigo === r.codigo);
   assert.equal(d.valor, 30);
   assert.equal(d.valor_pix, cot.valor_rota, 'o Pix sai com o mesmo valor mostrado no orçamento');
@@ -1234,6 +1234,9 @@ test('convite: loja diz as mercadorias, cliente final completa, vê rota/urgente
   assert.equal(d.requisito, 'bau');
   assert.match(d.descricao, /Volumes: 2 M \+ 2 G/);
   assert.match(d.descricao, /portaria/);
+  assert.match(d.descricao, /📍 Local: Casa amarela, portão preto/);
+  assert.match(d.solicitante, /^Marta · /, 'quem pediu fica guardado para a SpeedBoy');
+  assert.doesNotMatch(d.entrega_contato, /Marta/, 'motoboy vê só quem recebe');
   assert.equal(d.nf_doc, '52998224725');
   assert.ok(s.pedidoPublico(r.codigo).pix, 'Pix pronto na página do pedido');
   assert.deepEqual(a.convitePublico(cv.codigo), { feito: true, pedido: r.codigo }, 'o link vira o acompanhamento');
