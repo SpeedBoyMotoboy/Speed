@@ -527,21 +527,23 @@ export function criarAtendimento({
   }
 
   // ------------------------------------- Pix conferido sozinho (aviso do banco + comprovante)
-  // Regra: o pedido só é liberado quando as DUAS coisas existem: o comprovante enviado para aquele pedido
-  // e um Pix do mesmo valor que caiu na conta (aviso do banco lido no celular do dono). Cada Pix vale para um pedido só.
+  // Regra: o aviso do banco (lido no celular do dono) com o valor EXATO do pedido, centavos de identificação
+  // incluídos, libera sozinho. Pedido antigo sem centavos: precisa também do comprovante. Cada Pix vale para um pedido só.
   const primeiroNome = (s) => semAcento(String(s || '')).trim().split(/\s+/)[0] || '';
   function tentarLiberar(id) {
     const d = q('SELECT * FROM demandas WHERE id = ?').get(id);
-    if (!d || d.pagamento !== 'pendente' || d.pag_id || d.status === 'cancelada' || d.comprovante_em == null || d.valor == null) return false;
-    if (d.comp_valor != null && Math.abs(d.comp_valor - d.valor) > 0.009) return false; // a IA leu outro valor no comprovante
+    if (!d || d.pagamento !== 'pendente' || d.pag_id || ['cancelada', 'entregue'].includes(d.status) || d.valor == null) return false;
+    const alvo = d.valor_pix ?? d.valor;
+    if (d.valor_pix == null && d.comprovante_em == null) return false; // sem centavos únicos o valor sozinho não identifica
+    if (d.comp_valor != null && Math.abs(d.comp_valor - alvo) > 0.009) return false; // a IA leu outro valor no comprovante
     const cand = q('SELECT * FROM pix_recebidos WHERE demanda_id IS NULL AND ts >= ? AND ABS(valor - ?) < 0.009 ORDER BY ts')
-      .all(d.criada_em - 10 * MIN, d.valor);
+      .all(d.criada_em - 10 * MIN, alvo);
     if (!cand.length) return false;
     const nomes = [d.comp_pagador, d.nf_nome, d.cliente].map(primeiroNome).filter(Boolean);
     const pix = cand.find((p) => nomes.includes(primeiroNome(p.pagador))) || cand[0];
     q('UPDATE pix_recebidos SET demanda_id = ? WHERE id = ?').run(d.id, pix.id);
     if (!servico.marcarPago(d.id, 'pix:banco+comprovante')) return false;
-    avisarAdmin(`✅ Pedido #${d.id} liberado sozinho: o Pix de ${reais(d.valor)}${pix.pagador ? ` de ${pix.pagador}` : ''} caiu no banco e o comprovante confere.`);
+    avisarAdmin(`✅ Pedido #${d.id} liberado sozinho: o Pix de ${reais(alvo)}${pix.pagador ? ` de ${pix.pagador}` : ''} caiu no banco.`);
     return true;
   }
   // Aviso do banco ("Pix recebido") que o celular do dono mandou.
@@ -553,9 +555,15 @@ export function criarAtendimento({
     if (q('SELECT id FROM pix_recebidos WHERE ABS(valor - ?) < 0.009 AND pagador = ? AND ABS(ts - ?) < 5000').get(valor, pagador, ts)) return { ok: true, repetido: true };
     q('INSERT INTO pix_recebidos (ts, valor, pagador, texto, origem) VALUES (?,?,?,?,?)').run(ts, valor, pagador, txt(dados?.texto, 300), txt(dados?.origem, 60));
     const esperando = q(`SELECT id FROM demandas WHERE pagamento = 'pendente' AND (pag_id IS NULL OR pag_id = '')
-        AND status IN ('sem_local','aguardando') AND ABS(valor - ?) < 0.009 ORDER BY (comprovante_em IS NULL), id`).all(valor);
+        AND status IN ('sem_local','aguardando') AND ABS(COALESCE(valor_pix, valor) - ?) < 0.009 ORDER BY (comprovante_em IS NULL), id`).all(valor);
     for (const e of esperando) if (tentarLiberar(e.id)) return { ok: true, liberado: e.id };
     if (esperando.length) avisarAdmin(`💰 Caiu um Pix de ${reais(valor)}${pagador ? ` de ${pagador}` : ''}. O pedido #${esperando[0].id} espera esse valor, mas ainda falta o comprovante. Para liberar já: *pago ${esperando[0].id}*.`);
+    else {
+      // Pagou sem os centavos (digitou o valor redondo): mostra os pedidos que podem ser, para o dono decidir.
+      const parecidos = q(`SELECT id FROM demandas WHERE pagamento = 'pendente' AND (pag_id IS NULL OR pag_id = '')
+          AND status IN ('sem_local','aguardando') AND ABS(valor - ?) < 0.009`).all(valor).map((x) => `#${x.id}`);
+      if (parecidos.length) avisarAdmin(`💰 Caiu um Pix de ${reais(valor)}${pagador ? ` de ${pagador}` : ''} sem os centavos do pedido. Pode ser ${parecidos.join(', ')}. Confira e responda *pago N*.`);
+    }
     return { ok: true, liberado: null };
   }
   // Comprovante enviado pela página do pedido (já chega ligado ao pedido certo).
@@ -576,7 +584,7 @@ export function criarAtendimento({
         const cp = r.comprovante;
         if (cp) {
           q('UPDATE demandas SET comp_valor = ?, comp_pagador = ? WHERE id = ?').run(cp.valor ?? null, txt(cp.pagador, 80), d.id);
-          leitura = ` A IA leu: ${cp.valor != null ? reais(cp.valor) : 'valor ilegível'}${cp.valor != null && Math.abs(cp.valor - d.valor) > 0.009 ? ' ⚠️ DIFERENTE do pedido' : ''}, pagador ${cp.pagador || '?'}, recebedor ${cp.recebedor || '?'}${cp.confere_recebedor ? '' : ' ⚠️ não parece ser a empresa'}.`;
+          leitura = ` A IA leu: ${cp.valor != null ? reais(cp.valor) : 'valor ilegível'}${cp.valor != null && Math.abs(cp.valor - (d.valor_pix ?? d.valor)) > 0.009 ? ' ⚠️ DIFERENTE do pedido' : ''}, pagador ${cp.pagador || '?'}, recebedor ${cp.recebedor || '?'}${cp.confere_recebedor ? '' : ' ⚠️ não parece ser a empresa'}.`;
         } else leitura = ' ⚠️ A IA não reconheceu o arquivo como comprovante.';
       } catch (e) { console.error('[comprovante]', e.message); }
     }

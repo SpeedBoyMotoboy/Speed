@@ -774,7 +774,8 @@ test('Pix na chave da empresa: cliente manda o comprovante e o responsável libe
   assert.ok(enviadas.some((m) => m.destino === '5511988880000' && /esperando Pix de R\$\s12,00[\s\S]*pago 1/.test(m.texto)));
   const publico = s.pedidoPublico(demandas()[0].codigo);
   assert.deepEqual([publico.pix.manual, publico.pix.whatsapp, publico.pix.qr.startsWith('data:image/')], [true, '27999165959', true]);
-  assert.match(publico.pix.codigo, /0014br\.gov\.bcb\.pix011446178859000196[\s\S]*540512\.00[\s\S]*0507PEDIDO1/);
+  assert.match(publico.pix.codigo, /0014br\.gov\.bcb\.pix011446178859000196[\s\S]*540512\.\d\d[\s\S]*0507PEDIDO1/);
+  assert.ok(publico.pix.valor > 12 && publico.pix.valor < 13, 'centavos de identificação');
   assert.equal(estadoDe(token).ofertas.length, 0);
 
   // Vencido: Pix manual não cancela sozinho (o sistema não vê a conta); só lembra o responsável.
@@ -1143,7 +1144,7 @@ test('link do cliente da loja: nota fiscal opcional mas conferida; instruções 
   assert.throws(() => s.fachadaPermitida(r.codigo), { codigo: 'encerrado' });
 });
 
-test('loja marca "cliente final paga": pedido retido, Pix na página, libera só com aviso do banco + comprovante', async () => {
+test('loja marca "cliente final paga": pedido retido, Pix com centavos únicos, libera com o aviso do banco do valor exato', async () => {
   const { s, a, demandas } = montar();
   s.salvarConfig({ pix_tipo: 'telefone', pix_chave: '27999165959', pix_nome: 'SpeedBoy', pix_cidade: 'Serra' }, 'teste');
   s.salvarCliente({ nome: 'Enxoval Bom', telefone: '11955551234', faturado: true, loja_endereco: 'Rua da Coleta, 10, Centro', libera_direto: true }, 'teste');
@@ -1175,23 +1176,27 @@ test('loja marca "cliente final paga": pedido retido, Pix na página, libera só
   a.notaPublica(r.codigo, { nf_doc: '529.982.247-25', nf_nome: 'Paula Reis' }, 'ip2');
   assert.equal(s.pedidoPublico(r.codigo).falta_nota, false);
 
-  // Só o aviso do banco, sem comprovante: não libera.
+  // Pix com o valor redondo (sem os centavos do pedido): não libera, avisa o dono.
+  const vp = demandas().find((x) => x.id === r.id).valor_pix;
+  assert.ok(vp > d.valor && vp < d.valor + 1, 'pedido tem centavos de identificação');
   assert.equal(a.receberPix({ valor: d.valor, pagador: 'Paula Reis' }).liberado, null);
   assert.equal(demandas().find((x) => x.id === r.id).retida, 1);
-  // Chegou o comprovante: agora as duas coisas existem e libera sozinho.
-  const arq = { mime: 'image/jpeg', base64: 'QUJD' };
-  assert.equal((await a.comprovantePublico(r.codigo, arq, 'ip2')).liberado, true);
+  // Caiu o valor exato (com os centavos): libera sozinho, mesmo sem comprovante.
+  assert.equal(a.receberPix({ valor: vp, pagador: 'Paula Reis', ts: Date.now() + 1000 }).liberado, r.id);
   d = demandas().find((x) => x.id === r.id);
   assert.equal(d.pagamento, 'pago');
   assert.equal(d.retida, 0);
 
-  // Ordem inversa: comprovante primeiro não libera; quando o banco avisa, libera. O mesmo Pix não vale duas vezes.
+  // Dois pedidos do mesmo preço esperando: cada um tem centavos diferentes e só o certo é liberado.
   const r2 = await a.pedidoEmpresa({ ...base, cliente_paga: true }, 'ip1');
-  assert.equal((await a.comprovantePublico(r2.codigo, arq, 'ip2')).liberado, false, 'o Pix do primeiro pedido já foi usado');
-  assert.equal(demandas().find((x) => x.id === r2.id).retida, 1);
+  const r3 = await a.pedidoEmpresa({ ...base, cliente_paga: true }, 'ip1');
+  const [v2, v3] = [r2, r3].map((x) => demandas().find((y) => y.id === x.id).valor_pix);
+  assert.notEqual(v2, v3);
   assert.equal(a.receberPix({ valor: 999, pagador: 'Outro' }).liberado, null, 'valor diferente não libera');
-  assert.equal(a.receberPix({ valor: r2.valor, pagador: 'Paula Reis', ts: Date.now() + 60000 }).liberado, r2.id);
-  assert.equal(demandas().find((x) => x.id === r2.id).pagamento, 'pago');
+  assert.equal(a.receberPix({ valor: v3, pagador: 'Ana', ts: Date.now() + 2000 }).liberado, r3.id);
+  assert.equal(demandas().find((x) => x.id === r2.id).retida, 1, 'o outro continua esperando');
+  assert.equal(a.receberPix({ valor: v3, pagador: 'Ana', ts: Date.now() + 9000 }).liberado, null, 'o mesmo valor não libera duas vezes');
+  assert.equal(a.receberPix({ valor: v2, pagador: 'Paula', ts: Date.now() + 20000 }).liberado, r2.id);
 });
 
 test('convite: loja diz as mercadorias, cliente final completa, vê rota/urgente, paga; G e GG somam com teto', async () => {
